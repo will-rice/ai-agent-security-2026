@@ -1043,17 +1043,28 @@ def gguf_agent_factory(
     *,
     n_ctx: int = 8192,
     n_gpu_layers: int = -1,
+    max_new_tokens: int = 1024,
 ) -> Callable[[], Any]:
-    """Return a zero-arg factory building a GGUF-backed agent via llama.cpp.
+    """Return a zero-arg factory building GGUF-backed agents over ONE shared backend.
+
+    Loads the llama.cpp GGUF model exactly once and returns a factory that builds a
+    fresh (cheap) SDK agent over that shared backend on each call. This is critical:
+    ``run_attack`` invokes the factory for the generation env AND every replay env,
+    so building a new backend per call would reload the multi-GB GGUF each time.
+    Sharing one backend is safe because the SDK evaluates sequentially and the
+    llama.cpp completion call is stateless per turn. Wiring matches Kaggle's
+    ``gguf_model_server.py`` (``HFBackendConfig`` built directly, ``max_new_tokens``
+    1024, ``supports_tools=True``).
 
     Args:
         model_key: ``"gpt_oss"`` or ``"gemma_4"``.
         model_path: Local path to the GGUF file.
-        n_ctx: llama.cpp context window.
+        n_ctx: llama.cpp context window (Kaggle uses 8192).
         n_gpu_layers: GPU offload layer count (-1 = all).
+        max_new_tokens: Generation cap (Kaggle uses 1024).
 
     Returns:
-        A callable returning a fresh SDK agent bound to the GGUF backend.
+        A zero-arg callable returning a fresh SDK agent bound to the shared backend.
 
     Raises:
         ValueError: If ``model_key`` is unknown.
@@ -1061,51 +1072,43 @@ def gguf_agent_factory(
     from aicomp_sdk.agents.hf_chat_template.backends.llama_cpp import (
         LlamaCppChatTemplateBackend,
     )
+    from aicomp_sdk.agents.hf_chat_template.types import HFBackendConfig
 
     if model_key == "gpt_oss":
-        from aicomp_sdk.agents.gpt_oss_agent import (
-            GPTOSSAgent,
-            build_gpt_oss_backend_config,
-        )
+        from aicomp_sdk.agents.gpt_oss_agent import DEFAULT_GPT_OSS_MODEL_ID, GPTOSSAgent
 
-        config = build_gpt_oss_backend_config(model_path=str(model_path))
+        model_id: str = DEFAULT_GPT_OSS_MODEL_ID
+        make_agent: Callable[[Any], Any] = GPTOSSAgent
+    elif model_key == "gemma_4":
+        from aicomp_sdk.agents.gemma4_agent import DEFAULT_GEMMA4_MODEL_ID, Gemma4Agent
 
-        def factory_gpt() -> Any:
-            """Build a fresh GPT-OSS agent over a llama.cpp GGUF backend."""
-            backend = LlamaCppChatTemplateBackend.from_model_path(
-                model_path=str(model_path),
-                config=config,
-                n_ctx=n_ctx,
-                n_gpu_layers=n_gpu_layers,
-            )
-            return GPTOSSAgent(backend)
+        model_id = DEFAULT_GEMMA4_MODEL_ID
+        make_agent = Gemma4Agent
+    else:
+        raise ValueError(f"unknown model_key: {model_key}")
 
-        return factory_gpt
+    config = HFBackendConfig(
+        model_id=model_id,
+        model_path=str(model_path),
+        max_new_tokens=max_new_tokens,
+    )
+    # Load the GGUF once; share this backend across all agent instances.
+    backend = LlamaCppChatTemplateBackend.from_model_path(
+        model_path=str(model_path),
+        config=config,
+        n_ctx=n_ctx,
+        n_gpu_layers=n_gpu_layers,
+        supports_tools=True,
+    )
 
-    if model_key == "gemma_4":
-        from aicomp_sdk.agents.gemma4_agent import (
-            Gemma4Agent,
-            build_gemma4_backend_config,
-        )
+    def factory() -> Any:
+        """Build a fresh agent over the shared, already-loaded GGUF backend."""
+        return make_agent(backend)
 
-        config = build_gemma4_backend_config(model_path=str(model_path))
-
-        def factory_gemma() -> Any:
-            """Build a fresh Gemma 4 agent over a llama.cpp GGUF backend."""
-            backend = LlamaCppChatTemplateBackend.from_model_path(
-                model_path=str(model_path),
-                config=config,
-                n_ctx=n_ctx,
-                n_gpu_layers=n_gpu_layers,
-            )
-            return Gemma4Agent(backend)
-
-        return factory_gemma
-
-    raise ValueError(f"unknown model_key: {model_key}")
+    return factory
 ```
 
-**Verification note for the executor:** if `build_gpt_oss_backend_config`/`Gemma4Agent` construction signatures differ from the above once you read the SDK, adjust the two factory bodies to match `gguf_model_server.py`'s `create_agent`/`load_model` wiring exactly. The public contract of this module (`MODEL_SPECS`, `download_gguf`, `gguf_agent_factory` returning a zero-arg callable) must not change.
+**Verification note for the executor:** this wiring mirrors `docs/research/sdk_excerpts/gguf_model_server.py` (`GgufModelServer._load_backend`). If `HFBackendConfig`'s field names or `GPTOSSAgent`/`Gemma4Agent` constructors differ once you read the SDK, adjust to match that file exactly. The public contract (`MODEL_SPECS`, `download_gguf`, `gguf_agent_factory` returning a zero-arg callable over a single shared backend) must not change. Note `HFBackendConfig` may have required fields beyond the three shown — check `aicomp_sdk/agents/hf_chat_template/types.py` and pass what it requires.
 
 - [ ] **Step 4: Implement `scripts/evaluate.py`**
 
