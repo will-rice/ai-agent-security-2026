@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +23,7 @@ class RunResult:
     time_taken: float
     guardrail_id: str
     agent_label: str
+    findings: list[dict[str, Any]] = field(default_factory=list)
 
 
 def run_attack(
@@ -85,4 +86,5 @@ def run_attack(
         time_taken=attack.time_taken,
         guardrail_id=attack.guardrail_id,
         agent_label=execution.agent.label,
+        findings=[dict(finding) for finding in attack.findings],
     )
