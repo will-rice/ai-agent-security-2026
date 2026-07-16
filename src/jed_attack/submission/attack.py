@@ -14,12 +14,11 @@ from aicomp_sdk.attacks.contracts import (
     AttackCandidate,
     AttackRunConfig,
 )
-from aicomp_sdk.core.cells import cell_signature
 from aicomp_sdk.core.env.api import AttackEnvProtocol
-from aicomp_sdk.core.predicates import eval_predicates
 from aicomp_sdk.utils.timebox import Timebox
 
-from jed_attack.submission import templates  # inlined at build time
+from jed_attack.submission import selector, templates  # inlined at build time
+from jed_attack.submission.engine import Cell, GoExplore, score_hash
 
 _BUDGET_SAFETY = (
     0.9  # return before the hard generation deadline (see Global Constraints)
@@ -27,7 +26,14 @@ _BUDGET_SAFETY = (
 
 
 class AttackAlgorithm(AttackAlgorithmBase):
-    """Hybrid discover-and-farm attack (skeleton; filled in later tasks)."""
+    """Hybrid discover-and-farm attack.
+
+    Runs a Go-Explore archive search seeded with injection-page opens and benign
+    tool-signature diversifiers to discover breaching prompt shapes, then farms
+    tool-signature variants around each confirmed breach to mint additional
+    distinct scoring cells. The final candidate set is capped and ordered by
+    ``selector.select_candidates``.
+    """
 
     def __init__(self, config: Mapping[str, Any] | None = None) -> None:
         """Store the optional evaluator-provided config mapping.
@@ -40,43 +46,107 @@ class AttackAlgorithm(AttackAlgorithmBase):
     def run(
         self, env: AttackEnvProtocol, config: AttackRunConfig
     ) -> list[AttackCandidate]:
-        """Sweep injection bases × diversifiers, keeping novel scoring cells.
-
-        Each plan is replayed from a clean reset. A plan is kept when a predicate
-        fires and its trace hashes to a score cell not seen before. The loop
-        returns before the budget deadline (a late return discards all findings).
+        """Discover breaching prompt shapes, then farm tool-signature variants.
 
         Args:
             env: The opaque attack environment.
             config: Runtime budget and caps.
 
         Returns:
-            Replayable candidates, one per distinct firing score cell.
+            The selected replayable attack candidates.
         """
         timebox = Timebox(float(config.time_budget_s) * _BUDGET_SAFETY)
         hops = int(config.max_tool_hops)
-        found: list[AttackCandidate] = []
-        seen: set[str] = set()  # score-cell hashes (the scored novelty key)
 
-        plans: list[list[str]] = [
-            templates.injection_chain(p) for p in templates.INJECTION_PAGES
+        engine = GoExplore(
+            mutations=_discovery_mutations(),
+            max_hops=hops,
+            rng_seed=int(env.seed),
+        )
+        engine.seed_from(env)
+
+        # Discovery gets the first half of the (safety-adjusted) budget.
+        discovery_box = Timebox(float(config.time_budget_s) * _BUDGET_SAFETY * 0.5)
+        while not discovery_box.expired() and not timebox.expired():
+            engine.step(env)
+
+        # Only cells that actually fired a predicate are worth replaying (a
+        # non-firing candidate costs replay budget for zero score), so filter here.
+        farmed: list[Cell] = [
+            cell for cell in engine.archive.values() if cell.predicates
         ]
-        for page_id in templates.INJECTION_PAGES:
-            for diversifier in templates.DIVERSIFIERS:
-                plans.append(templates.injection_chain(page_id, diversifier))
-
-        for chain in plans:
-            if timebox.expired() or len(found) >= 2000:
+        for breach in engine.breached_cells():
+            if timebox.expired():
                 break
-            env.reset()
-            for message in chain:
-                env.interact(message, max_tool_hops=hops)
-            trace = env.export_trace_dict()
-            if not eval_predicates(trace):
-                continue
-            score_hash = str(cell_signature(trace.get("tool_events", []))["hash"])
-            if score_hash in seen:
-                continue
-            seen.add(score_hash)
-            found.append(AttackCandidate.from_messages(trace["user_messages"]))
-        return found
+            farmed.extend(_farm_variants(env, breach, hops, timebox))
+
+        chains = selector.select_candidates(
+            farmed, max_candidates=2000, max_messages=32
+        )
+        return [AttackCandidate.from_messages(chain) for chain in chains]
+
+
+def _discovery_mutations() -> list[str]:
+    """Return the injection-driving follow-up messages the engine branches with.
+
+    Returns:
+        Injection-page opens (which drive dangerous tool use via injected page
+        content) plus benign tool-varying moves that diversify the tool-call
+        signature into new scoring cells.
+    """
+    return [
+        templates.open_page(page_id) for page_id in templates.INJECTION_PAGES
+    ] + list(templates.DIVERSIFIERS)
+
+
+def _farm_variants(
+    env: AttackEnvProtocol,
+    breach: Cell,
+    hops: int,
+    timebox: Timebox,
+) -> list[Cell]:
+    """Mint tool-signature variants around a confirmed breach cell.
+
+    Replays the breach's own message chain with each benign diversifier appended,
+    from a clean reset, keeping variants that still fire a predicate with a novel
+    scored cell hash.
+
+    Args:
+        env: The attack environment.
+        breach: A breached archive cell to diversify around.
+        hops: Max tool hops per interaction.
+        timebox: The overall run budget.
+
+    Returns:
+        Newly farmed cells with novel scored hashes.
+    """
+    from aicomp_sdk.core.predicates import eval_predicates, is_breach
+
+    out: list[Cell] = []
+    seen: set[str] = {breach.score_hash}
+    base_chain = list(breach.user_messages)
+    for diversifier in templates.DIVERSIFIERS:
+        if timebox.expired():
+            return out
+        env.reset()
+        for message in [*base_chain, diversifier]:
+            env.interact(message, max_tool_hops=hops)
+        trace = env.export_trace_dict()
+        key = score_hash(trace)
+        if key in seen:
+            continue
+        predicates = eval_predicates(trace)
+        if not predicates:
+            continue
+        seen.add(key)
+        out.append(
+            Cell(
+                snapshot=None,
+                user_messages=list(trace["user_messages"]),
+                score_hash=key,
+                depth=breach.depth + 1,
+                breached=is_breach(trace, predicates),
+                predicates=predicates,
+            )
+        )
+    return out
