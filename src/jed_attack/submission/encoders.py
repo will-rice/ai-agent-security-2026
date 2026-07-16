@@ -7,8 +7,6 @@ so encoding both evades the guardrail and diversifies the tool-call signature
 (distinct output samples => distinct scoring cells).
 """
 
-from __future__ import annotations
-
 import base64
 import urllib.parse
 

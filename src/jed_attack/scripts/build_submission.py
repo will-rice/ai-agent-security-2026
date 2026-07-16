@@ -5,8 +5,6 @@ runs a lone attack.py with no sibling package, so we inline those modules into o
 file, stripping intra-package imports.
 """
 
-from __future__ import annotations
-
 import re
 from pathlib import Path
 
@@ -46,7 +44,6 @@ def build_attack_source() -> str:
         '"""JED red-team submission (auto-generated; do not edit).\n\n'
         "Built by jed_attack.scripts.build_submission from the submission package.\n"
         '"""\n\n'
-        "from __future__ import annotations\n\n"
     )
     bodies = "\n\n".join(_clean_module(name) for name in _MODULE_ORDER)
     return header + bodies + "\n"

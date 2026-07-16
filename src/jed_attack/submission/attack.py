@@ -4,8 +4,6 @@ This module is inlined into a single self-contained file at build time and must
 import only ``aicomp_sdk`` and the standard library.
 """
 
-from __future__ import annotations
-
 import time
 from collections.abc import Mapping
 from typing import Any
@@ -25,6 +23,10 @@ from jed_attack.submission.templates import DIVERSIFIERS, INJECTION_PAGES, open_
 _BUDGET_SAFETY = (
     0.9  # return before the hard generation deadline (see Global Constraints)
 )
+# Community-verified replay ceiling: N=300 scores, N=400+ times out (moving target).
+# The selector fills to this by repetition; the replay-cost cap below trims further
+# when the real models are slow. See docs/strategy.md.
+_MAX_CANDIDATES = 300
 
 
 class AttackAlgorithm(AttackAlgorithmBase):
@@ -59,6 +61,10 @@ class AttackAlgorithm(AttackAlgorithmBase):
         """
         timebox = Timebox(float(config.time_budget_s) * _BUDGET_SAFETY)
         hops = int(config.max_tool_hops)
+        # Returned-candidate count is a tunable knob: the replay budget is a moving
+        # target (GPU capacity shifts), so tune this against real run times rather
+        # than trusting a fixed number. Default is the community-verified ceiling.
+        max_candidates = int(self.config.get("max_candidates", _MAX_CANDIDATES))
 
         engine = GoExplore(
             mutations=_discovery_mutations(),
@@ -95,7 +101,9 @@ class AttackAlgorithm(AttackAlgorithmBase):
                 break
             farmed.extend(_farm_variants(env, breach, hops, timebox))
 
-        chains = select_candidates(farmed, max_candidates=2000, max_messages=32)
+        chains = select_candidates(
+            farmed, max_candidates=max_candidates, max_messages=32
+        )
 
         # Self-calibrating replay-cost cap: bound the returned candidates to what
         # can actually be replayed within the evaluator's time_budget_s, using the

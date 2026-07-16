@@ -1,7 +1,5 @@
 """Fast deterministic-agent evaluation for quick iteration."""
 
-from __future__ import annotations
-
 import argparse
 import logging
 

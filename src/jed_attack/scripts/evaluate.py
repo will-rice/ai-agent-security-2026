@@ -1,7 +1,5 @@
 """Evaluate the submission against a real GGUF model on a GPU host."""
 
-from __future__ import annotations
-
 import argparse
 import logging
 from pathlib import Path

@@ -1,7 +1,5 @@
 """Post-run score attribution and a JSONL run archive for ablations."""
 
-from __future__ import annotations
-
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field

@@ -1,8 +1,15 @@
-"""Model specs and download-path logic (no GPU/model load)."""
+"""Model specs and download/serving helpers (no GPU/model load, no network)."""
 
 from pathlib import Path
 
-from jed_attack.harness.models import MODEL_SPECS, gguf_target_path
+import pytest
+
+from jed_attack.harness.models import (
+    MODEL_SPECS,
+    _LlamaServerClient,
+    gguf_target_path,
+    resolve_base_url,
+)
 
 
 def test_model_specs_present() -> None:
@@ -17,3 +24,23 @@ def test_gguf_target_path(tmp_path: Path) -> None:
     """The target path is models_dir / filename."""
     path = gguf_target_path("gpt_oss", tmp_path)
     assert path == tmp_path / "gpt-oss-20b-Q4_K_M.gguf"
+
+
+def test_resolve_base_url_defaults_and_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Base URL comes from the override, else the per-model env default."""
+    monkeypatch.delenv("GPT_OSS_BASE_URL", raising=False)
+    monkeypatch.delenv("GEMMA_BASE_URL", raising=False)
+    assert resolve_base_url("gpt_oss") == "http://localhost:8080/v1"
+    assert resolve_base_url("gemma_4") == "http://localhost:8081/v1"
+    assert resolve_base_url("gpt_oss", "http://host:9/v1") == "http://host:9/v1"
+    monkeypatch.setenv("GEMMA_BASE_URL", "http://env:1/v1")
+    assert resolve_base_url("gemma_4") == "http://env:1/v1"
+
+
+def test_llama_server_client_builds_endpoint() -> None:
+    """The client targets <base>/chat/completions and stores the model name."""
+    client = _LlamaServerClient("http://localhost:8080/v1/", model="gpt-oss")
+    assert client._url == "http://localhost:8080/v1/chat/completions"
+    assert client._model == "gpt-oss"
