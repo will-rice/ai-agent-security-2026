@@ -11,9 +11,9 @@ def test_every_scheme_is_detected_as_exfil() -> None:
     """Each encoding round-trips: the predicate still flags the secret."""
     for scheme in SCHEMES:
         payload = encode_payload(SECRET_VALUE, scheme)
-        assert payload_exfiltrates_secret(
-            payload, read_secrets=[SECRET_VALUE]
-        ), f"{scheme} not detected"
+        assert payload_exfiltrates_secret(payload, read_secrets=[SECRET_VALUE]), (
+            f"{scheme} not detected"
+        )
 
 
 def test_encoded_schemes_are_guardrail_safe() -> None:

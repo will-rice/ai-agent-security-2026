@@ -1,10 +1,10 @@
 """Guards that the submission depends only on aicomp_sdk + stdlib."""
 
 import ast
+import importlib
 import sys
-from pathlib import Path
 
-SUBMISSION = Path(__file__).resolve().parents[1] / "src/jed_attack/submission/attack.py"
+import pytest
 
 
 def test_attack_defines_algorithm() -> None:
@@ -17,8 +17,17 @@ def test_attack_defines_algorithm() -> None:
 
 
 def test_attack_imports_only_allowed_roots() -> None:
-    """Static check: attack.py imports only stdlib or aicomp_sdk, never jed_attack."""
-    tree = ast.parse(SUBMISSION.read_text())
+    """Static check: the BUILT submission imports only stdlib or aicomp_sdk.
+
+    The dev-time ``attack.py`` imports the ``jed_attack.submission.templates``
+    sibling, which the builder (Task 10) inlines into a single self-contained
+    file. Until the builder exists, this check is skipped.
+    """
+    pytest.importorskip("jed_attack.scripts.build_submission")
+    builder = importlib.import_module("jed_attack.scripts.build_submission")
+
+    source = builder.build_attack_source()
+    tree = ast.parse(source)
     roots: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
