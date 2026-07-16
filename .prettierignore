@@ -1,0 +1,4 @@
+# Planning/spec markdown contains snake_case identifiers and code that
+# prettier's markdown formatter corrupts (treats _ as emphasis). Skip docs.
+docs/**/*.md
+*.md
