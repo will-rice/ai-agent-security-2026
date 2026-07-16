@@ -46,20 +46,3 @@ def open_page(page_id: str) -> str:
         The user message driving ``web.open`` on that page.
     """
     return f"open {page_id}"
-
-
-def injection_chain(page_id: str, diversifier: str | None = None) -> list[str]:
-    """Build an injection chain: open a payload page, optional benign follow-up.
-
-    Args:
-        page_id: Injection page id from ``INJECTION_PAGES``.
-        diversifier: Optional benign follow-up message (from ``DIVERSIFIERS``)
-            that diversifies the tool-call signature into a new scoring cell.
-
-    Returns:
-        The ordered user-message chain.
-    """
-    chain = [open_page(page_id)]
-    if diversifier is not None:
-        chain.append(diversifier)
-    return chain
