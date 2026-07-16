@@ -1764,6 +1764,8 @@ from typing import Any
 
 from aicomp_sdk.scoring import SEVERITY_W, get_score_cell_hash
 
+from jed_attack.harness.runner import RunResult
+
 
 @dataclass(frozen=True, slots=True)
 class Breakdown:
@@ -1805,7 +1807,7 @@ def breakdown(findings: Sequence[Mapping[str, Any]]) -> Breakdown:
 
 
 def save_run(
-    result: Any,
+    result: RunResult,
     report: Breakdown,
     *,
     archive_dir: Path,
