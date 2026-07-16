@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from aicomp_sdk.agents.protocol import AgentProtocol
+
 
 @dataclass(frozen=True, slots=True)
 class ModelSpec:
@@ -82,7 +84,7 @@ def gguf_agent_factory(
     n_ctx: int = 8192,
     n_gpu_layers: int = -1,
     max_new_tokens: int = 1024,
-) -> Callable[[], Any]:
+) -> Callable[[], AgentProtocol]:
     """Return a zero-arg factory building GGUF-backed agents over ONE shared backend.
 
     Loads the llama.cpp GGUF model exactly once and returns a factory that builds a
@@ -114,7 +116,10 @@ def gguf_agent_factory(
 
     make_agent: Callable[[Any], Any]
     if model_key == "gpt_oss":
-        from aicomp_sdk.agents.gpt_oss_agent import DEFAULT_GPT_OSS_MODEL_ID, GPTOSSAgent
+        from aicomp_sdk.agents.gpt_oss_agent import (
+            DEFAULT_GPT_OSS_MODEL_ID,
+            GPTOSSAgent,
+        )
 
         model_id: str = DEFAULT_GPT_OSS_MODEL_ID
         make_agent = GPTOSSAgent
@@ -140,7 +145,7 @@ def gguf_agent_factory(
         supports_tools=True,
     )
 
-    def factory() -> Any:
+    def factory() -> AgentProtocol:
         """Build a fresh agent over the shared, already-loaded GGUF backend."""
         return make_agent(backend)
 
