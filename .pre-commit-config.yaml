@@ -1,0 +1,39 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-ast
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-merge-conflict
+      - id: requirements-txt-fixer
+  - repo: https://github.com/will-rice/prettier-pre-commit
+    rev: v1.0.7
+    hooks:
+      - id: prettier-format
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff-format
+        language: system
+        entry: uv run ruff format
+        files: ^(src|tests)/.*\.py$
+        pass_filenames: true
+      - id: ruff
+        name: ruff
+        language: system
+        entry: uv run ruff check --fix
+        files: ^(src|tests)/.*\.py$
+        pass_filenames: true
+      - id: ty
+        name: ty
+        language: system
+        entry: uv run ty check
+        files: ^(src|tests)/.*\.py$
+        pass_filenames: false
+      - id: pytest
+        name: pytest
+        language: system
+        entry: uv run python -m pytest
+        pass_filenames: false
+        always_run: true

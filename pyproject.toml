@@ -1,0 +1,40 @@
+[project]
+name = "agent_harness"
+version = "0.1.0"
+description = "A general template for AI agent harness bootstrapping."
+readme = "README.md"
+authors = [{ name = "Will Rice", email = "wrice20@gmail.com" }]
+requires-python = ">=3.12"
+dependencies = [
+  "pre-commit>=4.1.0",
+  "pydantic>=2.12.2",
+  "pydocstyle>=6.3.0",
+  "pytest>=8.3.4",
+  "python-dotenv>=1.1.1",
+  "ruff>=0.9.7",
+  "ty>=0.0.18",
+]
+
+[build-system]
+requires = ["uv_build>=0.9.2"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = ["agent_harness"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["agent_harness"]
+
+[tool.ruff.lint]
+select = ["C", "E", "F", "I", "W", "D", "N", "B", "PTH", "ANN"]
+ignore = ["D107"]
+exclude = [".venv"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.pytest.ini_options]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[project.scripts]
+run = "agent_harness.scripts.run:main"
