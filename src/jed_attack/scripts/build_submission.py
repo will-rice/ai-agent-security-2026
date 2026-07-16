@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 
 _SUBMISSION_DIR = Path(__file__).resolve().parents[1] / "submission"
-_MODULE_ORDER = ("encoders", "templates", "engine", "selector", "attack")
+_MODULE_ORDER = ("templates", "engine", "selector", "attack")
 
 _INTRA_IMPORT = re.compile(r"^\s*from jed_attack[.\w]* import .*$", re.MULTILINE)
 _INTRA_IMPORT_MOD = re.compile(r"^\s*import jed_attack.*$", re.MULTILINE)

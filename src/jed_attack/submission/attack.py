@@ -6,6 +6,7 @@ import only ``aicomp_sdk`` and the standard library.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping
 from typing import Any
 
@@ -66,10 +67,23 @@ class AttackAlgorithm(AttackAlgorithmBase):
         )
         engine.seed_from(env)
 
-        # Discovery gets the first half of the (safety-adjusted) budget.
+        # Discovery gets the first half of the (safety-adjusted) budget. We also
+        # time this loop to self-calibrate a replay-cost cap below: the SDK
+        # replays EVERY returned candidate within a single time_budget_s, and a
+        # replay timeout discards ALL findings (hard 0). Per-interact latency is
+        # ~milliseconds on the fast deterministic dev agent but can be much
+        # larger on real GGUF models, so we measure it from this run's own
+        # generation latency rather than assuming a fixed constant.
+        mutation_count = len(engine.mutations)
         discovery_box = Timebox(float(config.time_budget_s) * _BUDGET_SAFETY * 0.5)
+        disc_start = time.monotonic()
+        disc_steps = 0
         while not discovery_box.expired() and not timebox.expired():
             engine.step(env)
+            disc_steps += 1
+        elapsed = time.monotonic() - disc_start
+        interacts = max(1, disc_steps * mutation_count)
+        avg_interact = elapsed / interacts
 
         # Only cells that actually fired a predicate are worth replaying (a
         # non-firing candidate costs replay budget for zero score), so filter here.
@@ -82,7 +96,22 @@ class AttackAlgorithm(AttackAlgorithmBase):
             farmed.extend(_farm_variants(env, breach, hops, timebox))
 
         chains = select_candidates(farmed, max_candidates=2000, max_messages=32)
-        return [AttackCandidate.from_messages(chain) for chain in chains]
+
+        # Self-calibrating replay-cost cap: bound the returned candidates to what
+        # can actually be replayed within the evaluator's time_budget_s, using the
+        # per-interact latency measured above. Without this, a large candidate
+        # set that's cheap to generate on the dev agent but slow to replay on a
+        # real model would blow the replay budget and zero the whole score.
+        replay_budget_s = float(config.time_budget_s) * 0.85
+        capacity_msgs = replay_budget_s / max(avg_interact, 1e-6)
+        bounded: list[list[str]] = []
+        remaining = capacity_msgs
+        for chain in chains:
+            if len(chain) > remaining:
+                break
+            bounded.append(chain)
+            remaining -= len(chain)
+        return [AttackCandidate.from_messages(chain) for chain in bounded]
 
 
 def _discovery_mutations() -> list[str]:

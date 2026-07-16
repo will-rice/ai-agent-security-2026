@@ -128,7 +128,7 @@ class GoExplore:
                 user_messages=list(trace.get("user_messages", [])),
                 score_hash=key,
                 depth=parent.depth + 1,
-                breached=bool(predicates) and is_breach(trace, predicates),
+                breached=is_breach(trace, predicates),
                 predicates=predicates,
             )
             self.archive[key] = cell
