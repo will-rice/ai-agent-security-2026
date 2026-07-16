@@ -43,3 +43,6 @@ convention = "google"
 
 [tool.pytest.ini_options]
 filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ty.src]
+exclude = ["docs/**", ".superpowers/**", "vendor/**"]
