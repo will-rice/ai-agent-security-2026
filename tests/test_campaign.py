@@ -16,7 +16,10 @@ from jed_attack.campaign.guardrails import HardenedGuardrail
 
 def test_store_roundtrip_dedups(tmp_path: Path) -> None:
     """Candidates with the same chain collapse to one on read."""
-    store.emit(store.Candidate.make(["a", "b"], "agent-1", predicates=["CONFUSED_DEPUTY"]), tmp_path)
+    store.emit(
+        store.Candidate.make(["a", "b"], "agent-1", predicates=["CONFUSED_DEPUTY"]),
+        tmp_path,
+    )
     store.emit(store.Candidate.make(["a", "b"], "agent-2"), tmp_path)  # same chain
     store.emit(store.Candidate.make(["c"], "agent-1"), tmp_path)
     assert len(store.read_all(tmp_path)) == 2
@@ -26,10 +29,16 @@ def test_hardened_blocks_taint_flush_that_optimal_allows() -> None:
     """The private-proxy guardrail closes Optimal's taint-window flush hole."""
     hardened, optimal = HardenedGuardrail(), Optimal()
     hardened.decide("email.read", {}, {"recent_sources": ["email"]})  # untrusted seen
-    flushed = {"recent_sources": ["file", "file", "file", "file", "file"]}  # taint aged out
-    # Optimal allows the send once the email source leaves the last-5 window; hardened does not.
-    assert optimal.decide("email.send", {"to": "x@y.com"}, flushed).action.value == "ALLOW"
-    assert hardened.decide("email.send", {"to": "x@y.com"}, flushed).action.value == "DENY"
+    flushed = {
+        "recent_sources": ["file", "file", "file", "file", "file"]
+    }  # taint aged out
+    # Optimal allows the send after the email leaves the last-5 window; hardened denies.
+    assert (
+        optimal.decide("email.send", {"to": "x@y.com"}, flushed).action.value == "ALLOW"
+    )
+    assert (
+        hardened.decide("email.send", {"to": "x@y.com"}, flushed).action.value == "DENY"
+    )
 
 
 def test_gate_produces_full_verdict() -> None:
@@ -48,7 +57,9 @@ def test_assemble_builds_isolated_pool_from_adopted_only(tmp_path: Path) -> None
     """Assemble emits an isolated attack.py containing only adopted chains."""
     ledger = tmp_path / "ledger.jsonl"
     gate.write_verdict(gate.Verdict("id1", {}, 16, True, ("m1", "m2"), "t"), ledger)
-    gate.write_verdict(gate.Verdict("id2", {}, 0, False, ("m3",), "t"), ledger)  # rejected
+    gate.write_verdict(
+        gate.Verdict("id2", {}, 0, False, ("m3",), "t"), ledger
+    )  # rejected
     path = assemble.assemble(out_dir=tmp_path / "build", ledger=ledger)
     src = path.read_text()
 
