@@ -1911,6 +1911,48 @@ def test_built_source_defines_algorithm() -> None:
     namespace: dict[str, object] = {}
     exec(compile(build_attack_source(), "attack.py", "exec"), namespace)  # noqa: S102
     assert issubclass(namespace["AttackAlgorithm"], AttackAlgorithmBase)
+
+
+def test_built_source_runs_end_to_end() -> None:
+    """The inlined AttackAlgorithm actually runs — catches broken flattened refs.
+
+    Definition-time exec cannot catch a broken ``templates.x`` / ``selector.x``
+    reference because those live inside methods; only running ``run`` exercises
+    them. This runs the built class directly against a SandboxEnv under the
+    permissive guardrail and asserts it produces firing candidates.
+    """
+    from aicomp_sdk.agents import build_agent
+    from aicomp_sdk.attacks.contracts import AttackRunConfig
+    from aicomp_sdk.core.env.sandbox import SandboxEnv
+    from aicomp_sdk.core.predicates import eval_predicates
+    from aicomp_sdk.evaluation.ops import resolve_fixtures_dir
+    from aicomp_sdk.guardrails.base import GuardrailBase
+
+    namespace: dict[str, object] = {}
+    exec(compile(build_attack_source(), "attack.py", "exec"), namespace)  # noqa: S102
+    attack_cls = namespace["AttackAlgorithm"]
+
+    env = SandboxEnv(
+        seed=123,
+        fixtures_dir=resolve_fixtures_dir(),
+        agent=build_agent("deterministic"),
+        guardrail=GuardrailBase(),
+        max_tool_hops=4,
+    )
+    candidates = attack_cls().run(env, AttackRunConfig(time_budget_s=15.0, max_tool_hops=4))
+    assert candidates, "built attack produced no candidates"
+    # At least one candidate replays to a firing trace under the permissive guardrail.
+    fresh = SandboxEnv(
+        seed=123,
+        fixtures_dir=resolve_fixtures_dir(),
+        agent=build_agent("deterministic"),
+        guardrail=GuardrailBase(),
+        max_tool_hops=4,
+    )
+    fresh.reset()
+    for message in candidates[0].user_messages:
+        fresh.interact(message, max_tool_hops=4)
+    assert eval_predicates(fresh.export_trace_dict())
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1918,7 +1960,39 @@ def test_built_source_defines_algorithm() -> None:
 Run: `uv run python -m pytest tests/test_build_submission.py -v`
 Expected: FAIL (`build_submission` missing).
 
-- [ ] **Step 3: Implement `build_submission.py`**
+- [ ] **Step 3: Refactor `attack.py` to NAME imports (prerequisite for flat inlining)**
+
+The flat build concatenates all submission modules into ONE namespace, so
+`attack.py` must reference sibling symbols by bare name, not via a module object
+(`templates.open_page` would break — there is no `templates` module after
+inlining). Modify `src/jed_attack/submission/attack.py`:
+
+Replace the sibling imports:
+```python
+from jed_attack.submission import selector, templates  # inlined at build time
+from jed_attack.submission.engine import Cell, GoExplore, score_hash
+```
+with (all single-line so the build's line-based import stripper matches them, and
+so ruff-format does not wrap them into parentheses):
+```python
+from jed_attack.submission.engine import Cell, GoExplore, score_hash
+from jed_attack.submission.selector import select_candidates
+from jed_attack.submission.templates import DIVERSIFIERS, INJECTION_PAGES, open_page
+```
+Then replace every qualified reference in the file body:
+- `selector.select_candidates(` → `select_candidates(`
+- `templates.open_page(` → `open_page(`
+- `templates.INJECTION_PAGES` → `INJECTION_PAGES`
+- `templates.DIVERSIFIERS` → `DIVERSIFIERS`
+
+(Leave the `selector.select_candidates` mention inside the docstring prose as-is or
+drop the `selector.` prefix — it's not executed.) Run `uv run python -m pytest
+tests/test_farmer.py -v` after this refactor to confirm the hybrid still fires
+(the dev-time behavior is unchanged; only the import style differs). Also verify no
+other file imports `templates`/`selector` as a module (grep: only name imports
+should remain).
+
+- [ ] **Step 4: Implement `build_submission.py`**
 
 Approach: concatenate the sibling modules in dependency order (`encoders`, `templates`, `engine`, `selector`, `attack`), strip their `from jed_attack.submission... import ...` lines and any `from __future__` duplicates, hoist a single `from __future__ import annotations` to the top, and keep all `aicomp_sdk`/stdlib imports (deduped).
 
@@ -2012,16 +2086,16 @@ if __name__ == "__main__":
 
 **Executor note:** the inlining strips `from __future__` from each module and re-adds one at the top. Ensure no module relies on a sibling symbol before it is defined — `_MODULE_ORDER` is the dependency order (encoders → templates → engine → selector → attack). If `ty`/`ruff` flags the generated file, that is fine — it is written to `dist/` (git-ignored), not linted; only the dev modules are linted.
 
-- [ ] **Step 4: Update the isolation test to use the built source**
+- [ ] **Step 5: Update the isolation test to use the built source**
 
 Apply the change described in Task 5 Step 5: `tests/test_submission_isolated.py::test_attack_imports_only_allowed_roots` parses `build_attack_source()` instead of the dev file. Keep `test_attack_defines_algorithm` as-is.
 
-- [ ] **Step 5: Run tests**
+- [ ] **Step 6: Run tests**
 
 Run: `uv run python -m pytest tests/test_build_submission.py tests/test_submission_isolated.py -v`
 Expected: PASS (all).
 
-- [ ] **Step 6: Build and validate the artifact end-to-end**
+- [ ] **Step 7: Build and validate the artifact end-to-end**
 
 ```bash
 uv run python -m jed_attack.scripts.build_submission
@@ -2035,7 +2109,7 @@ print('dist/attack.py parses; bytes:', len(src))
 
 Expected: `dist/attack.py` written and parses. Add `dist/` to `.gitignore`.
 
-- [ ] **Step 7: Full suite + commit**
+- [ ] **Step 8: Full suite + commit**
 
 Run: `uv run python -m pytest -v`
 Expected: all tests PASS.
