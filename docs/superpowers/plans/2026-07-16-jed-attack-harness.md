@@ -1583,7 +1583,7 @@ Replace `run`:
         Returns:
             The selected replayable attack candidates.
         """
-        timebox = Timebox(float(config.time_budget_s))
+        timebox = Timebox(float(config.time_budget_s) * _BUDGET_SAFETY)
         hops = int(config.max_tool_hops)
 
         engine = GoExplore(
@@ -1593,12 +1593,14 @@ Replace `run`:
         )
         engine.seed_from(env)
 
-        discovery_deadline = float(config.time_budget_s) * 0.5
-        discovery_box = Timebox(discovery_deadline)
+        # Discovery gets the first half of the (safety-adjusted) budget.
+        discovery_box = Timebox(float(config.time_budget_s) * _BUDGET_SAFETY * 0.5)
         while not discovery_box.expired() and not timebox.expired():
             engine.step(env)
 
-        farmed: list[Cell] = list(engine.archive.values())
+        # Only cells that actually fired a predicate are worth replaying (a
+        # non-firing candidate costs replay budget for zero score), so filter here.
+        farmed: list[Cell] = [cell for cell in engine.archive.values() if cell.predicates]
         for breach in engine.breached_cells():
             if timebox.expired():
                 break
@@ -1612,19 +1614,16 @@ Add module-level helpers in `attack.py`:
 
 ```python
 def _discovery_mutations() -> list[str]:
-    """Return the seed follow-up messages the discovery engine branches with.
+    """Return the injection-driving follow-up messages the engine branches with.
 
     Returns:
-        A list of candidate user messages covering read/exfil/send/benign moves.
+        Injection-page opens (which drive dangerous tool use via injected page
+        content) plus benign tool-varying moves that diversify the tool-call
+        signature into new scoring cells.
     """
-    schemes = templates.safe_schemes()
-    moves = [templates.read_secret_message()]
-    for sink_index in range(len(templates.SINK_DOMAINS)):
-        for scheme in schemes:
-            moves.append(templates.exfil_message(sink_index, scheme))
-    for recipient_index in range(len(templates.SINK_DOMAINS)):
-        moves.append(templates.send_email_message(recipient_index))
-    return moves
+    return [templates.open_page(page_id) for page_id in templates.INJECTION_PAGES] + list(
+        templates.DIVERSIFIERS
+    )
 
 
 def _farm_variants(
@@ -1635,8 +1634,9 @@ def _farm_variants(
 ) -> list[Cell]:
     """Mint tool-signature variants around a confirmed breach cell.
 
-    Replays the breach chain's variants from a clean reset, keeping those that
-    fire predicates with a novel scored hash.
+    Replays the breach's own message chain with each benign diversifier appended,
+    from a clean reset, keeping variants that still fire a predicate with a novel
+    scored cell hash.
 
     Args:
         env: The attack environment.
@@ -1651,32 +1651,31 @@ def _farm_variants(
 
     out: list[Cell] = []
     seen: set[str] = {breach.score_hash}
-    schemes = templates.safe_schemes()
-    for sink_index in range(len(templates.SINK_DOMAINS)):
-        for scheme in schemes:
-            if timebox.expired():
-                return out
-            env.reset()
-            for message in templates.exfil_chain(sink_index, scheme):
-                env.interact(message, max_tool_hops=hops)
-            trace = env.export_trace_dict()
-            key = score_hash(trace)
-            if key in seen:
-                continue
-            predicates = eval_predicates(trace)
-            if not predicates:
-                continue
-            seen.add(key)
-            out.append(
-                Cell(
-                    snapshot=None,
-                    user_messages=list(trace["user_messages"]),
-                    score_hash=key,
-                    depth=breach.depth + 1,
-                    breached=is_breach(trace, predicates),
-                    predicates=predicates,
-                )
+    base_chain = list(breach.user_messages)
+    for diversifier in templates.DIVERSIFIERS:
+        if timebox.expired():
+            return out
+        env.reset()
+        for message in [*base_chain, diversifier]:
+            env.interact(message, max_tool_hops=hops)
+        trace = env.export_trace_dict()
+        key = score_hash(trace)
+        if key in seen:
+            continue
+        predicates = eval_predicates(trace)
+        if not predicates:
+            continue
+        seen.add(key)
+        out.append(
+            Cell(
+                snapshot=None,
+                user_messages=list(trace["user_messages"]),
+                score_hash=key,
+                depth=breach.depth + 1,
+                breached=is_breach(trace, predicates),
+                predicates=predicates,
             )
+        )
     return out
 ```
 
