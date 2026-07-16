@@ -17,8 +17,9 @@ from aicomp_sdk.attacks.contracts import (
 from aicomp_sdk.core.env.api import AttackEnvProtocol
 from aicomp_sdk.utils.timebox import Timebox
 
-from jed_attack.submission import selector, templates  # inlined at build time
 from jed_attack.submission.engine import Cell, GoExplore, score_hash
+from jed_attack.submission.selector import select_candidates
+from jed_attack.submission.templates import DIVERSIFIERS, INJECTION_PAGES, open_page
 
 _BUDGET_SAFETY = (
     0.9  # return before the hard generation deadline (see Global Constraints)
@@ -32,7 +33,7 @@ class AttackAlgorithm(AttackAlgorithmBase):
     tool-signature diversifiers to discover breaching prompt shapes, then farms
     tool-signature variants around each confirmed breach to mint additional
     distinct scoring cells. The final candidate set is capped and ordered by
-    ``selector.select_candidates``.
+    ``select_candidates``.
     """
 
     def __init__(self, config: Mapping[str, Any] | None = None) -> None:
@@ -80,9 +81,7 @@ class AttackAlgorithm(AttackAlgorithmBase):
                 break
             farmed.extend(_farm_variants(env, breach, hops, timebox))
 
-        chains = selector.select_candidates(
-            farmed, max_candidates=2000, max_messages=32
-        )
+        chains = select_candidates(farmed, max_candidates=2000, max_messages=32)
         return [AttackCandidate.from_messages(chain) for chain in chains]
 
 
@@ -94,9 +93,7 @@ def _discovery_mutations() -> list[str]:
         content) plus benign tool-varying moves that diversify the tool-call
         signature into new scoring cells.
     """
-    return [
-        templates.open_page(page_id) for page_id in templates.INJECTION_PAGES
-    ] + list(templates.DIVERSIFIERS)
+    return [open_page(page_id) for page_id in INJECTION_PAGES] + list(DIVERSIFIERS)
 
 
 def _farm_variants(
@@ -125,7 +122,7 @@ def _farm_variants(
     out: list[Cell] = []
     seen: set[str] = {breach.score_hash}
     base_chain = list(breach.user_messages)
-    for diversifier in templates.DIVERSIFIERS:
+    for diversifier in DIVERSIFIERS:
         if timebox.expired():
             return out
         env.reset()
