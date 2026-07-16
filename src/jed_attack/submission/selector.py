@@ -9,8 +9,6 @@ The attack's replay-budget cap then truncates this best-first list to what actua
 replays within the evaluator's time budget.
 """
 
-from __future__ import annotations
-
 from collections.abc import Sequence
 
 from jed_attack.submission.engine import Cell

@@ -4,8 +4,6 @@ This module is inlined into a single self-contained file at build time and must
 import only ``aicomp_sdk`` and the standard library.
 """
 
-from __future__ import annotations
-
 import time
 from collections.abc import Mapping
 from typing import Any

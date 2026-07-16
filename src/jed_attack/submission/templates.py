@@ -8,8 +8,6 @@ signature) without undoing an already-fired predicate. Kept import-free of the
 harness so it inlines cleanly into the single-file submission.
 """
 
-from __future__ import annotations
-
 # Injection pages in web_corpus.json whose content drives dangerous tool use.
 # A broad set (not all fire on every agent/guardrail); the farmer probes and
 # keeps the ones that fire. Verified firing on the deterministic agent under a

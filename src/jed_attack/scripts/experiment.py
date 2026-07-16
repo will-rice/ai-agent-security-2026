@@ -6,8 +6,6 @@ scorer), writes a ``submission.csv``-style summary, and appends each run to the
 JSONL archive for comparison across experiments.
 """
 
-from __future__ import annotations
-
 import argparse
 import logging
 from pathlib import Path

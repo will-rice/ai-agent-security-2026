@@ -5,8 +5,6 @@ snapshot so we return to a promising state via restore() rather than re-running 
 whole prefix through the model. Selection favors low-visit, breach-adjacent cells.
 """
 
-from __future__ import annotations
-
 import random
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field

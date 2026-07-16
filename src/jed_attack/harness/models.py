@@ -7,8 +7,6 @@ around the same Q4_K_M GGUF files, matching
 ``kaggle_evaluation/jed_attack_134815/gguf_model_server.py``.
 """
 
-from __future__ import annotations
-
 import json
 import os
 import urllib.request
