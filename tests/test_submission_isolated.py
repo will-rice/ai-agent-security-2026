@@ -1,7 +1,6 @@
 """Guards that the submission depends only on aicomp_sdk + stdlib."""
 
 import ast
-import subprocess
 import sys
 from pathlib import Path
 
@@ -11,6 +10,7 @@ SUBMISSION = Path(__file__).resolve().parents[1] / "src/jed_attack/submission/at
 def test_attack_defines_algorithm() -> None:
     """attack.py defines an AttackAlgorithm subclassing the SDK base."""
     from aicomp_sdk.attacks.contracts import AttackAlgorithmBase
+
     from jed_attack.submission.attack import AttackAlgorithm
 
     assert issubclass(AttackAlgorithm, AttackAlgorithmBase)
