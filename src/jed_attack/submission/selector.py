@@ -72,7 +72,7 @@ def select_candidates(
         if not cell.user_messages or len(cell.user_messages) > max_messages:
             continue
         if _severity(cell) <= 0:
-            continue  # non-firing: repeating it would waste replay budget for zero score
+            continue  # non-firing: repeating it would waste replay budget
         current = best_by_hash.get(cell.score_hash)
         if current is None or _severity(cell) > _severity(current):
             best_by_hash[cell.score_hash] = cell

@@ -9,7 +9,9 @@ around the same Q4_K_M GGUF files, matching
 
 from __future__ import annotations
 
+import json
 import os
+import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -150,3 +152,138 @@ def gguf_agent_factory(
         return make_agent(backend)
 
     return factory
+
+
+def _resolve_agent(model_key: str) -> tuple[str, Callable[[Any], AgentProtocol]]:
+    """Return the SDK model id and agent constructor for a model key.
+
+    Args:
+        model_key: ``"gpt_oss"`` or ``"gemma_4"``.
+
+    Returns:
+        A ``(model_id, agent_constructor)`` pair from the SDK.
+
+    Raises:
+        ValueError: If ``model_key`` is unknown.
+    """
+    if model_key == "gpt_oss":
+        from aicomp_sdk.agents.gpt_oss_agent import (
+            DEFAULT_GPT_OSS_MODEL_ID,
+            GPTOSSAgent,
+        )
+
+        return DEFAULT_GPT_OSS_MODEL_ID, GPTOSSAgent
+    if model_key == "gemma_4":
+        from aicomp_sdk.agents.gemma4_agent import DEFAULT_GEMMA4_MODEL_ID, Gemma4Agent
+
+        return DEFAULT_GEMMA4_MODEL_ID, Gemma4Agent
+    raise ValueError(f"unknown model_key: {model_key}")
+
+
+class _LlamaServerClient:
+    """Minimal OpenAI-compatible client for a running ``llama-server`` instance.
+
+    Exposes ``create_chat_completion`` with the same signature and return shape as
+    ``llama_cpp.Llama.create_chat_completion``, so it drops straight into the SDK's
+    ``LlamaCppChatTemplateBackend`` — the SDK does all message/tool conversion and
+    response parsing, keeping behavior identical to the in-process llama.cpp path.
+    """
+
+    def __init__(
+        self, base_url: str, *, model: str = "local", timeout: float = 600.0
+    ) -> None:
+        """Store the endpoint.
+
+        Args:
+            base_url: The server's OpenAI base, e.g. ``http://localhost:8080/v1``.
+            model: The ``model`` field to send (llama-server serves one model).
+            timeout: Per-request timeout in seconds.
+        """
+        self._url = base_url.rstrip("/") + "/chat/completions"
+        self._model = model
+        self._timeout = timeout
+
+    def create_chat_completion(self, **kwargs: object) -> dict[str, Any]:
+        """POST a chat-completion request to the server and return the JSON dict.
+
+        Args:
+            **kwargs: The OpenAI chat-completion body (messages, tools, max_tokens...).
+
+        Returns:
+            The parsed OpenAI-shaped completion dict.
+        """
+        body = json.dumps({"model": self._model, **kwargs}).encode("utf-8")
+        request = urllib.request.Request(
+            self._url,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=self._timeout) as response:
+            return json.loads(response.read())
+
+    def close(self) -> None:
+        """No persistent resources to release."""
+
+
+def llama_server_agent_factory(
+    model_key: str,
+    base_url: str,
+    *,
+    model: str = "local",
+    max_new_tokens: int = 1024,
+) -> Callable[[], AgentProtocol]:
+    """Build agents backed by a running ``llama-server`` (llama.cpp over HTTP).
+
+    Same fidelity as the in-process GGUF factory — it reuses the SDK's
+    ``LlamaCppChatTemplateBackend`` and real ``GPTOSSAgent``/``Gemma4Agent``, only
+    swapping the inference call to an HTTP request. The server holds the model
+    resident, so nothing reloads per candidate. Point ``base_url`` at a server
+    launched with ``--jinja`` on the exact Q4_K_M GGUF (see ``docs/serving.md``).
+
+    Args:
+        model_key: ``"gpt_oss"`` or ``"gemma_4"``.
+        base_url: The server's OpenAI base, e.g. ``http://localhost:8080/v1``.
+        model: The ``model`` field to send in requests.
+        max_new_tokens: Generation cap (Kaggle uses 1024).
+
+    Returns:
+        A zero-arg callable returning a fresh SDK agent bound to the server.
+    """
+    from aicomp_sdk.agents.hf_chat_template.backends.llama_cpp import (
+        LlamaCppChatTemplateBackend,
+    )
+    from aicomp_sdk.agents.hf_chat_template.types import HFBackendConfig
+
+    model_id, make_agent = _resolve_agent(model_key)
+    config = HFBackendConfig(
+        model_id=model_id, model_path="", max_new_tokens=max_new_tokens
+    )
+    backend = LlamaCppChatTemplateBackend(
+        llm=_LlamaServerClient(base_url, model=model),
+        config=config,
+        supports_tools=True,
+    )
+
+    def factory() -> AgentProtocol:
+        """Build a fresh agent over the shared llama-server backend."""
+        return make_agent(backend)
+
+    return factory
+
+
+def resolve_base_url(model_key: str, override: str | None = None) -> str:
+    """Resolve a llama-server base URL from an override or env var.
+
+    Args:
+        model_key: ``"gpt_oss"`` or ``"gemma_4"``.
+        override: Explicit base URL, if given.
+
+    Returns:
+        The resolved base URL (env default: gpt_oss=:8080, gemma_4=:8081).
+    """
+    if override:
+        return override
+    env_var = "GPT_OSS_BASE_URL" if model_key == "gpt_oss" else "GEMMA_BASE_URL"
+    default_port = "8080" if model_key == "gpt_oss" else "8081"
+    return os.environ.get(env_var, f"http://localhost:{default_port}/v1")
