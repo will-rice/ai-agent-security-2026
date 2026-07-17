@@ -31,7 +31,7 @@ _log = logging.getLogger("produce")
 # Posts per candidate. 5 is the validated sweet spot: both models comply cleanly and
 # stop, and it stays under the 8-hop replay ceiling with headroom.
 POSTS_PER_CANDIDATE = 5
-_PRODUCE_WORKERS = 4  # concurrent probes; the two llama-servers are the real ceiling
+_PRODUCE_WORKERS = config.REPLAY_WORKERS  # fill the server's batch slots (see config)
 
 # The validated multi-post template. "Do all N posts." drives compliance; the one-word
 # "answer OK only." terminal collapses the wrap-up generation (cheaper per candidate).

@@ -47,7 +47,7 @@ from jed_attack.harness.models import llama_server_agent_factory, resolve_base_u
 _log = logging.getLogger("score")
 _SEED = 123  # match the gate / Kaggle env seed
 _HOPS = config.EVAL_HOPS  # match the scored gateway (8); see config.EVAL_HOPS
-_REPLAY_WORKERS = 4  # concurrent replays; the 2 llama-servers are the real ceiling
+_REPLAY_WORKERS = config.REPLAY_WORKERS  # fill the server's batch slots (see config)
 
 # Severity weights and predicate->severity for the cheap ledger score.
 # UNTRUSTED_TO_ACTION is 4 or 5 depending on the sink; we take the higher (a slight

@@ -1,12 +1,14 @@
 """Gate daemon: validate un-verdicted harvest candidates on both models × guardrails.
 
-The sole GPU consumer among the daemons (besides producers). Runs serially; new or
-changed harvest candidates are gated into the ledger, existing verdicts skipped.
+The heaviest GPU consumer among the daemons. Un-verdicted harvest candidates are
+gated concurrently (``config.REPLAY_WORKERS`` at a time) so the replays fill the
+llama-server's continuous-batching slots; existing verdicts are skipped.
 """
 
 import json
 import logging
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from jed_attack.campaign import config, gate, knowledge
@@ -57,28 +59,39 @@ def gate_once() -> int:
         return 0
     done = _verdicted()
     factories = _factories()
-    gated = 0
+    pending: list[dict[str, Any]] = []
     for line in config.HARVEST_FILE.read_text(encoding="utf-8").splitlines():
         try:
             cand = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if str(cand.get("chain_id")) in done:
-            continue
-        verdict = gate.gate_chain(
+        if str(cand.get("chain_id")) not in done:
+            pending.append(cand)
+    if not pending:
+        return 0
+
+    # Gate candidates concurrently so the replays fill the server's batch slots; the
+    # ledger/knowledge writes stay on this thread (after each future) so the append-only
+    # jsonl is never interleaved. gate_chain itself is read-only against shared state.
+    def _gate(cand: dict[str, Any]) -> gate.Verdict:
+        return gate.gate_chain(
             cand["chain"], factories, producer=str(cand.get("producer", ""))
         )
-        gate.write_verdict(verdict)
-        knowledge.record_gate_lesson(verdict)  # feed the oracle's signal to producers
-        _log.info(
-            "gated %s adopted=%s robust_sev=%d",
-            verdict.chain_id,
-            verdict.adopted,
-            verdict.robust_severity,
-        )
-        gated += 1
-    _log.info("gated %d new candidates", gated)
-    return gated
+
+    with ThreadPoolExecutor(max_workers=config.REPLAY_WORKERS) as executor:
+        for verdict in executor.map(_gate, pending):
+            gate.write_verdict(verdict)
+            knowledge.record_gate_lesson(
+                verdict
+            )  # feed the oracle's signal to producers
+            _log.info(
+                "gated %s adopted=%s robust_sev=%d",
+                verdict.chain_id,
+                verdict.adopted,
+                verdict.robust_severity,
+            )
+    _log.info("gated %d new candidates", len(pending))
+    return len(pending)
 
 
 def main() -> None:
