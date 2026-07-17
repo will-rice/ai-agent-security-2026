@@ -23,6 +23,7 @@ import logging
 import time
 from collections import Counter
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from statistics import mean
 from typing import Any, cast
@@ -45,6 +46,7 @@ from jed_attack.harness.models import llama_server_agent_factory, resolve_base_u
 _log = logging.getLogger("score")
 _SEED = 123  # match the gate / Kaggle env seed
 _HOPS = 4
+_REPLAY_WORKERS = 4  # concurrent replays; the 2 llama-servers are the real ceiling
 
 # Severity weights and predicate->severity for the cheap ledger score. UNTRUSTED_TO_ACTION
 # is 4 or 5 depending on the sink; we take the higher (a slight over-estimate when it fires).
@@ -286,26 +288,41 @@ def predict_public_score(
     cache_path = cache_path or config.SCORE_CACHE
     chains = assemble.ship_pool_chains(cap)
     cache = _load_cache(cache_path)
+    factories = {m: llama_server_agent_factory(m, resolve_base_url(m)) for m in models}
+
+    # Replay a bounded batch of uncached (chain, model) cells CONCURRENTLY, then
+    # aggregate the score from the cache. Concurrency is capped low: the two
+    # llama-servers are the bottleneck, so a few workers saturate them without
+    # deepening contention with the campaign fleet. Cache writes stay on this
+    # thread (after each future) so the jsonl append is never interleaved.
+    pending = [
+        (key, chain, m)
+        for m in models
+        for chain in chains
+        if (key := f"{chain_id(chain)}:{m}") not in cache
+    ]
+    uncached = max(0, len(pending) - max_new_replays)
+    batch = pending[:max_new_replays]
+    with ThreadPoolExecutor(max_workers=_REPLAY_WORKERS) as executor:
+        futures = {
+            executor.submit(_replay_public, chain, factories[m]): key
+            for key, chain, m in batch
+        }
+        for future in as_completed(futures):
+            key = futures[future]
+            record = future.result()
+            _append_json(cache_path, {"key": key, **record})
+            cache[key] = record
+    new_replays = len(batch)
+
     cells: dict[str, Any] = {}
-    new_replays = 0
-    uncached = 0
     for model_key in models:
-        agent_factory = llama_server_agent_factory(
-            model_key, resolve_base_url(model_key)
-        )
         raw_severity = 0
         cell_hashes: set[str] = set()
         for chain in chains:
-            key = f"{chain_id(chain)}:{model_key}"
-            record = cache.get(key)
+            record = cache.get(f"{chain_id(chain)}:{model_key}")
             if record is None:
-                if new_replays >= max_new_replays:
-                    uncached += 1
-                    continue  # bounded: leave for a later cycle (contributes 0 now)
-                record = _replay_public(chain, agent_factory)
-                _append_json(cache_path, {"key": key, **record})
-                cache[key] = record
-                new_replays += 1
+                continue  # still uncached this cycle → contributes 0
             raw_severity += int(record["severity"])
             if record["cell"]:
                 cell_hashes.add(str(record["cell"]))
