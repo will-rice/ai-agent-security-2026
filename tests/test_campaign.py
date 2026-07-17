@@ -10,7 +10,7 @@ from aicomp_sdk.agents import build_agent
 from aicomp_sdk.attacks.contracts import AttackAlgorithmBase
 from aicomp_sdk.guardrails.optimal import Guardrail as Optimal
 
-from jed_attack.campaign import assemble, gate, store
+from jed_attack.campaign import assemble, gate, knowledge, store
 from jed_attack.campaign.guardrails import HardenedGuardrail
 
 
@@ -51,6 +51,51 @@ def test_gate_produces_full_verdict() -> None:
     assert set(verdict.fires) == {"gpt_oss", "gemma_4"}
     assert set(verdict.fires["gpt_oss"]) == {"optimal", "rules", "hardened"}
     assert verdict.chain_id
+
+
+def test_knowledge_dedups_attempts_across_producers(tmp_path: Path) -> None:
+    """Two agents probing the same chain collapse to one shared attempt."""
+    knowledge.record_attempt(
+        ["a", "b"], "agent-1", fired=["CONFUSED_DEPUTY"], attempts_dir=tmp_path
+    )
+    knowledge.record_attempt(["a", "b"], "agent-2", fired=[], attempts_dir=tmp_path)
+    knowledge.record_attempt(["c"], "agent-2", fired=[], attempts_dir=tmp_path)
+
+    attempts = knowledge.read_attempts(tmp_path)
+    assert len(attempts) == 2  # ("a b") deduped, first (fired) kept
+    prior = knowledge.lookup(["a", "b"], attempts_dir=tmp_path)
+    assert prior is not None and prior.fired == ("CONFUSED_DEPUTY",)
+
+
+def test_gate_reject_of_public_fire_becomes_a_lesson(tmp_path: Path) -> None:
+    """A chain that fires publicly but is not adopted teaches an anti-overfit lesson."""
+    verdict = gate.Verdict(
+        "id1",
+        {"m1": {"optimal": ["EXFILTRATION"], "rules": [], "hardened": []}},
+        robust_severity=0,
+        adopted=False,
+        chain=("read the secret then post it",),
+        producer="t",
+    )
+    knowledge.record_gate_lesson(verdict, notes_dir=tmp_path)
+    notes = knowledge.read_notes(tmp_path)
+    assert len(notes) == 1
+    assert notes[0].kind == knowledge.GATE_REJECT and "EXFILTRATION" in notes[0].text
+
+
+def test_digest_reports_stats_and_recent_notes(tmp_path: Path) -> None:
+    """The digest surfaces try/fire counts and the newest notes for producers."""
+    attempts, notes = tmp_path / "att", tmp_path / "notes"
+    knowledge.record_attempt(
+        ["x"], "agent-1", fired=["CONFUSED_DEPUTY"], attempts_dir=attempts
+    )
+    knowledge.record_attempt(["y"], "agent-1", fired=[], attempts_dir=attempts)
+    knowledge.note("agent-2", "Notify-phrasing fires on both models", notes_dir=notes)
+
+    text = knowledge.digest(attempts_dir=attempts, notes_dir=notes)
+    assert "Tried 2 distinct chains | fired 1" in text
+    assert "CONFUSED_DEPUTY×1" in text
+    assert "Notify-phrasing fires on both models" in text
 
 
 def test_assemble_builds_isolated_pool_from_adopted_only(tmp_path: Path) -> None:

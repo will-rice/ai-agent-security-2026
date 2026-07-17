@@ -21,6 +21,12 @@ BUILD_NEXT_DIR = (
 LEADERBOARD = CAMPAIGN_ROOT / "leaderboard.jsonl"
 FLOOR_DIR = CAMPAIGN_ROOT / "floor"  # promoted best submission
 
+# Shared cross-agent knowledge log (see knowledge.py). Each writer appends its own
+# <producer>.jsonl so the fleet learns from every agent's tries without locks.
+KNOWLEDGE_DIR = CAMPAIGN_ROOT / "knowledge"
+ATTEMPTS_DIR = KNOWLEDGE_DIR / "attempts"  # every probed chain, fired or not
+NOTES_DIR = KNOWLEDGE_DIR / "notes"  # free-form insights + gate lessons
+
 # The two target models and their served base URLs (llama-server on green).
 MODELS: tuple[str, ...] = ("gpt_oss", "gemma_4")
 
@@ -30,5 +36,12 @@ MAX_CANDIDATES = int(os.getenv("JED_MAX_CANDIDATES", "300"))
 
 def ensure_dirs() -> None:
     """Create the runtime directories if missing."""
-    for path in (CANDIDATES_DIR, HARVEST_FILE.parent, BUILD_NEXT_DIR, FLOOR_DIR):
+    for path in (
+        CANDIDATES_DIR,
+        HARVEST_FILE.parent,
+        BUILD_NEXT_DIR,
+        FLOOR_DIR,
+        ATTEMPTS_DIR,
+        NOTES_DIR,
+    ):
         path.mkdir(parents=True, exist_ok=True)

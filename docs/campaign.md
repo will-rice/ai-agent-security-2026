@@ -97,8 +97,26 @@ attack, and never see the gate's hardened guardrails (anti-overfit: they optimiz
 judges robustness). Producers still run in worktrees on branch `exp-agentN`, but commit only their
 emitted-candidate files, not attack.py.
 
+## Shared knowledge log (`campaign/knowledge.py`)
+
+The store keeps only chains that **fire**; the knowledge log keeps everything else so the fleet
+learns from every agent instead of re-deriving it. Same lock-free concurrency as the store (each
+writer appends its own `run/knowledge/{attempts,notes}/<producer>.jsonl`; readers glob + dedup):
+
+- **attempts** — every chain anyone probed, fired or not. `try_emit` consults this first and returns
+  the cached outcome instead of re-probing a chain the fleet already tried (a fleet-wide memo that
+  cuts redundant GPU probing ~N-fold and *is* the "learn from what others tried" mechanism).
+- **notes** — free-form agent insights / dead ends, plus **gate lessons** the gate daemon writes
+  automatically: when a chain fires on the public guardrail but the strict gate rejects it, that
+  anti-overfit trap becomes a `gate_reject` note — feeding the private oracle's signal back to
+  producers who otherwise only see `OptimalGuardrail`.
+
+Producers read `python -m jed_attack.campaign.knowledge` (the `digest`: try/fire stats + newest
+notes) before exploring, and call `knowledge.note(...)` when they find a technique or a dead end.
+
 ## Layout (`src/jed_attack/campaign/`)
 
 `store.py` · `guardrails.py` · `gate.py` · `assemble.py` · `promote.py` · `score_api.py` ·
-`config.py` (roots/models/paths, env-overridable) · daemon entrypoints (`harvest.py`, `gate_daemon.py`,
-`assemble_daemon.py`, `score_watch.py`, `orchestrator.py`). `run/` holds all runtime state (git-ignored).
+`knowledge.py` (shared cross-agent log) · `config.py` (roots/models/paths, env-overridable) · daemon
+entrypoints (`harvest.py`, `gate_daemon.py`, `assemble_daemon.py`, `score_watch.py`, `orchestrator.py`).
+`run/` holds all runtime state (git-ignored).

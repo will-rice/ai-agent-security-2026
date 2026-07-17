@@ -9,7 +9,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from jed_attack.campaign import config, gate
+from jed_attack.campaign import config, gate, knowledge
 from jed_attack.campaign.daemon import run_daemon
 from jed_attack.harness.models import llama_server_agent_factory, resolve_base_url
 
@@ -69,6 +69,7 @@ def gate_once() -> int:
             cand["chain"], factories, producer=str(cand.get("producer", ""))
         )
         gate.write_verdict(verdict)
+        knowledge.record_gate_lesson(verdict)  # feed the oracle's signal to producers
         _log.info(
             "gated %s adopted=%s robust_sev=%d",
             verdict.chain_id,
