@@ -37,6 +37,7 @@ while true; do
   start_daemon gate gate_daemon
   start_daemon assemble assemble_daemon
   start_daemon scorewatch score_watch
+  start_daemon scoredaemon score_daemon
   for n in $(seq 1 "$N"); do start_producer "$n"; done
   sleep 60
 done

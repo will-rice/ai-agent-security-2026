@@ -60,6 +60,22 @@ class AttackAlgorithm(AttackAlgorithmBase):
 '''
 
 
+def ship_pool_chains(cap: int, ledger: Path | None = None) -> list[tuple[str, ...]]:
+    """Return the single-message ship-pool candidate chains (best-severity first).
+
+    The exact candidate set the submission would return, for the calibrated scorer
+    to replay. Same selection as ``assemble(single_message=True, cap=cap)``.
+
+    Args:
+        cap: Max candidates.
+        ledger: Override gate-ledger path.
+
+    Returns:
+        The candidate chains (each a 1-tuple message).
+    """
+    return [chain for chain, _ in _pool_chains(read_adopted(ledger), True, cap)]
+
+
 def _pool_chains(
     adopted: list[Verdict], single_message: bool, cap: int
 ) -> list[tuple[tuple[str, ...], str]]:

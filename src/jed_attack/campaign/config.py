@@ -33,6 +33,11 @@ MODELS: tuple[str, ...] = ("gpt_oss", "gemma_4")
 # Returned-candidate ceiling for the assembled submission (see docs/strategy.md).
 MAX_CANDIDATES = int(os.getenv("JED_MAX_CANDIDATES", "300"))
 
+# Calibrated-score daemon: the single-message ship pool it scores + its result/cache.
+SCORE_CAP = int(os.getenv("JED_SCORE_CAP", "300"))
+SCORE_FILE = CAMPAIGN_ROOT / "score.json"  # latest calibrated public-LB prediction
+SCORE_CACHE = CAMPAIGN_ROOT / "score_cache.jsonl"  # per-(message,model) replay cache
+
 
 def ensure_dirs() -> None:
     """Create the runtime directories if missing."""
