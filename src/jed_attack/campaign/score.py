@@ -263,27 +263,32 @@ def predict_public_score(
     cap: int = config.SCORE_CAP,
     models: tuple[str, ...] = config.MODELS,
     cache_path: Path | None = None,
+    max_new_replays: int = 40,
 ) -> dict[str, Any]:
     """Predict the public LB for the single-message ship pool, using a replay cache.
 
     Single-message replays are deterministic (greedy decoding), so each
-    ``(message, model)`` result is cached forever — after a warmup, only
-    newly-adopted messages replay. This is the calibrated prediction the score
-    daemon keeps fresh (matches Kaggle public LB; validated 3.67 vs 3.675).
+    ``(message, model)`` result is cached forever. Each call replays at most
+    ``max_new_replays`` uncached candidates (so the daemon writes a fresh, climbing
+    number every cycle instead of blocking on a full warmup); still-uncached
+    candidates contribute 0 this call, so the score is a lower bound until warm.
+    Validated: matches Kaggle public LB (3.67 vs 3.675).
 
     Args:
         cap: Ship-pool candidate cap.
         models: Models to score (public guardrail = OptimalGuardrail).
         cache_path: Override for the per-(message,model) cache.
+        max_new_replays: Replay budget per call (0 = aggregate from cache only).
 
     Returns:
-        ``{public_lb, candidates, new_replays, cells}``.
+        ``{public_lb, candidates, new_replays, uncached, cells}``.
     """
     cache_path = cache_path or config.SCORE_CACHE
     chains = assemble.ship_pool_chains(cap)
     cache = _load_cache(cache_path)
     cells: dict[str, Any] = {}
     new_replays = 0
+    uncached = 0
     for model_key in models:
         agent_factory = llama_server_agent_factory(
             model_key, resolve_base_url(model_key)
@@ -294,6 +299,9 @@ def predict_public_score(
             key = f"{chain_id(chain)}:{model_key}"
             record = cache.get(key)
             if record is None:
+                if new_replays >= max_new_replays:
+                    uncached += 1
+                    continue  # bounded: leave for a later cycle (contributes 0 now)
                 record = _replay_public(chain, agent_factory)
                 _append_json(cache_path, {"key": key, **record})
                 cache[key] = record
@@ -313,6 +321,7 @@ def predict_public_score(
         "method": "replay-cached",
         "candidates": len(chains),
         "new_replays": new_replays,
+        "uncached": uncached,
         "cells": cells,
         "public_lb": round(public_lb, 3),
     }
