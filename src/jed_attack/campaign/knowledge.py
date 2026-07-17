@@ -34,7 +34,9 @@ DEADEND = "deadend"
 GATE_REJECT = "gate_reject"
 GATE_ADOPT = "gate_adopt"
 
-_ADOPT_LESSON_MIN_SEVERITY = 8  # only log adoptions worth imitating (>= a sev-4 predicate)
+_ADOPT_LESSON_MIN_SEVERITY = (
+    8  # only log adoptions worth imitating (>= a sev-4 predicate)
+)
 _PREVIEW_CHARS = 140
 
 
@@ -86,7 +88,9 @@ def record_attempt(
         severities=dict(severities or {}),
         ts=time.time(),
     )
-    _append(asdict(attempt), (attempts_dir or config.ATTEMPTS_DIR) / f"{producer}.jsonl")
+    _append(
+        asdict(attempt), (attempts_dir or config.ATTEMPTS_DIR) / f"{producer}.jsonl"
+    )
 
 
 def read_attempts(attempts_dir: Path | None = None) -> dict[str, Attempt]:
@@ -247,11 +251,13 @@ def digest(
         f"missed {len(attempts) - len(fired)}",
         f"Fired predicates: {breakdown or '(none yet)'}",
         "",
-        f"Recent notes (newest first, gate lessons are authoritative):",
+        "Recent notes (newest first, gate lessons are authoritative):",
     ]
     notes = read_notes(notes_dir)[:max_notes]
     if not notes:
-        lines.append("  (no notes yet — be the first to record a technique or dead end)")
+        lines.append(
+            "  (no notes yet — be the first to record a technique or dead end)"
+        )
     for n in notes:
         lines.append(f"  [{n.kind} {n.producer}] {n.text}")
     return "\n".join(lines)

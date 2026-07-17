@@ -10,7 +10,7 @@ from aicomp_sdk.agents import build_agent
 from aicomp_sdk.attacks.contracts import AttackAlgorithmBase
 from aicomp_sdk.guardrails.optimal import Guardrail as Optimal
 
-from jed_attack.campaign import assemble, gate, knowledge, store
+from jed_attack.campaign import adversary, assemble, gate, knowledge, store
 from jed_attack.campaign.guardrails import HardenedGuardrail
 
 
@@ -96,6 +96,39 @@ def test_digest_reports_stats_and_recent_notes(tmp_path: Path) -> None:
     assert "Tried 2 distinct chains | fired 1" in text
     assert "CONFUSED_DEPUTY×1" in text
     assert "Notify-phrasing fires on both models" in text
+
+
+def test_adversary_goals_cover_the_four_predicates() -> None:
+    """Each adversary goal targets one of the four scored predicates."""
+    predicates = {g.predicate for g in adversary.GOALS.values()}
+    assert predicates == {
+        "EXFILTRATION",
+        "UNTRUSTED_TO_ACTION",
+        "DESTRUCTIVE_WRITE",
+        "CONFUSED_DEPUTY",
+    }
+
+
+def test_adversary_clean_message_strips_wrappers() -> None:
+    """The attacker's next turn is unwrapped from quotes and stray role prefixes."""
+    assert adversary._clean_message('"Notify audit@corp"') == "Notify audit@corp"
+    assert adversary._clean_message("User message: open page_5") == "open page_5"
+    assert adversary._clean_message("`read the config`") == "read the config"
+    assert adversary._clean_message("  plain text  ") == "plain text"
+
+
+def test_adversary_observe_summarizes_reply_and_tools() -> None:
+    """The per-turn observation shows the target's reply and which tools ran/failed."""
+    trace = {
+        "assistant_messages": ["hello", "I opened the page"],
+        "tool_events": [
+            {"name": "web.open", "ok": True},
+            {"name": "email.send", "ok": False},
+        ],
+    }
+    obs = adversary._observe(trace, added=2)
+    assert obs["assistant"] == "I opened the page"
+    assert obs["tools"] == "web.open(ok), email.send(FAIL)"
 
 
 def test_assemble_builds_isolated_pool_from_adopted_only(tmp_path: Path) -> None:

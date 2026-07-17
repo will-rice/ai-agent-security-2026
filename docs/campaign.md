@@ -114,9 +114,25 @@ writer appends its own `run/knowledge/{attempts,notes}/<producer>.jsonl`; reader
 Producers read `python -m jed_attack.campaign.knowledge` (the `digest`: try/fire stats + newest
 notes) before exploring, and call `knowledge.note(...)` when they find a technique or a dead end.
 
+## Adversarial turns (`campaign/adversary.py`)
+
+Fixed hand-scripted chains can't crack the guardrail-hard predicates (EXFILTRATION, DESTRUCTIVE_WRITE).
+The adversary runs an **adaptive multi-turn attack**: an attacker model (a served model re-prompted as
+a red-teamer) plays a live conversation against the target — each turn it reads the target's reply and
+which tools actually ran (`interact` + `export_trace_dict`), then writes the next escalating user
+message. `snapshot`/`restore` backtrack a stalled branch (a tree-of-attacks step). This is neurogolf's
+propose→refute loop mapped to JED: **the predicate is the sole acceptance; the attacker only proposes.**
+The SDK allows this because `AttackAlgorithm.run(env)` gets the live env at generation time, even though
+the scored artifact is a fixed message chain.
+
+A firing chain is emitted via the same `try_emit` path as every other candidate, so it flows into the
+knowledge log and the anti-overfit gate unchanged. Run: `python -m jed_attack.campaign.adversary
+<goal>` where goal ∈ {exfiltration, untrusted_to_action, destructive_write, confused_deputy};
+`--target both --sessions N --max-turns M --branch K`. Producers on the hard-predicate lanes invoke it.
+
 ## Layout (`src/jed_attack/campaign/`)
 
 `store.py` · `guardrails.py` · `gate.py` · `assemble.py` · `promote.py` · `score_api.py` ·
-`knowledge.py` (shared cross-agent log) · `config.py` (roots/models/paths, env-overridable) · daemon
-entrypoints (`harvest.py`, `gate_daemon.py`, `assemble_daemon.py`, `score_watch.py`, `orchestrator.py`).
-`run/` holds all runtime state (git-ignored).
+`knowledge.py` (shared cross-agent log) · `adversary.py` (adaptive multi-turn attacker) ·
+`config.py` (roots/models/paths, env-overridable) · daemon entrypoints (`harvest.py`, `gate_daemon.py`,
+`assemble_daemon.py`, `score_watch.py`, `orchestrator.py`). `run/` holds all runtime state (git-ignored).

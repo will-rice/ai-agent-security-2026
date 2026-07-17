@@ -270,6 +270,26 @@ def llama_server_agent_factory(
     return factory
 
 
+def llama_server_chat_client(
+    model_key: str, override: str | None = None, *, timeout: float = 600.0
+) -> _LlamaServerClient:
+    """Return a raw OpenAI-compatible chat client for a served model (no agent/tools).
+
+    Unlike the agent factories, this exposes plain ``create_chat_completion`` so
+    callers can prompt the model directly — used by the adversarial attacker to
+    generate its next user message from the target's observed behavior.
+
+    Args:
+        model_key: ``"gpt_oss"`` or ``"gemma_4"``.
+        override: Explicit base URL, if given.
+        timeout: Per-request timeout in seconds.
+
+    Returns:
+        A client whose ``create_chat_completion(**body)`` returns the OpenAI dict.
+    """
+    return _LlamaServerClient(resolve_base_url(model_key, override), timeout=timeout)
+
+
 def resolve_base_url(model_key: str, override: str | None = None) -> str:
     """Resolve a llama-server base URL from an override or env var.
 
