@@ -90,21 +90,28 @@ def _pool_chains(
         cap: Maximum number of candidates to include (budget cap).
 
     Returns:
-        Up to ``cap`` ``(chain, tag)`` pairs, best-severity first, deduped.
+        Up to ``cap`` ``(chain, tag)`` pairs, highest-value first, deduped. For
+        single-message pools, a sev-16 exfil candidate ranks above a sev-4
+        confused-deputy one (its own value, not its source chain's total), so the
+        capped budget fills with exfil first.
     """
-    pairs: list[tuple[tuple[str, ...], str]] = []
     seen: set[str] = set()
-    for verdict in adopted:
+    scored: list[tuple[tuple[int, int, int], tuple[str, ...], str]] = []
+    for order, verdict in enumerate(adopted):
         chains = _flatten(verdict) if single_message else [verdict.chain]
         for chain in chains:
             key = " ".join(chain)
             if key in seen:
                 continue
             seen.add(key)
-            pairs.append((chain, f"sev={verdict.robust_severity}"))
-            if len(pairs) >= cap:
-                return pairs
-    return pairs
+            tag = f"sev={verdict.robust_severity}"
+            # Rank by the CANDIDATE's own value first (exfil > confused-deputy), then
+            # source-chain severity, then adoption order. For whole chains the exfil
+            # flag is 0, so it degrades to the original severity ranking.
+            is_exfil = int("SECRET_MARKER" in chain[0].upper()) if single_message else 0
+            scored.append(((is_exfil, verdict.robust_severity, -order), chain, tag))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [(chain, tag) for _, chain, tag in scored[:cap]]
 
 
 _INDEPENDENT_PREDICATES = frozenset({"CONFUSED_DEPUTY", "EXFILTRATION"})
