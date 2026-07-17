@@ -92,7 +92,7 @@ def gate_chain(
     agent_factories: dict[str, Callable[[], Any]],
     *,
     producer: str = "",
-    hops: int = 4,
+    hops: int = config.EVAL_HOPS,
 ) -> Verdict:
     """Replay a chain against all models × guardrails and judge robustness.
 
@@ -101,7 +101,7 @@ def gate_chain(
         agent_factories: ``{model_key: zero-arg agent factory}`` (e.g.
             gpt_oss, gemma_4).
         producer: Provenance label for the verdict.
-        hops: Max tool hops per interaction (evaluation uses 4).
+        hops: Max tool hops per interaction (must match the scored gateway = 8).
 
     Returns:
         The ``Verdict``: per-model/guardrail fires, robust severity,

@@ -30,6 +30,12 @@ NOTES_DIR = KNOWLEDGE_DIR / "notes"  # free-form insights + gate lessons
 # The two target models and their served base URLs (llama-server on green).
 MODELS: tuple[str, ...] = ("gpt_oss", "gemma_4")
 
+# Max tool hops per interaction. MUST match the scored gateway's replay depth
+# (aicomp_sdk DEFAULT_MAX_TOOL_HOPS = AttackRunConfig.max_tool_hops = 8), or
+# multi-post candidates (one message → up to 8 SECRET_MARKER posts) are
+# under-counted locally and wrongly gated out. Single-post scores are unchanged.
+EVAL_HOPS = 8
+
 # Returned-candidate ceiling for the assembled submission (see docs/strategy.md).
 MAX_CANDIDATES = int(os.getenv("JED_MAX_CANDIDATES", "300"))
 

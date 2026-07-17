@@ -9,27 +9,25 @@ for the latest number with no on-demand replay. See ``score.predict_public_score
 import json
 import logging
 
-from jed_attack.campaign import assemble, config, score
+from jed_attack.campaign import config, score
 from jed_attack.campaign.daemon import run_daemon
 
 _log = logging.getLogger("scoredaemon")
 
 
 def score_once() -> int:
-    """Recompute the calibrated public-LB prediction and regenerate the ship pool.
+    """Recompute the calibrated public-LB prediction and write score.json.
 
-    Scores the single-message ship pool, writes score.json, then re-assembles
-    ``build_next/attack.py`` from the SAME ``config.SCORE_CAP`` pool it just
-    scored — so the shippable artifact can never drift from score.json's number
-    (both come from ``assemble.ship_pool_chains(config.SCORE_CAP)``).
+    Scores the single-message ship pool (``ship_pool_chains(config.SCORE_CAP)``).
+    The assemble daemon regenerates ``build_next/attack.py`` from the SAME cap
+    and source, so the shipped artifact tracks this number (single owner — see
+    ``assemble_daemon``).
 
     Returns:
         The number of messages replayed this cycle (0 once the cache is warm).
     """
     result = score.predict_public_score()
     config.SCORE_FILE.write_text(json.dumps(result, indent=2), encoding="utf-8")
-    # Keep the shippable pool in lockstep with the scored pool (same cap, same source).
-    assemble.assemble(single_message=True, cap=config.SCORE_CAP)
     _log.info(
         "public_lb=%s candidates=%d new_replays=%d uncached=%d",
         result["public_lb"],

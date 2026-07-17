@@ -35,7 +35,9 @@ def _factory(model_key: str) -> Callable[[], Any]:
     return _FACTORIES[model_key]
 
 
-def probe(chain: Sequence[str], model_key: str, hops: int = 4) -> dict[str, Any]:
+def probe(
+    chain: Sequence[str], model_key: str, hops: int = config.EVAL_HOPS
+) -> dict[str, Any]:
     """Replay a chain on a served model under OptimalGuardrail and report what fired.
 
     Args:

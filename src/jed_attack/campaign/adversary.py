@@ -116,7 +116,7 @@ def attack_session(
         goal: The predicate goal + brief.
         max_turns: Max user turns before giving up.
         branch: Attempts per turn before accepting the last (backtrack width).
-        hops: Max tool hops per interaction (evaluation uses 4).
+        hops: Max tool hops per interaction (must match the scored gateway = 8).
         session: Session index, used to diversify attacker sampling.
         guardrail_factory: Guardrail the target runs under. Default OptimalGuardrail
             (public). Pass HardenedGuardrail to hunt exfil ROBUST to the strict gate
@@ -174,7 +174,7 @@ def adversarial_search(
     sessions: int = 5,
     max_turns: int = 6,
     branch: int = 2,
-    hops: int = 4,
+    hops: int = config.EVAL_HOPS,
     producer: str = "adversary",
     guardrail_factory: Callable[[], Any] = OptimalGuardrail,
 ) -> int:

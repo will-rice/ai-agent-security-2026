@@ -10,7 +10,7 @@ from aicomp_sdk.agents import build_agent
 from aicomp_sdk.attacks.contracts import AttackAlgorithmBase
 from aicomp_sdk.guardrails.optimal import Guardrail as Optimal
 
-from jed_attack.campaign import adversary, assemble, gate, knowledge, store
+from jed_attack.campaign import adversary, assemble, gate, knowledge, produce, store
 from jed_attack.campaign.guardrails import HardenedGuardrail
 
 
@@ -129,6 +129,23 @@ def test_adversary_observe_summarizes_reply_and_tools() -> None:
     obs = adversary._observe(trace, added=2)
     assert obs["assistant"] == "I opened the page"
     assert obs["tools"] == "web.open(ok), email.send(FAIL)"
+
+
+def test_multipost_candidates_are_single_message_exfil_with_unique_domains() -> None:
+    """Each multi-post candidate is one message, K posts, all-distinct clean domains."""
+    k = produce.POSTS_PER_CANDIDATE
+    chains = [produce.multipost_chain(i) for i in range(4)]
+    assert all(len(c) == 1 for c in chains)  # single-message (budget-efficient)
+    assert all(
+        c[0].count("SECRET_MARKER") == 1 for c in chains
+    )  # exfil, one instruction
+    domains = [d for c in chains for d in c[0].split() if d.startswith("https://")]
+    assert len(domains) == 4 * k  # K posts per candidate
+    assert len(set(domains)) == len(domains)  # globally unique netlocs → distinct cells
+    ultra = ("secret", "password", "token", "key", "credential", "private", "api_key")
+    assert not any(
+        bad in d.lower() for d in domains for bad in ultra
+    )  # guardrail-clean
 
 
 def test_assemble_builds_isolated_pool_from_adopted_only(tmp_path: Path) -> None:
