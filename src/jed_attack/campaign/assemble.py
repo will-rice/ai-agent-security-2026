@@ -5,6 +5,9 @@ live search — it returns the adopted chains directly, severity-ranked and
 repeated to fill the candidate budget (severity-repetition; see
 docs/strategy.md). The emitted attack.py imports only ``aicomp_sdk`` +
 stdlib, so it satisfies the submission-isolation contract with no inlining.
+It prepends a Kaggle sys.path preamble (no-op off-Kaggle), so ``build_next``
+is directly shippable. The score daemon re-runs ``assemble`` every cycle from
+the same pool it scores, so the artifact never drifts from ``score.json``.
 """
 
 import json
@@ -17,6 +20,18 @@ _TEMPLATE = '''"""JED red-team submission — assembled from gate-adopted candid
 
 Do not edit — auto-generated from gate-adopted attack chains.
 """
+
+# Kaggle submission-isolation: the inference server imports this file in a fresh
+# process, so re-add the competition dataset (where aicomp_sdk lives) to sys.path.
+# Off-Kaggle the glob matches nothing, so this is a no-op.
+import sys, glob
+from pathlib import Path as _P
+
+for _c in glob.glob('/kaggle/input/**/kaggle_evaluation', recursive=True):
+    _r = str(_P(_c).parent)
+    if _r not in sys.path:
+        sys.path.insert(0, _r)
+    break
 
 from aicomp_sdk.attacks.contracts import (
     AttackAlgorithmBase,

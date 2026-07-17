@@ -142,6 +142,8 @@ def test_assemble_builds_isolated_pool_from_adopted_only(tmp_path: Path) -> None
     src = path.read_text()
 
     assert "'m1'" in src and "'m3'" not in src  # only adopted survived
+    # Directly Kaggle-shippable: carries the sys.path preamble (no-op off-Kaggle).
+    assert "glob.glob('/kaggle/input/**/kaggle_evaluation'" in src
     roots: set[str] = set()
     for node in ast.walk(ast.parse(src)):
         if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
