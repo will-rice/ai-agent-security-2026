@@ -60,39 +60,85 @@ class AttackAlgorithm(AttackAlgorithmBase):
 '''
 
 
-def _render_pool(adopted: list[Verdict]) -> str:
-    """Render adopted chains as Python tuple literals.
+def _pool_chains(
+    adopted: list[Verdict], single_message: bool, cap: int
+) -> list[tuple[tuple[str, ...], str]]:
+    """Select the (chain, tag) pairs to render into the submission pool.
 
     Args:
-        adopted: Adopted verdicts (severity-ranked).
+        adopted: Adopted verdicts (severity-ranked, best first).
+        single_message: If True, flatten every chain into one-message candidates
+            (each fires independently and replays far faster, so many more fit the
+            gateway's replay budget — the multi-message pool overran it). If False,
+            keep whole chains.
+        cap: Maximum number of candidates to include (budget cap).
+
+    Returns:
+        Up to ``cap`` ``(chain, tag)`` pairs, best-severity first, deduped.
+    """
+    pairs: list[tuple[tuple[str, ...], str]] = []
+    seen: set[str] = set()
+    for verdict in adopted:
+        chains = [(m,) for m in verdict.chain] if single_message else [verdict.chain]
+        for chain in chains:
+            key = " ".join(chain)
+            if key in seen:
+                continue
+            seen.add(key)
+            pairs.append((chain, f"sev={verdict.robust_severity}"))
+            if len(pairs) >= cap:
+                return pairs
+    return pairs
+
+
+def _render_pool(pairs: list[tuple[tuple[str, ...], str]]) -> str:
+    """Render (chain, tag) pairs as Python tuple literals.
+
+    Args:
+        pairs: The chains + severity tags to render.
 
     Returns:
         The indented pool body for the template.
     """
     lines = []
-    for verdict in adopted:
-        chain_literal = ", ".join(repr(msg) for msg in verdict.chain)
-        tag = f"sev={verdict.robust_severity}"
+    for chain, tag in pairs:
+        chain_literal = ", ".join(repr(msg) for msg in chain)
         lines.append(f"    ({chain_literal},),  # {tag}")
     return "\n".join(lines)
 
 
-def assemble(out_dir: Path | None = None, ledger: Path | None = None) -> Path:
+def assemble(
+    out_dir: Path | None = None,
+    ledger: Path | None = None,
+    *,
+    single_message: bool = False,
+    cap: int | None = None,
+) -> Path:
     """Build ``attack.py`` from the gate ledger's adopted candidates.
 
     Args:
         out_dir: Output dir for the built submission (defaults to config build_next).
         ledger: Override gate-ledger path.
+        single_message: Flatten chains into one-message candidates (budget-safe;
+            the multi-message pool overran the ~9000s gateway replay budget).
+        cap: Max candidates (defaults to ``config.MAX_CANDIDATES``). With
+            ``single_message`` this is the count of distinct one-message candidates
+            returned (no repetition), sized to fit the replay budget.
 
     Returns:
         The path to the written ``attack.py``.
     """
     adopted = read_adopted(ledger)
+    limit = cap if cap is not None else config.MAX_CANDIDATES
+    pairs = _pool_chains(adopted, single_message, limit)
     target = out_dir or config.BUILD_NEXT_DIR
     target.mkdir(parents=True, exist_ok=True)
+    # Single-message pools are returned once each (no repetition); whole-chain pools
+    # cycle to fill the candidate budget.
+    max_candidates = len(pairs) if single_message else limit
     source = _TEMPLATE.format(
-        pool=_render_pool(adopted),
-        max_candidates=config.MAX_CANDIDATES,
+        pool=_render_pool(pairs),
+        max_candidates=max_candidates,
     )
     attack_path = target / "attack.py"
     attack_path.write_text(source, encoding="utf-8")
