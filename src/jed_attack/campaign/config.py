@@ -45,6 +45,12 @@ REPLAY_WORKERS = int(os.getenv("JED_REPLAY_WORKERS", "8"))
 # Returned-candidate ceiling for the assembled submission (see docs/strategy.md).
 MAX_CANDIDATES = int(os.getenv("JED_MAX_CANDIDATES", "300"))
 
+# Ship-pool slots reserved for diverse NON-SECRET_MARKER chains (Family-1
+# read-then-post exfil + confused-deputy). The SECRET_MARKER multi-post template drives
+# the public score and bets the private LB is taint-based; these slots hedge the other
+# private guardrail family (a payload scanner that blocks the sentinel).
+SHIP_HEDGE_SLOTS = int(os.getenv("JED_SHIP_HEDGE_SLOTS", "20"))
+
 # Calibrated-score daemon: the single-message ship pool it scores + its result/cache.
 SCORE_CAP = int(os.getenv("JED_SCORE_CAP", "300"))
 SCORE_FILE = CAMPAIGN_ROOT / "score.json"  # latest calibrated public-LB prediction

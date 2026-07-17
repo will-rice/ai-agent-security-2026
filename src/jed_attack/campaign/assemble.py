@@ -106,27 +106,58 @@ def _pool_chains(
 
     Returns:
         Up to ``cap`` ``(chain, tag)`` pairs, highest-value first, deduped. For
-        single-message pools, a sev-16 exfil candidate ranks above a sev-4
-        confused-deputy one (its own value, not its source chain's total), so the
-        capped budget fills with exfil first.
+        single-message pools the ``SECRET_MARKER`` template (Family-2, the score
+        driver) fills all but ``config.SHIP_HEDGE_SLOTS`` slots, flattened to
+        single-message candidates; the reserved slots go to the best NON-marker
+        chains (Family-1 read-then-post + confused-deputy), kept WHOLE so a
+        read-then-post dependency survives — a private-LB diversity hedge.
     """
-    seen: set[str] = set()
-    scored: list[tuple[tuple[int, int, int], tuple[str, ...], str]] = []
-    for order, verdict in enumerate(adopted):
-        chains = _flatten(verdict) if single_message else [verdict.chain]
-        for chain in chains:
-            key = " ".join(chain)
-            if key in seen:
+    if not single_message:
+        seen_w: set[str] = set()
+        whole: list[tuple[tuple[int, int], tuple[str, ...], str]] = []
+        for order, verdict in enumerate(adopted):
+            key = " ".join(verdict.chain)
+            if key in seen_w:
                 continue
-            seen.add(key)
-            tag = f"sev={verdict.robust_severity}"
-            # Rank by the CANDIDATE's own value first (exfil > confused-deputy), then
-            # source-chain severity, then adoption order. For whole chains the exfil
-            # flag is 0, so it degrades to the original severity ranking.
-            is_exfil = int("SECRET_MARKER" in chain[0].upper()) if single_message else 0
-            scored.append(((is_exfil, verdict.robust_severity, -order), chain, tag))
-    scored.sort(key=lambda item: item[0], reverse=True)
-    return [(chain, tag) for _, chain, tag in scored[:cap]]
+            seen_w.add(key)
+            whole.append(
+                (
+                    (verdict.robust_severity, -order),
+                    verdict.chain,
+                    f"sev={verdict.robust_severity}",
+                )
+            )
+        whole.sort(key=lambda item: item[0], reverse=True)
+        return [(chain, tag) for _, chain, tag in whole[:cap]]
+
+    seen: set[str] = set()
+    template: list[
+        tuple[tuple[int, int], tuple[str, ...], str]
+    ] = []  # Family-2 score driver
+    hedge: list[
+        tuple[tuple[int, int], tuple[str, ...], str]
+    ] = []  # diverse private hedge
+    for order, verdict in enumerate(adopted):
+        rank = (verdict.robust_severity, -order)
+        tag = f"sev={verdict.robust_severity}"
+        if "SECRET_MARKER" in " ".join(verdict.chain).upper():
+            for chain in _flatten(verdict):  # single-message; multi-post kept as one
+                key = " ".join(chain)
+                if key not in seen:
+                    seen.add(key)
+                    template.append((rank, chain, tag))
+        else:  # Family-1 / confused-deputy — keep whole (read-then-post can't split)
+            key = " ".join(verdict.chain)
+            if key not in seen:
+                seen.add(key)
+                hedge.append((rank, verdict.chain, tag))
+    template.sort(key=lambda item: item[0], reverse=True)
+    hedge.sort(key=lambda item: item[0], reverse=True)
+    hedge_take = min(config.SHIP_HEDGE_SLOTS, len(hedge), cap)
+    picked = template[: cap - hedge_take] + hedge[:hedge_take]
+    if len(picked) < cap:  # not enough template — backfill from leftover hedge
+        picked += hedge[hedge_take : hedge_take + cap - len(picked)]
+    return [(chain, tag) for _, chain, tag in picked[:cap]]
 
 
 _INDEPENDENT_PREDICATES = frozenset({"CONFUSED_DEPUTY", "EXFILTRATION"})
