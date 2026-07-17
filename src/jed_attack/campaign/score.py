@@ -284,9 +284,10 @@ def main() -> None:
     out = config.CAMPAIGN_ROOT / "score.json"
     out.write_text(json.dumps(result, indent=2), encoding="utf-8")
     _log.info(
-        "public_lb=%s private_lb=%s -> %s",
+        "method=%s public_lb=%s private_lb=%s -> %s",
+        result.get("method", "replay"),
         result["public_lb"],
-        result["private_lb"],
+        result.get("private_lb"),
         out,
     )
     print(json.dumps(result, indent=2))  # noqa: T201 — CLI output for the operator
