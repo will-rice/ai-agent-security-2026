@@ -79,7 +79,7 @@ def _pool_chains(
     pairs: list[tuple[tuple[str, ...], str]] = []
     seen: set[str] = set()
     for verdict in adopted:
-        chains = [(m,) for m in verdict.chain] if single_message else [verdict.chain]
+        chains = _flatten(verdict) if single_message else [verdict.chain]
         for chain in chains:
             key = " ".join(chain)
             if key in seen:
@@ -89,6 +89,30 @@ def _pool_chains(
             if len(pairs) >= cap:
                 return pairs
     return pairs
+
+
+def _flatten(verdict: Verdict) -> list[tuple[str, ...]]:
+    """Split a verdict's chain into budget-efficient single-message candidates.
+
+    Each confused-deputy send fires independently, so a multi-send chain flattens
+    into one candidate per message (faster replay, more fit the budget). But a
+    multi-step chain (e.g. exfiltration: read-then-post) does NOT — its individual
+    messages don't fire in isolation — so it is only kept when already one message.
+
+    Args:
+        verdict: An adopted verdict (its ``fires`` identify the predicates).
+
+    Returns:
+        The single-message candidates to contribute (possibly empty).
+    """
+    if len(verdict.chain) == 1:
+        return [verdict.chain]  # already single-message (any predicate, incl. exfil)
+    predicates = {
+        p for m in verdict.fires.values() for preds in m.values() for p in preds
+    }
+    if predicates <= {"CONFUSED_DEPUTY"}:
+        return [(msg,) for msg in verdict.chain]  # independent sends — safe to split
+    return []  # multi-step (exfil/etc.) — can't split without losing the fire
 
 
 def _render_pool(pairs: list[tuple[tuple[str, ...], str]]) -> str:
