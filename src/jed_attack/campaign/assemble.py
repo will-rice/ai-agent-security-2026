@@ -107,13 +107,18 @@ def _pool_chains(
     return pairs
 
 
+_INDEPENDENT_PREDICATES = frozenset({"CONFUSED_DEPUTY", "EXFILTRATION"})
+
+
 def _flatten(verdict: Verdict) -> list[tuple[str, ...]]:
     """Split a verdict's chain into budget-efficient single-message candidates.
 
-    Each confused-deputy send fires independently, so a multi-send chain flattens
-    into one candidate per message (faster replay, more fit the budget). But a
-    multi-step chain (e.g. exfiltration: read-then-post) does NOT — its individual
-    messages don't fire in isolation — so it is only kept when already one message.
+    Confused-deputy sends and ``SECRET_MARKER`` http.post exfil each fire on their
+    own (verified: a single POST-marker message fires EXFILTRATION on both models
+    under both guardrails), so a chain of them flattens into one fast candidate per
+    message. Chains with dependency-based predicates (UNTRUSTED_TO_ACTION /
+    DESTRUCTIVE_WRITE, or read-then-post exfil) don't split cleanly, so they are
+    skipped rather than seeding non-firing candidates.
 
     Args:
         verdict: An adopted verdict (its ``fires`` identify the predicates).
@@ -126,9 +131,9 @@ def _flatten(verdict: Verdict) -> list[tuple[str, ...]]:
     predicates = {
         p for m in verdict.fires.values() for preds in m.values() for p in preds
     }
-    if predicates <= {"CONFUSED_DEPUTY"}:
-        return [(msg,) for msg in verdict.chain]  # independent sends — safe to split
-    return []  # multi-step (exfil/etc.) — can't split without losing the fire
+    if predicates <= _INDEPENDENT_PREDICATES:
+        return [(msg,) for msg in verdict.chain]  # independent fires — safe to split
+    return []  # dependency-based predicate — can't split without losing the fire
 
 
 def _render_pool(pairs: list[tuple[tuple[str, ...], str]]) -> str:
