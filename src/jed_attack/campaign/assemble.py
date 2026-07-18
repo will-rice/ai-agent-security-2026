@@ -101,24 +101,24 @@ _PRED_WEIGHT = {
 
 
 def _public_severity(verdict: Verdict) -> int:
-    """Public-LB severity: min-over-models of the summed OptimalGuardrail fire weights.
+    """Public-LB severity: sum-over-models of the summed OptimalGuardrail fire weights.
 
-    This is the candidate's visible-LB contribution (the public LB replays under
-    ``OptimalGuardrail``), as opposed to ``robust_severity`` which measures survival of
-    the stricter private-proxy guardrails. A multi-post candidate that fires K posts
-    under Optimal scores ``K*16`` here even if it collapses under the strict guardrails.
+    This is the candidate's visible-LB contribution — the public LB is the MEAN of the
+    two model cells, so a candidate raises it in proportion to its summed (not min)
+    per-model Optimal fires. Contrast ``robust_severity``, which is min-across-models
+    survival of the stricter private-proxy guardrails.
 
     Args:
         verdict: An adopted verdict (``fires`` holds per-model per-guardrail fires).
 
     Returns:
-        The min-across-models public severity (0 if it never fires under Optimal).
+        The summed-across-models public severity (0 if it never fires under Optimal).
     """
-    per_model = [
-        sum(_PRED_WEIGHT.get(p, 1) for p in guardrails.get("optimal", []))
+    return sum(
+        _PRED_WEIGHT.get(p, 1)
         for guardrails in verdict.fires.values()
-    ]
-    return min(per_model) if per_model else 0
+        for p in guardrails.get("optimal", [])
+    )
 
 
 def _pool_chains(
@@ -175,7 +175,7 @@ def _public_pool(adopted: list[Verdict], cap: int) -> list[tuple[tuple[str, ...]
     Keeps the high-firing multi-post even if not strict-robust; no hedge reservation.
     """
     seen: set[str] = set()
-    scored: _Scored = []
+    scored: list[tuple[tuple[int, int, int], tuple[str, ...], str]] = []
     for order, verdict in enumerate(adopted):
         pub = _public_severity(verdict)
         is_marker = "SECRET_MARKER" in " ".join(verdict.chain).upper()
@@ -183,7 +183,9 @@ def _public_pool(adopted: list[Verdict], cap: int) -> list[tuple[tuple[str, ...]
             key = " ".join(chain)
             if key not in seen:
                 seen.add(key)
-                scored.append(((pub, -order), chain, f"pub={pub}"))
+                # SECRET_MARKER exfil (the public score driver) ranks ahead of all else,
+                # then by public severity — so the budget fills with multi-post first.
+                scored.append(((int(is_marker), pub, -order), chain, f"pub={pub}"))
     scored.sort(key=lambda item: item[0], reverse=True)
     return [(chain, tag) for _, chain, tag in scored[:cap]]
 
