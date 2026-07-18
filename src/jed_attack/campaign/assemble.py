@@ -178,14 +178,17 @@ def _public_pool(adopted: list[Verdict], cap: int) -> list[tuple[tuple[str, ...]
     scored: list[tuple[tuple[int, int, int], tuple[str, ...], str]] = []
     for order, verdict in enumerate(adopted):
         pub = _public_severity(verdict)
-        is_marker = "SECRET_MARKER" in " ".join(verdict.chain).upper()
-        for chain in _flatten(verdict) if is_marker else [verdict.chain]:
+        parent_marker = "SECRET_MARKER" in " ".join(verdict.chain).upper()
+        for chain in _flatten(verdict) if parent_marker else [verdict.chain]:
             key = " ".join(chain)
-            if key not in seen:
-                seen.add(key)
-                # SECRET_MARKER exfil (the public score driver) ranks ahead of all else,
-                # then by public severity — so the budget fills with multi-post first.
-                scored.append(((int(is_marker), pub, -order), chain, f"pub={pub}"))
+            if key in seen:
+                continue
+            seen.add(key)
+            # Rank by whether THIS candidate carries the marker (a mixed chain flattens
+            # into some non-marker sends), then public severity — so the exfil that
+            # drives the public LB fills the budget first.
+            cand_marker = "SECRET_MARKER" in " ".join(chain).upper()
+            scored.append(((int(cand_marker), pub, -order), chain, f"pub={pub}"))
     scored.sort(key=lambda item: item[0], reverse=True)
     return [(chain, tag) for _, chain, tag in scored[:cap]]
 
