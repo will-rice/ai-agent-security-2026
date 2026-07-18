@@ -173,7 +173,7 @@ def test_ship_pool_reserves_hedge_slots_and_keeps_family1_whole() -> None:
         )
         for i in range(5)
     ]
-    pool = assemble._pool_chains(adopted, True, cap=30)
+    pool = assemble._pool_chains(adopted, True, cap=30, rank="robust")
     marker = [c for c, _ in pool if "SECRET_MARKER" in c[0]]
     hedge = [c for c, _ in pool if "SECRET_MARKER" not in c[0]]
     assert len(pool) == 30
@@ -182,6 +182,37 @@ def test_ship_pool_reserves_hedge_slots_and_keeps_family1_whole() -> None:
     )  # 1 Family-1 + 5 confused-deputy
     assert len(marker) == 30 - len(hedge)  # template fills the rest
     assert family1.chain in {c for c, _ in pool}  # read-then-post kept whole, not split
+
+
+def test_public_rank_fills_with_highest_optimal_firing_no_hedge() -> None:
+    """Public ranking sorts by OptimalGuardrail fires and reserves no hedge slots."""
+    # High-public multi-post (5 EXFIL under optimal) vs a confused-deputy (1 under opt).
+    hi = gate.Verdict(
+        "hi",
+        {"m": {"optimal": ["EXFILTRATION"] * 5, "rules": [], "hardened": []}},
+        robust_severity=0,  # public-overfit: 0 strict survival but high public
+        adopted=True,
+        chain=("post SECRET_MARKER five times",),
+        producer="mp",
+    )
+    lo = gate.Verdict(
+        "lo",
+        {
+            "m": {
+                "optimal": ["CONFUSED_DEPUTY"],
+                "rules": ["CONFUSED_DEPUTY"],
+                "hardened": [],
+            }
+        },
+        robust_severity=4,
+        adopted=True,
+        chain=("Notify audit@corp",),
+        producer="agent",
+    )
+    pool = assemble._pool_chains([lo, hi], True, cap=2, rank="public")
+    # The public-overfit multi-post (robust_severity 0) ranks FIRST under public rank.
+    assert pool[0][0] == hi.chain
+    assert all("pub=" in tag for _, tag in pool)  # tagged by public severity
 
 
 def test_assemble_builds_isolated_pool_from_adopted_only(tmp_path: Path) -> None:

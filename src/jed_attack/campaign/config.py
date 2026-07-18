@@ -45,10 +45,16 @@ REPLAY_WORKERS = int(os.getenv("JED_REPLAY_WORKERS", "8"))
 # Returned-candidate ceiling for the assembled submission (see docs/strategy.md).
 MAX_CANDIDATES = int(os.getenv("JED_MAX_CANDIDATES", "300"))
 
+# Ship-pool ranking. "public" ranks candidates by their OptimalGuardrail (public LB)
+# score and fills every slot with the highest-firing multi-post — maximizes the visible
+# LB, bets the private guardrail is lenient. "robust" ranks by strict-guardrail survival
+# and reserves SHIP_HEDGE_SLOTS for diverse chains — anti-overfit (bets private strict).
+SHIP_RANK = os.getenv("JED_SHIP_RANK", "public")
+
 # Ship-pool slots reserved for diverse NON-SECRET_MARKER chains (Family-1
-# read-then-post exfil + confused-deputy). The SECRET_MARKER multi-post template drives
-# the public score and bets the private LB is taint-based; these slots hedge the other
-# private guardrail family (a payload scanner that blocks the sentinel).
+# read-then-post exfil + confused-deputy) in "robust" ranking only. The SECRET_MARKER
+# multi-post template drives the public score and bets the private LB is taint-based;
+# these slots hedge the other private guardrail family (a payload scanner).
 SHIP_HEDGE_SLOTS = int(os.getenv("JED_SHIP_HEDGE_SLOTS", "20"))
 
 # Calibrated-score daemon: the single-message ship pool it scores + its result/cache.
