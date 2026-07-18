@@ -16,9 +16,10 @@ multi-post generator and the fill loop are inlined, since the inference server i
 it in an isolated process.
 """
 
+import re
 from pathlib import Path
 
-from jed_attack.campaign import config
+from jed_attack.campaign import config, prompt_opt
 
 # The submission source. Self-contained: inlined multi-post generator + adaptive run().
 # REPLAY_SAFE=0.90 leaves a 10% margin under 9000s; MARGIN reserves the slowest observed
@@ -129,8 +130,35 @@ class AttackAlgorithm(AttackAlgorithmBase):
 '''
 
 
+def _apply_best(src: str, template: str, posts: int) -> str:
+    """Substitute the prompt-opt incumbent template + post count into the source.
+
+    Rewrites the inlined ``_POSTS`` and ``_TEMPLATE`` assignments so the shipped
+    submission generates the winning multi-post prompt. The template is embedded as a
+    ``repr`` literal (a valid, self-contained Python string), preserving submission
+    isolation.
+
+    Args:
+        src: The default ``ADAPTIVE_ATTACK_SRC``.
+        template: The incumbent ``str.format`` template.
+        posts: The incumbent post count.
+
+    Returns:
+        The substituted source.
+    """
+    # Function replacements: the replacement string is used verbatim, so a repr()
+    # containing backslashes or group-style sequences is never re-interpreted.
+    src = re.sub(r"_POSTS = \d+", lambda _: f"_POSTS = {posts}", src, count=1)
+    literal = f"_TEMPLATE = {template!r}"
+    return re.sub(r"_TEMPLATE = \([\s\S]*?\)", lambda _: literal, src, count=1)
+
+
 def build_adaptive(out_dir: Path | None = None) -> Path:
     """Write the adaptive-fill submission attack.py.
+
+    When the prompt-optimization harness has recorded a renderable incumbent
+    (``prompt_opt.best_prompt()``), its template + post count are substituted into the
+    inlined submission source; otherwise the hardcoded default ships unchanged.
 
     Args:
         out_dir: Output dir (defaults to ``config.BUILD_NEXT_DIR``).
@@ -138,8 +166,15 @@ def build_adaptive(out_dir: Path | None = None) -> Path:
     Returns:
         The path to the written ``attack.py``.
     """
+    src = ADAPTIVE_ATTACK_SRC
+    best = prompt_opt.best_prompt()
+    if best is not None:
+        posts = int(best["posts"])
+        if prompt_opt.render(best["template"], 0, posts) is not None:
+            src = _apply_best(src, best["template"], posts)
+
     target = out_dir or config.BUILD_NEXT_DIR
     target.mkdir(parents=True, exist_ok=True)
     attack_path = target / "attack.py"
-    attack_path.write_text(ADAPTIVE_ATTACK_SRC, encoding="utf-8")
+    attack_path.write_text(src, encoding="utf-8")
     return attack_path

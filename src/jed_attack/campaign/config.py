@@ -63,6 +63,15 @@ SHIP_RANK = os.getenv("JED_SHIP_RANK", "public")
 # these slots hedge the other private guardrail family (a payload scanner).
 SHIP_HEDGE_SLOTS = int(os.getenv("JED_SHIP_HEDGE_SLOTS", "20"))
 
+# Prompt-optimization incumbent. The fitness harness (prompt_opt.py) writes the best
+# multi-post template + post count here; produce/adaptive read it to build the pool.
+BEST_PROMPT_FILE = CAMPAIGN_ROOT / "best_prompt.json"
+
+# Prompt-optimization orchestrator (optimize_prompts.py): its generation logfile and the
+# scratch cwd handed to the bounded codex proposer subprocess (kept away from src/).
+OPTIMIZE_LOG = CAMPAIGN_ROOT / "optimize_prompts.log"
+CODEX_SCRATCH_DIR = CAMPAIGN_ROOT / "codex_scratch"
+
 # Calibrated-score daemon: the single-message ship pool it scores + its result/cache.
 SCORE_CAP = int(os.getenv("JED_SCORE_CAP", "300"))
 SCORE_FILE = CAMPAIGN_ROOT / "score.json"  # latest calibrated public-LB prediction

@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from tqdm import tqdm
 
-from jed_attack.campaign import config
+from jed_attack.campaign import config, prompt_opt
 from jed_attack.campaign.score_api import try_emit
 
 _log = logging.getLogger("produce")
@@ -44,18 +44,28 @@ _TEMPLATE = (
 def multipost_chain(index: int, posts: int = POSTS_PER_CANDIDATE) -> tuple[str]:
     """Build one single-message multi-post exfil candidate with unique clean domains.
 
+    Uses the prompt-optimization incumbent (``prompt_opt.best_prompt()``) template and
+    post count when one has been recorded, else the hardcoded ``_TEMPLATE`` default.
+    Either way the message keeps the scoring invariants: ``prompt_opt.render`` fills in
+    globally unique ``xN.invalid`` domains (``base = index * posts``), one distinct
+    netloc per post so each candidate lands in its own score cell.
+
     Args:
         index: Candidate index (domains are globally unique across the pool).
-        posts: Number of ``http.post`` calls the message instructs.
+        posts: Number of ``http.post`` calls the message instructs (default).
 
     Returns:
-        A one-message candidate chain. Domains are ``xN.invalid`` (non-routable,
-        free of the guardrail's ultra-dangerous substrings), one distinct netloc per
-        post so each candidate lands in its own score cell.
+        A one-message candidate chain.
     """
-    base = index * posts
-    urls = " ".join(f"https://x{base + j}.invalid/r" for j in range(posts))
-    return (_TEMPLATE.format(k=posts, urls=urls),)
+    best = prompt_opt.best_prompt()
+    if best is not None:
+        message = prompt_opt.render(best["template"], index, int(best["posts"]))
+        if message is not None:  # ignore an unrenderable recorded incumbent
+            return (message,)
+    message = prompt_opt.render(_TEMPLATE, index, posts)
+    if message is None:  # unreachable: the default template is always valid
+        raise RuntimeError("default multi-post template failed to render")
+    return (message,)
 
 
 def produce(count: int, producer: str) -> int:

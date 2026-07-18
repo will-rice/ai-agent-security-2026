@@ -15,6 +15,7 @@ dependencies = [
   "python-dotenv>=1.1.1",
   "ruff>=0.9.7",
   "ty>=0.0.18",
+  "wandb>=0.18.0",
 ]
 
 [project.optional-dependencies]
