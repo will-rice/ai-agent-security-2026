@@ -213,7 +213,18 @@ def propose_via_codex(
     scratch.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, "JED_CAMPAIGN_ROOT": str(config.CAMPAIGN_ROOT)}
     completed = subprocess.run(
-        [CODEX_BIN, "exec", "-s", "danger-full-access", prompt],
+        # --skip-git-repo-check: the scratch cwd is deliberately not a git repo, and
+        # codex exec refuses to run in an untrusted (non-git) dir without it. stdin is
+        # closed so codex doesn't block reading a piped-stdin block that never comes.
+        [
+            CODEX_BIN,
+            "exec",
+            "-s",
+            "danger-full-access",
+            "--skip-git-repo-check",
+            prompt,
+        ],
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
         timeout=timeout_s,
