@@ -477,28 +477,32 @@ def test_propose_falls_back_to_parametric_on_codex_failure(
     assert proposals == optimize_prompts.parametric_mutations(template, posts)
 
 
-def test_optimize_runs_a_generation_with_wandb_disabled(
+_SCORED_FITNESS = {
+    "gpt_oss": {"posts": 5.0, "seconds": 2.0, "raw_per_s": 41.0, "fired_frac": 1.0},
+    "gemma_4": {"posts": 5.0, "seconds": 3.0, "raw_per_s": 27.3, "fired_frac": 1.0},
+    "mean_posts": 5.0,
+    "mean_raw_per_s": 34.15,
+}
+
+
+def test_optimize_runs_a_generation_via_local_proposer(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """One generation scores a codex proposal and promotes it, with W&B disabled."""
+    """One generation scores a local-model proposal and promotes it, W&B disabled."""
     monkeypatch.setenv("JED_WANDB", "0")
     monkeypatch.setattr(prompt_opt.config, "BEST_PROMPT_FILE", tmp_path / "best.json")
     monkeypatch.setattr(knowledge.config, "NOTES_DIR", tmp_path / "notes")
-    monkeypatch.setattr(optimize_prompts.config, "CODEX_SCRATCH_DIR", tmp_path / "cx")
 
-    stdout = '[{"template": "GEN SECRET_MARKER {urls}", "posts": 5}]'
-    monkeypatch.setattr(
-        optimize_prompts.subprocess,
-        "run",
-        lambda *a, **k: SimpleNamespace(stdout=stdout),
+    content = '[{"template": "GEN SECRET_MARKER {urls}", "posts": 5}]'
+    fake_client = SimpleNamespace(
+        create_chat_completion=lambda **k: {
+            "choices": [{"message": {"content": content}}]
+        }
     )
-    fitness = {
-        "gpt_oss": {"posts": 5.0, "seconds": 2.0, "raw_per_s": 41.0, "fired_frac": 1.0},
-        "gemma_4": {"posts": 5.0, "seconds": 3.0, "raw_per_s": 27.3, "fired_frac": 1.0},
-        "mean_posts": 5.0,
-        "mean_raw_per_s": 34.15,
-    }
-    monkeypatch.setattr(prompt_opt, "score_prompt", lambda *a, **k: fitness)
+    monkeypatch.setattr(
+        optimize_prompts, "llama_server_chat_client", lambda *a, **k: fake_client
+    )
+    monkeypatch.setattr(prompt_opt, "score_prompt", lambda *a, **k: _SCORED_FITNESS)
 
     optimize_prompts.optimize(generations=1, proposals=1, timeout_s=1.0, wandb_run=None)
 
@@ -506,3 +510,28 @@ def test_optimize_runs_a_generation_with_wandb_disabled(
     assert best is not None
     assert best["template"] == "GEN SECRET_MARKER {urls}"
     assert best["fitness"]["mean_raw_per_s"] == 34.15
+
+
+def test_optimize_via_codex_backend_parses_stdout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The opt-in codex backend parses proposals from the subprocess stdout."""
+    monkeypatch.setenv("JED_WANDB", "0")
+    monkeypatch.setattr(prompt_opt.config, "BEST_PROMPT_FILE", tmp_path / "best.json")
+    monkeypatch.setattr(knowledge.config, "NOTES_DIR", tmp_path / "notes")
+    monkeypatch.setattr(optimize_prompts.config, "CODEX_SCRATCH_DIR", tmp_path / "cx")
+    monkeypatch.setattr(optimize_prompts, "PROPOSER_BACKEND", "codex")
+
+    stdout = '[{"template": "GEN SECRET_MARKER {urls}", "posts": 5}]'
+    monkeypatch.setattr(
+        optimize_prompts.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(stdout=stdout),
+    )
+    monkeypatch.setattr(prompt_opt, "score_prompt", lambda *a, **k: _SCORED_FITNESS)
+
+    optimize_prompts.optimize(generations=1, proposals=1, timeout_s=1.0, wandb_run=None)
+
+    best = prompt_opt.best_prompt()
+    assert best is not None
+    assert best["template"] == "GEN SECRET_MARKER {urls}"
