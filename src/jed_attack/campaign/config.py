@@ -45,7 +45,13 @@ REPLAY_WORKERS = int(os.getenv("JED_REPLAY_WORKERS", "8"))
 # Returned-candidate ceiling for the assembled submission (see docs/strategy.md).
 MAX_CANDIDATES = int(os.getenv("JED_MAX_CANDIDATES", "300"))
 
-# Ship-pool ranking. "public" ranks candidates by their OptimalGuardrail (public LB)
+# Ship-pool source. "multipost" ships the deterministic multi-post template directly
+# (produce.multipost_chain — the winning attack; the gate/ledger was for the search era
+# and its batched verdicts are noisy). "ledger" ships the gate-adopted pool.
+SHIP_POOL = os.getenv("JED_SHIP_POOL", "multipost")
+
+# Ship-pool ranking (only used when SHIP_POOL="ledger"). "public" ranks candidates by
+# their OptimalGuardrail (public LB)
 # score and fills every slot with the highest-firing multi-post — maximizes the visible
 # LB, bets the private guardrail is lenient. "robust" ranks by strict-guardrail survival
 # and reserves SHIP_HEDGE_SLOTS for diverse chains — anti-overfit (bets private strict).

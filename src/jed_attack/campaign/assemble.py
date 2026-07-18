@@ -75,20 +75,40 @@ class AttackAlgorithm(AttackAlgorithmBase):
 '''
 
 
-def ship_pool_chains(cap: int, ledger: Path | None = None) -> list[tuple[str, ...]]:
-    """Return the single-message ship-pool candidate chains (best-severity first).
+def _ship_pairs(cap: int, ledger: Path | None) -> list[tuple[tuple[str, ...], str]]:
+    """Return the (chain, tag) pairs the submission ships, per ``config.SHIP_POOL``.
 
-    The exact candidate set the submission would return, for the calibrated scorer
-    to replay. Same selection as ``assemble(single_message=True, cap=cap)``.
+    ``"multipost"`` returns the deterministic multi-post template directly (the winning
+    attack — clean and reproducible, independent of the batch-noisy gate ledger).
+    ``"ledger"`` returns the gate-adopted pool via ``_pool_chains``.
 
     Args:
         cap: Max candidates.
-        ledger: Override gate-ledger path.
+        ledger: Override gate-ledger path (ledger source only).
 
     Returns:
-        The candidate chains (each a 1-tuple message).
+        Up to ``cap`` ``(chain, tag)`` pairs.
     """
-    return [chain for chain, _ in _pool_chains(read_adopted(ledger), True, cap)]
+    if config.SHIP_POOL == "multipost":
+        from jed_attack.campaign import produce
+
+        return [(produce.multipost_chain(i), "multipost") for i in range(cap)]
+    return _pool_chains(read_adopted(ledger), True, cap)
+
+
+def ship_pool_chains(cap: int, ledger: Path | None = None) -> list[tuple[str, ...]]:
+    """Return the ship-pool candidate chains — the exact set the submission returns.
+
+    For the calibrated scorer to replay; matches ``assemble(cap=cap)``.
+
+    Args:
+        cap: Max candidates.
+        ledger: Override gate-ledger path (ledger source only).
+
+    Returns:
+        The candidate chains.
+    """
+    return [chain for chain, _ in _ship_pairs(cap, ledger)]
 
 
 # Predicate -> severity weight, for ranking a candidate by its public (Optimal) fires.
@@ -292,9 +312,13 @@ def assemble(
     Returns:
         The path to the written ``attack.py``.
     """
-    adopted = read_adopted(ledger)
     limit = cap if cap is not None else config.MAX_CANDIDATES
-    pairs = _pool_chains(adopted, single_message, limit)
+    # Single-message ship pools come from _ship_pairs (multi-post template or ledger,
+    # per config.SHIP_POOL); the legacy whole-chain mode still ranks the raw ledger.
+    if single_message:
+        pairs = _ship_pairs(limit, ledger)
+    else:
+        pairs = _pool_chains(read_adopted(ledger), False, limit)
     target = out_dir or config.BUILD_NEXT_DIR
     target.mkdir(parents=True, exist_ok=True)
     # Single-message pools are returned once each (no repetition); whole-chain pools
@@ -307,16 +331,9 @@ def assemble(
     attack_path = target / "attack.py"
     attack_path.write_text(source, encoding="utf-8")
     status = {
-        "adopted_count": len(adopted),
-        "total_robust_severity": sum(v.robust_severity for v in adopted),
-        "top": [
-            {
-                "producer": v.producer,
-                "robust_severity": v.robust_severity,
-                "chain": list(v.chain),
-            }
-            for v in adopted[:10]
-        ],
+        "candidate_count": len(pairs),
+        "source": config.SHIP_POOL,
+        "tags": sorted({tag for _, tag in pairs})[:5],
     }
     (target / "build_next_status.json").write_text(
         json.dumps(status, indent=2, sort_keys=True), encoding="utf-8"
