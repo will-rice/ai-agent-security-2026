@@ -29,36 +29,37 @@ class Provider:
     key_env: str = ""
 
 
+_ZAI = "https://api.z.ai/api/paas/v4"
+_CHEAP = "https://api.cheapestinference.com/v1"
+
 PROVIDERS: dict[str, Provider] = {
     # Local served target models: free, no provider block, but the weakest proposer.
     "gpt_oss": Provider("local", model="gpt_oss"),
     "gemma_4": Provider("local", model="gemma_4"),
-    # z.ai GLM (metered; token in ZAI_API_KEY).
+    # z.ai GLM (metered per-token; token in ZAI_API_KEY).
     "zai-glm4.6": Provider(
-        "api",
-        model="glm-4.6",
-        base_url="https://api.z.ai/api/paas/v4",
-        key_env="ZAI_API_KEY",
+        "api", model="glm-4.6", base_url=_ZAI, key_env="ZAI_API_KEY"
     ),
     "zai-glm5.2": Provider(
-        "api",
-        model="glm-5.2",
-        base_url="https://api.z.ai/api/paas/v4",
-        key_env="ZAI_API_KEY",
+        "api", model="glm-5.2", base_url=_ZAI, key_env="ZAI_API_KEY"
     ),
-    # cheapestinference.com flat-rate pool (token in CHEAPEST_API_KEY). Model ids may
-    # need tweaking to match their catalog — the sanity check catches a wrong name.
+    # cheapestinference.com flat-rate pools (token in CHEAPEST_API_KEY). Model ids
+    # verified from their docs (/docs/getting-started/models). Core pool = deepseek/mimo;
+    # Frontier pool = kimi/glm/minimax (stronger, pricier flat rate).
     "cheapest-deepseek": Provider(
-        "api",
-        model="deepseek-v4-flash",
-        base_url="https://api.cheapestinference.com/v1",
-        key_env="CHEAPEST_API_KEY",
+        "api", model="deepseek-v4-flash", base_url=_CHEAP, key_env="CHEAPEST_API_KEY"
+    ),
+    "cheapest-mimo": Provider(
+        "api", model="mimo-v2.5", base_url=_CHEAP, key_env="CHEAPEST_API_KEY"
+    ),
+    "cheapest-kimi": Provider(
+        "api", model="kimi-k2.7", base_url=_CHEAP, key_env="CHEAPEST_API_KEY"
     ),
     "cheapest-glm5.2": Provider(
-        "api",
-        model="glm-5.2",
-        base_url="https://api.cheapestinference.com/v1",
-        key_env="CHEAPEST_API_KEY",
+        "api", model="glm-5.2", base_url=_CHEAP, key_env="CHEAPEST_API_KEY"
+    ),
+    "cheapest-minimax": Provider(
+        "api", model="minimax-m3", base_url=_CHEAP, key_env="CHEAPEST_API_KEY"
     ),
     # codex CLI: provider-blocked on these red-team prompts here, kept for other envs.
     "codex": Provider("codex"),
