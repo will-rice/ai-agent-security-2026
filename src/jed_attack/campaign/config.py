@@ -45,9 +45,17 @@ REPLAY_WORKERS = int(os.getenv("JED_REPLAY_WORKERS", "8"))
 # Returned-candidate ceiling for the assembled submission (see docs/strategy.md).
 MAX_CANDIDATES = int(os.getenv("JED_MAX_CANDIDATES", "300"))
 
-# Ship-pool source. "multipost" ships the deterministic multi-post template directly
-# (produce.multipost_chain — the winning attack; the gate/ledger was for the search era
-# and its batched verdicts are noisy). "ledger" ships the gate-adopted pool.
+# Ship ARTIFACT: the shape of build_next/attack.py. "adaptive" (default) ships the
+# self-sizing adaptive.build_adaptive run() that probes the live env and fills only as
+# many candidates as fit the 9000s/cell budget on the actual hardware — it CANNOT time
+# out the way a fixed pool does (a static 150× multi-post pool overran the T4 and scored
+# a zero). "static" ships the fixed assemble() pool (legacy; only safe when the
+# per-candidate replay cost is known to fit the budget — e.g. single-post).
+SHIP_ARTIFACT = os.getenv("JED_SHIP_ARTIFACT", "adaptive")
+
+# Ship-pool source (the STATIC path / score-daemon proxy). "multipost" uses the
+# deterministic multi-post template directly (produce.multipost_chain — the winning
+# attack); "ledger" uses the gate-adopted pool.
 SHIP_POOL = os.getenv("JED_SHIP_POOL", "multipost")
 
 # Ship-pool ranking (only used when SHIP_POOL="ledger"). "public" ranks candidates by

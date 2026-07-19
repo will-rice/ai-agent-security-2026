@@ -104,25 +104,32 @@ def score_prompt(
     template: str,
     posts: int = DEFAULT_POSTS,
     models: tuple[str, ...] = config.MODELS,
-    trials: int = 2,
+    trials: int = 3,
 ) -> dict[str, Any]:
     """Measure a template's leaderboard fitness on the live served models.
 
     Renders ``trials`` distinct candidates per model, replays each under
     OptimalGuardrail at ``config.EVAL_HOPS`` hops via :func:`score._replay_public`,
     and times each replay. Raw score per candidate is ``posts * 16 + 2`` (the
-    competition's per-candidate value); raw-per-second is that divided by the measured
-    replay seconds — the quantity the 9000s/cell budget actually rewards.
+    competition's per-candidate value); raw-per-second is that divided by the replay
+    seconds — the quantity the 9000s/cell budget actually rewards.
+
+    The scored T4 runs one submission single-tenant, so the fitness that matters is the
+    *uncontended* raw-per-second. On green the optimizer swarm shares the server, which
+    only ever *inflates* latency, so we take the **best** trial per model (max
+    raw-per-second / min latency) as the single-tenant estimate rather than the mean.
 
     Args:
         template: The ``str.format`` template under test.
         posts: Posts per rendered candidate.
         models: Served models to measure (meaned).
-        trials: Distinct candidates rendered + replayed per model.
+        trials: Distinct candidates rendered + replayed per model; the best is kept.
 
     Returns:
         ``{model: {"posts", "seconds", "raw_per_s", "fired_frac"}, "mean_posts",
-        "mean_raw_per_s"}`` (means over trials, then over models).
+        "mean_raw_per_s"}``. Per model, ``raw_per_s`` is the best (uncontended) trial
+        and ``seconds`` its latency; ``posts`` is the mean (post count is stable). The
+        ``mean_*`` fields average over models.
     """
     result: dict[str, Any] = {}
     for model_offset, model_key in enumerate(models):
@@ -145,8 +152,8 @@ def score_prompt(
             fired += int(record["fired"])
         result[model_key] = {
             "posts": mean(posts_seen) if posts_seen else 0.0,
-            "seconds": mean(seconds_seen) if seconds_seen else 0.0,
-            "raw_per_s": mean(raw_per_s_seen) if raw_per_s_seen else 0.0,
+            "seconds": min(seconds_seen) if seconds_seen else 0.0,
+            "raw_per_s": max(raw_per_s_seen) if raw_per_s_seen else 0.0,
             "fired_frac": fired / trials if trials else 0.0,
         }
     result["mean_posts"] = mean(result[m]["posts"] for m in models)
@@ -196,11 +203,16 @@ def record_prompt(template: str, posts: int, fitness: dict[str, Any]) -> bool:
 
 
 def _beats(new: dict[str, Any], old: dict[str, Any]) -> bool:
-    """Return whether ``new`` outranks ``old`` on posts, tie-break raw-per-second.
+    """Return whether ``new`` outranks ``old`` on raw-per-second, tie-break posts.
 
-    Posts fired is the primary key: under a concurrent swarm on the single-request
-    servers, wall-clock timing (raw-per-second) is noisy but the post count a template
-    fires is stable, so ranking on posts first keeps promotion deterministic.
+    Raw-per-second is the primary key because the scored submission is time-budgeted
+    (9000s per cell on the T4): the total raw score is throughput * budget, so the
+    template that fires the most severity *per second* wins, not the one that fires the
+    most posts per message. Ranking on posts instead drives K up, which lowers
+    throughput (more posts take longer to generate) and shrinks how many candidates fit
+    the budget -- the failure that made a static K=5 pool time out to a zero score.
+    ``score_prompt`` measures raw-per-second single-tenant (best of N trials) so the
+    number reflects the uncontended T4, not swarm contention on the shared server.
 
     Args:
         new: A candidate fitness dict.
@@ -209,9 +221,9 @@ def _beats(new: dict[str, Any], old: dict[str, Any]) -> bool:
     Returns:
         True iff ``new`` should replace ``old``.
     """
-    return (new.get("mean_posts", 0.0), new.get("mean_raw_per_s", 0.0)) > (
-        old.get("mean_posts", 0.0),
+    return (new.get("mean_raw_per_s", 0.0), new.get("mean_posts", 0.0)) > (
         old.get("mean_raw_per_s", 0.0),
+        old.get("mean_posts", 0.0),
     )
 
 

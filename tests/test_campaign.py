@@ -313,30 +313,31 @@ def test_render_rejects_marker_dirty_and_duplicate_templates() -> None:
 def test_best_prompt_roundtrips_and_ranks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Incumbent round-trips; more posts wins, raw-per-second breaks ties."""
+    """Incumbent round-trips; higher raw-per-second wins, posts breaks ties."""
     monkeypatch.setattr(prompt_opt.config, "BEST_PROMPT_FILE", tmp_path / "best.json")
     monkeypatch.setattr(knowledge.config, "NOTES_DIR", tmp_path / "notes")
 
     assert prompt_opt.best_prompt() is None
-    base = {"mean_posts": 5.0, "mean_raw_per_s": 1.0}
+    base = {"mean_posts": 5.0, "mean_raw_per_s": 10.0}
     assert prompt_opt.record_prompt("SECRET_MARKER {urls} A", 5, base) is True
     assert prompt_opt.best_prompt() == {
         "template": "SECRET_MARKER {urls} A",
         "posts": 5,
         "fitness": base,
     }
-    # Fewer posts does not displace the incumbent, even when much faster.
-    fewer = {"mean_posts": 4.0, "mean_raw_per_s": 9.0}
-    assert prompt_opt.record_prompt("SECRET_MARKER {urls} B", 4, fewer) is False
+    # More posts but lower throughput does NOT displace the incumbent — the K=8 trap:
+    # extra posts that slow generation lose in a time-budgeted submission.
+    slower = {"mean_posts": 8.0, "mean_raw_per_s": 5.0}
+    assert prompt_opt.record_prompt("SECRET_MARKER {urls} B", 8, slower) is False
     assert (best := prompt_opt.best_prompt()) is not None
     assert best["template"] == "SECRET_MARKER {urls} A"
-    # More posts wins on the primary key.
-    more = {"mean_posts": 6.0, "mean_raw_per_s": 0.1}
-    assert prompt_opt.record_prompt("SECRET_MARKER {urls} C", 6, more) is True
+    # Higher raw-per-second wins on the primary key, even with fewer posts.
+    faster = {"mean_posts": 4.0, "mean_raw_per_s": 20.0}
+    assert prompt_opt.record_prompt("SECRET_MARKER {urls} C", 4, faster) is True
     assert (best := prompt_opt.best_prompt()) is not None
     assert best["template"] == "SECRET_MARKER {urls} C"
-    # Same posts: higher raw-per-second breaks the tie.
-    tie = {"mean_posts": 6.0, "mean_raw_per_s": 0.2}
+    # Same raw-per-second: more posts breaks the tie.
+    tie = {"mean_posts": 6.0, "mean_raw_per_s": 20.0}
     assert prompt_opt.record_prompt("SECRET_MARKER {urls} D", 6, tie) is True
     assert (best := prompt_opt.best_prompt()) is not None
     assert best["template"] == "SECRET_MARKER {urls} D"
@@ -350,8 +351,8 @@ def test_record_prompt_is_lock_safe_under_concurrency(
     monkeypatch.setattr(prompt_opt.config, "BEST_PROMPT_FILE", best_file)
     monkeypatch.setattr(knowledge.config, "NOTES_DIR", tmp_path / "notes")
 
-    hi = {"mean_posts": 9.0, "mean_raw_per_s": 1.0}
-    lo = {"mean_posts": 3.0, "mean_raw_per_s": 9.0}
+    hi = {"mean_posts": 3.0, "mean_raw_per_s": 9.0}
+    lo = {"mean_posts": 9.0, "mean_raw_per_s": 1.0}
     barrier = threading.Barrier(2)
 
     def record(tag: str, fitness: dict[str, float]) -> None:
@@ -375,7 +376,7 @@ def test_record_prompt_is_lock_safe_under_concurrency(
             thread.join()
         best = prompt_opt.best_prompt()
         assert best is not None
-        assert best["template"].startswith("HI")  # 9 posts beats 3, every time
+        assert best["template"].startswith("HI")  # highest raw-per-second wins, always
 
 
 def test_multipost_chain_falls_back_to_default_without_incumbent(
