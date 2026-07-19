@@ -345,6 +345,33 @@ def propose_via_api(
     return parse_proposals(content)
 
 
+def fetch_api_models(
+    provider: providers.Provider, timeout_s: float = 30.0
+) -> list[str]:
+    """Return the model ids an ``api`` provider's ``/v1/models`` endpoint advertises.
+
+    Used to validate ``provider.model`` against the live catalog before a launch, so a
+    wrong/guessed model id fails fast with the real options instead of a cryptic
+    proposer error. The bearer token is read from ``provider.key_env`` at call time.
+
+    Args:
+        provider: The ``api`` provider to query.
+        timeout_s: Per-request timeout.
+
+    Returns:
+        The advertised model ids (``data[].id``).
+    """
+    request = urllib.request.Request(
+        provider.base_url.rstrip("/") + "/models",
+        headers={"Authorization": f"Bearer {os.environ[provider.key_env]}"},
+    )
+    with urllib.request.urlopen(request, timeout=timeout_s) as response:
+        data = json.loads(response.read())
+    return [
+        m["id"] for m in data.get("data", []) if isinstance(m, dict) and m.get("id")
+    ]
+
+
 def propose_via_local_model(
     prompt: str, model_key: str = providers.DEFAULT
 ) -> list[dict[str, Any]]:

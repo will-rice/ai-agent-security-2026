@@ -105,6 +105,84 @@ def _print_providers() -> None:
         print(f"  {name:20} {detail}")
 
 
+def _validate_api_model(provider: providers.Provider) -> None:
+    """Fail fast (``SystemExit``) if an api provider's model isn't in its live catalog.
+
+    Queries the provider's ``/v1/models`` endpoint and checks ``provider.model`` is
+    advertised, so a wrong/guessed id is caught with the real options listed rather than
+    surfacing later as a cryptic proposer error.
+
+    Args:
+        provider: The ``api`` provider to check.
+    """
+    try:
+        catalog = optimize_prompts.fetch_api_models(provider)
+    except Exception as exc:
+        _log.error(
+            "could not read the model catalog at %s (%s); check its base_url and that "
+            "%s is exported in this shell",
+            provider.base_url,
+            exc,
+            provider.key_env,
+        )
+        raise SystemExit(2) from None
+    if provider.model not in catalog:
+        _log.error(
+            "model '%s' is not in the provider catalog; available: %s",
+            provider.model,
+            sorted(catalog),
+        )
+        raise SystemExit(2)
+    _log.info(
+        "model '%s' validated against the provider catalog (%d models)",
+        provider.model,
+        len(catalog),
+    )
+
+
+def _launch_swarm(args: argparse.Namespace) -> None:
+    """Stop-if-restart, sanity-check the proposer, and spawn the worker swarm.
+
+    Args:
+        args: Parsed CLI args (restart, skip_sanity, proposals, workers).
+
+    Raises:
+        SystemExit: If workers already run without ``--restart``, or the proposer
+            produces no valid proposals.
+    """
+    existing = running_workers()
+    if existing and not args.restart:
+        _log.error(
+            "optimizer already running (pids %s); pass --restart to replace", existing
+        )
+        raise SystemExit(1)
+    if existing:
+        _log.info("stopping %d running worker(s): %s", len(existing), existing)
+        stop_workers(existing)
+
+    if not args.skip_sanity:
+        produced = optimize_prompts.proposer_sanity(args.proposals)
+        if not produced:
+            _log.error(
+                "proposer produced no valid proposals — not launching. For an api "
+                "provider, check its base_url in providers.py and that its key_env is "
+                "exported in this shell."
+            )
+            raise SystemExit(2)
+        _log.info("sanity ok: proposer produced %d proposals", produced)
+
+    pids = spawn(args.workers, config.CAMPAIGN_ROOT / "logs")
+    provider = optimize_prompts.current_provider()
+    _log.info(
+        "swarm running: %d workers | proposer=%s %s | logs: %s | wandb: %s",
+        len(pids),
+        provider.kind,
+        provider.model,
+        config.CAMPAIGN_ROOT / "logs",
+        "will-rice/jed-prompt-opt",
+    )
+
+
 def main() -> None:
     """CLI: select the proposer, sanity-check it, then launch (or switch) the swarm."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -131,6 +209,11 @@ def main() -> None:
     parser.add_argument(
         "--list", action="store_true", help="list proposer providers and exit"
     )
+    parser.add_argument(
+        "--models",
+        action="store_true",
+        help="list the selected api provider's model catalog and exit",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
@@ -139,6 +222,25 @@ def main() -> None:
         return
 
     config.ensure_dirs()
+
+    # The provider we are about to select/use (validated before we commit to it).
+    provider = (
+        providers.get(args.proposer)
+        if args.proposer
+        else optimize_prompts.current_provider()
+    )
+
+    if args.models:
+        if provider.kind != "api":
+            parser.error("--models only applies to api providers")
+        for model in sorted(optimize_prompts.fetch_api_models(provider)):
+            print(f"  {model}")
+        return
+
+    # Validate an api provider's model against its live catalog BEFORE persisting the
+    # selection, so a wrong id never reaches proposer.json or a running swarm.
+    if provider.kind == "api" and not args.skip_sanity:
+        _validate_api_model(provider)
 
     # Selecting a provider writes proposer.json; the sanity check and every worker read
     # it via current_provider(), so no proposer state is passed through the environment.
@@ -155,40 +257,7 @@ def main() -> None:
         )
         return
 
-    existing = running_workers()
-    if existing and not args.restart:
-        _log.error(
-            "optimizer already running (pids %s); pass --restart to replace", existing
-        )
-        raise SystemExit(1)
-    if existing:
-        _log.info("stopping %d running worker(s): %s", len(existing), existing)
-        stop_workers(existing)
-
-    if not args.skip_sanity:
-        produced = optimize_prompts.proposer_sanity(args.proposals)
-        if not produced:
-            _log.error(
-                "proposer produced no valid proposals — not launching. For an api "
-                "provider, check its base_url in providers.py and that its key_env is "
-                "exported in this shell."
-            )
-            raise SystemExit(2)
-        _log.info("sanity ok: proposer produced %d proposals", produced)
-
-    pids = spawn(args.workers, config.CAMPAIGN_ROOT / "logs")
-    provider = optimize_prompts.current_provider()
-    _log.info(
-        "swarm running: %d workers | proposer=%s (%s %s) | logs: %s | wandb: %s",
-        len(pids),
-        os.getenv("JED_PROPOSER", providers.DEFAULT)
-        if not args.proposer
-        else args.proposer,
-        provider.kind,
-        provider.model,
-        config.CAMPAIGN_ROOT / "logs",
-        "will-rice/jed-prompt-opt",
-    )
+    _launch_swarm(args)
 
 
 if __name__ == "__main__":

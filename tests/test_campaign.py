@@ -646,3 +646,32 @@ def test_optimize_via_api_backend_parses_response(
     best = prompt_opt.best_prompt()
     assert best is not None
     assert best["template"] == "GEN SECRET_MARKER {urls}"
+
+
+def test_fetch_api_models_parses_catalog_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    """fetch_api_models returns the /v1/models catalog ids (for model validation)."""
+    monkeypatch.setenv("TEST_API_KEY", "dummy-key")
+    provider = providers.Provider(
+        "api", model="x", base_url="https://x.test/v1", key_env="TEST_API_KEY"
+    )
+    payload = json.dumps(
+        {"data": [{"id": "glm-4.6"}, {"id": "deepseek-v4-flash"}, {"no": "id"}]}
+    ).encode()
+
+    class _Resp:
+        def __enter__(self) -> "_Resp":
+            return self
+
+        def __exit__(self, *args: object) -> bool:
+            return False
+
+        def read(self) -> bytes:
+            return payload
+
+    monkeypatch.setattr(
+        optimize_prompts.urllib.request, "urlopen", lambda *a, **k: _Resp()
+    )
+    assert optimize_prompts.fetch_api_models(provider) == [
+        "glm-4.6",
+        "deepseek-v4-flash",
+    ]
