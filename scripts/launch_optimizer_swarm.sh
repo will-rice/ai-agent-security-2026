@@ -5,13 +5,13 @@
 # best_prompt.json. Run ON green (or `ssh green bash scripts/launch_optimizer_swarm.sh`).
 # Sanity-checks one generation first and refuses to launch a parametric-only loop (i.e. if
 # the proposer model can't produce parseable JSON). Host config via env (green defaults):
-#   CAMPAIGN_REPO=$HOME/projects/ai-agent-security-2026   JED_CAMPAIGN_ROOT=$HOME/campaign-run
+#   CAMPAIGN_REPO=$HOME/projects/ai-agent-security-2026   JED_CAMPAIGN_ROOT=$REPO/run
 #   JED_PROPOSER_MODEL=gpt_oss   N_WORKERS=3
 set -u
 export PATH="$HOME/.local/bin:$PATH"
 export LD_LIBRARY_PATH="/usr/local/cuda-12.8/lib64:${LD_LIBRARY_PATH:-}"
 REPO="${CAMPAIGN_REPO:-$HOME/projects/ai-agent-security-2026}"
-export JED_CAMPAIGN_ROOT="${JED_CAMPAIGN_ROOT:-$HOME/campaign-run}"
+export JED_CAMPAIGN_ROOT="${JED_CAMPAIGN_ROOT:-$REPO/run}"
 N="${N_WORKERS:-3}"
 LOGD="$JED_CAMPAIGN_ROOT/logs"
 mkdir -p "$LOGD"

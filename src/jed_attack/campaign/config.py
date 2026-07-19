@@ -7,8 +7,12 @@ these so paths stay consistent across the fleet.
 import os
 from pathlib import Path
 
-# Repo/runtime roots. CAMPAIGN_ROOT points at the run/ tree; override per host.
-CAMPAIGN_ROOT = Path(os.getenv("JED_CAMPAIGN_ROOT", "run")).resolve()
+# Repo/runtime roots. Everything the campaign writes lives under the repo's git-ignored
+# ``run/`` tree, so state is self-contained and cwd-independent (config.py is at
+# <repo>/src/jed_attack/campaign/config.py, so parents[3] is the repo root). Override
+# with JED_CAMPAIGN_ROOT only for an out-of-tree runtime.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+CAMPAIGN_ROOT = Path(os.getenv("JED_CAMPAIGN_ROOT", str(_REPO_ROOT / "run"))).resolve()
 
 CANDIDATES_DIR = (
     CAMPAIGN_ROOT / "candidates"

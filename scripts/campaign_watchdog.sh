@@ -1,14 +1,14 @@
 #!/bin/bash
 # Campaign watchdog: supervise the 4 campaign daemons + N producer codex agents; restart any
 # that die (60s loop). Host config via env (green defaults shown):
-#   CAMPAIGN_REPO=$HOME/projects/ai-agent-security-2026   JED_CAMPAIGN_ROOT=$HOME/campaign-run
+#   CAMPAIGN_REPO=$HOME/projects/ai-agent-security-2026   JED_CAMPAIGN_ROOT=$REPO/run
 #   N_PRODUCERS=5   WORKTREE_BASE=$HOME/exp
 # Deliberately dumb + self-contained; producers run codex in per-agent worktrees.
 set -u
 export PATH="$HOME/.local/bin:$PATH"
 export LD_LIBRARY_PATH="/usr/local/cuda-12.8/lib64:${LD_LIBRARY_PATH:-}"
 REPO="${CAMPAIGN_REPO:-$HOME/projects/ai-agent-security-2026}"
-export JED_CAMPAIGN_ROOT="${JED_CAMPAIGN_ROOT:-$HOME/campaign-run}"
+export JED_CAMPAIGN_ROOT="${JED_CAMPAIGN_ROOT:-$REPO/run}"
 N="${N_PRODUCERS:-5}"
 WTB="${WORKTREE_BASE:-$HOME/exp}"
 LOGD="$JED_CAMPAIGN_ROOT/logs"
