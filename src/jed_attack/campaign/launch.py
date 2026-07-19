@@ -7,13 +7,15 @@ run jed-optimize`` entry point. The proposer is chosen by NAME from the registry
 comes from the environment (each provider names its own ``key_env``). Run on the host
 that serves the target models (green)::
 
-    uv run jed-optimize --list                            # show providers
-    uv run jed-optimize --restart --proposer zai-glm4.6   # needs ZAI_API_KEY exported
-    uv run jed-optimize --switch  --proposer gpt_oss      # live switch, no restart
+    uv run jed-optimize                     # all you need: replace/start on the default
+                                            # preference chain (keys read from .env)
+    uv run jed-optimize --list              # show providers
+    uv run jed-optimize --switch --proposer gpt_oss   # live switch, no restart
 
-``--proposer`` persists the choice to ``proposer.json``, which running workers re-read
-every generation — so ``--switch`` changes the backend without stopping the swarm. The
-API token is never a flag or a config value; it stays in the env the whole time.
+With no flags it replaces any running swarm and uses ``providers.PREFERENCE`` (skipping
+api providers whose key is absent), so the common case needs nothing memorised. Tokens
+come from a gitignored ``.env`` (:func:`load_dotenv`), never a flag; ``--proposer``
+persists a chain to ``proposer.json`` that running workers re-read every generation.
 """
 
 import argparse
@@ -158,13 +160,14 @@ def _launch_swarm(args: argparse.Namespace) -> None:
             produces no valid proposals.
     """
     existing = running_workers()
-    if existing and not args.restart:
+    if existing and args.no_restart:
         _log.error(
-            "optimizer already running (pids %s); pass --restart to replace", existing
+            "optimizer already running (pids %s); omit --no-restart to replace",
+            existing,
         )
         raise SystemExit(1)
     if existing:
-        _log.info("stopping %d running worker(s): %s", len(existing), existing)
+        _log.info("replacing %d running worker(s): %s", len(existing), existing)
         stop_workers(existing)
 
     if not args.skip_sanity:
@@ -255,7 +258,14 @@ def main() -> None:
         "--proposals", type=int, default=optimize_prompts.DEFAULT_PROPOSALS
     )
     parser.add_argument(
-        "--restart", action="store_true", help="stop any running workers first"
+        "--restart",
+        action="store_true",
+        help="(default, now implied) replace a running swarm; kept for compatibility",
+    )
+    parser.add_argument(
+        "--no-restart",
+        action="store_true",
+        help="refuse to launch if a swarm is already running (instead of replacing it)",
     )
     parser.add_argument(
         "--switch",
