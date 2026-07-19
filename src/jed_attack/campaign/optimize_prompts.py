@@ -38,6 +38,8 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Protocol
 
+from dotenv import load_dotenv
+
 from jed_attack.campaign import config, knowledge, produce, prompt_opt, providers
 from jed_attack.harness.models import llama_server_chat_client
 
@@ -700,6 +702,7 @@ def _setup_logging() -> None:
 
 def main() -> None:
     """CLI: run the prompt-optimization loop."""
+    load_dotenv()  # api tokens from a gitignored .env (also inherited from launcher)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--generations", type=int, default=None, help="generations to run (default: ∞)"
