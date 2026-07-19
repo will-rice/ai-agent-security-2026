@@ -46,13 +46,19 @@ PROVIDERS: dict[str, Provider] = {
         base_url="https://api.z.ai/api/paas/v4",
         key_env="ZAI_API_KEY",
     ),
-    # cheapestinference.com flat-rate pool (token in CHEAPEST_API_KEY). Fill base_url
-    # from your dashboard once subscribed, then these become selectable by name.
+    # cheapestinference.com flat-rate pool (token in CHEAPEST_API_KEY). Model ids may
+    # need tweaking to match their catalog — the sanity check catches a wrong name.
     "cheapest-deepseek": Provider(
-        "api", model="deepseek-v4-flash", base_url="", key_env="CHEAPEST_API_KEY"
+        "api",
+        model="deepseek-v4-flash",
+        base_url="https://api.cheapestinference.com/v1",
+        key_env="CHEAPEST_API_KEY",
     ),
     "cheapest-glm5.2": Provider(
-        "api", model="glm-5.2", base_url="", key_env="CHEAPEST_API_KEY"
+        "api",
+        model="glm-5.2",
+        base_url="https://api.cheapestinference.com/v1",
+        key_env="CHEAPEST_API_KEY",
     ),
     # codex CLI: provider-blocked on these red-team prompts here, kept for other envs.
     "codex": Provider("codex"),
