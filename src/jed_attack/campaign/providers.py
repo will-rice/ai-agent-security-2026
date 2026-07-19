@@ -29,14 +29,16 @@ class Provider:
     key_env: str = ""
 
 
-_ZAI = "https://api.z.ai/api/paas/v4"
+# z.ai GLM Coding Plan endpoint (subscription weekly quota), NOT the pay-as-you-go
+# /api/paas/v4 (which needs a prepaid balance and 429s with code 1113 when empty).
+_ZAI = "https://api.z.ai/api/coding/paas/v4"
 _CHEAP = "https://api.cheapestinference.com/v1"
 
 PROVIDERS: dict[str, Provider] = {
     # Local served target models: free, no provider block, but the weakest proposer.
     "gpt_oss": Provider("local", model="gpt_oss"),
     "gemma_4": Provider("local", model="gemma_4"),
-    # z.ai GLM (metered per-token; token in ZAI_API_KEY).
+    # z.ai GLM Coding Plan (subscription weekly quota via _ZAI; token in ZAI_API_KEY).
     "zai-glm4.6": Provider(
         "api", model="glm-4.6", base_url=_ZAI, key_env="ZAI_API_KEY"
     ),
@@ -70,8 +72,9 @@ DEFAULT = "gpt_oss"
 
 # Preference order for "use whatever's available" (jed-optimize with no --proposer). The
 # proposer walks it each generation, SKIPS api providers whose key_env is unset, and
-# uses the first that responds; DEFAULT (local) is the guaranteed tail. With both keys:
-# flat-rate cheapest (in its window), then metered z.ai, then local.
+# uses the first that responds; DEFAULT (local) is the guaranteed tail. Both APIs are
+# live: cheapest (flat-rate, in-window) leads, then z.ai GLM (coding-plan quota via the
+# /api/coding endpoint), then local gpt_oss.
 PREFERENCE: tuple[str, ...] = ("cheapest-kimi", "zai-glm4.6", DEFAULT)
 
 
