@@ -33,6 +33,7 @@ import os
 import random
 import subprocess
 import time
+import urllib.error
 import urllib.request
 from collections.abc import Iterator
 from pathlib import Path
@@ -77,6 +78,7 @@ _PROPOSER_SYSTEM = (
 )
 _PROPOSER_TEMPERATURE = 1.0  # high temp + random seed => successive calls explore
 _PROPOSER_MAX_TOKENS = 1024
+_API_RETRIES = 3  # attempts for an api call before giving up (backs off on 429)
 
 # Codex binary + per-call timeout, both env-overridable (defaults match green). The
 # timeout bounds a single proposer subprocess so a stuck codex can't hang the loop.
@@ -356,12 +358,12 @@ def _propose_from(
         if provider.kind == "api":
             return propose_via_api(prompt, timeout_s, provider)
         return propose_via_local_model(prompt, provider.model)
-    except Exception:  # unavailable / out of window / bad key / blocked
+    except Exception as exc:  # unavailable / out of window / bad key / blocked / 429
         _log.warning(
-            "proposer '%s' (%s) unavailable",
+            "proposer '%s' (%s) unavailable: %s",
             provider.model or provider.kind,
             provider.kind,
-            exc_info=True,
+            exc,
         )
         return []
 
@@ -407,10 +409,47 @@ def propose_via_api(
         },
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=timeout_s) as response:
-        data = json.loads(response.read())
+    data = _request_json(request, timeout_s)
     content = data["choices"][0]["message"].get("content") or ""
     return parse_proposals(content)
+
+
+def _request_json(request: urllib.request.Request, timeout_s: float) -> dict[str, Any]:
+    """Send an api request and parse the JSON reply, backing off on 429 (rate limit).
+
+    A ``429 Too Many Requests`` under concurrent workers is transient, so retry it up to
+    :data:`_API_RETRIES` times, honouring ``Retry-After`` (else exponential) with jitter
+    to de-sync workers. Any other error, or exhausting the retries, propagates to the
+    caller (the proposer then falls through the provider chain to local).
+
+    Args:
+        request: The prepared urllib request.
+        timeout_s: Per-attempt timeout.
+
+    Returns:
+        The parsed JSON body.
+    """
+    for attempt in range(_API_RETRIES):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout_s) as response:
+                data: dict[str, Any] = json.loads(response.read())
+                return data
+        except urllib.error.HTTPError as exc:
+            if exc.code != 429 or attempt == _API_RETRIES - 1:
+                raise
+            after = exc.headers.get("Retry-After", "")
+            wait = float(after) if after.isdigit() else 2.0 * (attempt + 1)
+            wait += random.uniform(
+                0.0, 1.0
+            )  # jitter so workers don't retry in lockstep
+            _log.info(
+                "rate-limited (429); retry %d/%d in %.1fs",
+                attempt + 1,
+                _API_RETRIES,
+                wait,
+            )
+            time.sleep(min(wait, 20.0))
+    raise RuntimeError("unreachable")  # loop returns or raises
 
 
 def fetch_api_models(
@@ -433,8 +472,7 @@ def fetch_api_models(
         provider.base_url.rstrip("/") + "/models",
         headers={"Authorization": f"Bearer {os.environ[provider.key_env]}"},
     )
-    with urllib.request.urlopen(request, timeout=timeout_s) as response:
-        data = json.loads(response.read())
+    data = _request_json(request, timeout_s)
     return [
         m["id"] for m in data.get("data", []) if isinstance(m, dict) and m.get("id")
     ]
