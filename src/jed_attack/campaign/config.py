@@ -75,6 +75,11 @@ SHIP_HEDGE_SLOTS = int(os.getenv("JED_SHIP_HEDGE_SLOTS", "20"))
 # multi-post template + post count here; produce/adaptive read it to build the pool.
 BEST_PROMPT_FILE = CAMPAIGN_ROOT / "best_prompt.json"
 
+# Live proposer config (optimize_prompts.read_proposer). Workers re-read this each
+# generation, so `jed-optimize --switch` can change the proposer backend/model/endpoint
+# without a restart. Holds no secret — only a `key_env` naming the env var with the key.
+PROPOSER_CONFIG_FILE = CAMPAIGN_ROOT / "proposer.json"
+
 # Prompt-optimization orchestrator (optimize_prompts.py): its generation logfile and the
 # scratch cwd handed to the bounded codex proposer subprocess (kept away from src/).
 OPTIMIZE_LOG = CAMPAIGN_ROOT / "optimize_prompts.log"

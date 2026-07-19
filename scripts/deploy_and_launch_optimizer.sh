@@ -6,14 +6,14 @@
 #
 # Safe to re-run: only commits if the tree is dirty, only deploys if green is behind, and
 # the green launcher refuses to start a parametric-only loop or double-launch workers.
-# Host override via env:  GREEN_HOST=green   GREEN_REPO='~/ai-agent-security-2026'
+# Host override via env:  GREEN_HOST=green   GREEN_REPO='~/projects/ai-agent-security-2026'
 #
 # Run:  bash scripts/deploy_and_launch_optimizer.sh
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GREEN_HOST="${GREEN_HOST:-green}"
-GREEN_REPO="${GREEN_REPO:-\$HOME/ai-agent-security-2026}"  # remote-expanded, keep the \$
+GREEN_REPO="${GREEN_REPO:-\$HOME/projects/ai-agent-security-2026}"  # remote-expanded, keep the \$
 cd "$REPO" || { echo "!! repo not found at $REPO"; exit 1; }
 
 echo "==> [1/4] lint (pre-commit; auto-fixes formatting, retries once)"

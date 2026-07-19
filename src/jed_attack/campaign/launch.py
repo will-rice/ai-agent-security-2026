@@ -1,15 +1,19 @@
 """One-command launcher for the prompt-optimizer swarm.
 
-Sanity-checks the configured proposer, then spawns N detached worker processes each
-running the optimizer loop forever. Replaces the bash launch script with a single
-``uv run jed-optimize`` entry point; the proposer and model come from flags (or the
-env). Run on the host that serves the target models (green)::
+Sanity-checks the selected proposer, then spawns N detached worker processes each
+running the optimizer loop forever. Replaces the bash launch script with a single ``uv
+run jed-optimize`` entry point. The proposer is chosen by NAME from the registry
+(:mod:`providers`) — all endpoint/model config lives there in code; only the API token
+comes from the environment (each provider names its own ``key_env``). Run on the host
+that serves the target models (green)::
 
-    uv run jed-optimize --workers 3 --proposer api --model glm-4.6
+    uv run jed-optimize --list                            # show providers
+    uv run jed-optimize --restart --proposer zai-glm4.6   # needs ZAI_API_KEY exported
+    uv run jed-optimize --switch  --proposer gpt_oss      # live switch, no restart
 
-The ``api`` backend also needs ``PROPOSER_API_BASE`` + ``PROPOSER_API_KEY`` exported in
-the environment. The key is deliberately NOT a flag, so it never lands in argv or shell
-history; the launcher passes the ambient environment through to the workers unchanged.
+``--proposer`` persists the choice to ``proposer.json``, which running workers re-read
+every generation — so ``--switch`` changes the backend without stopping the swarm. The
+API token is never a flag or a config value; it stays in the env the whole time.
 """
 
 import argparse
@@ -21,7 +25,7 @@ import sys
 import time
 from pathlib import Path
 
-from jed_attack.campaign import config, optimize_prompts
+from jed_attack.campaign import config, optimize_prompts, providers
 
 _log = logging.getLogger("launch")
 
@@ -89,16 +93,26 @@ def spawn(workers: int, log_dir: Path) -> list[int]:
     return pids
 
 
+def _print_providers() -> None:
+    """Print the proposer provider registry."""
+    for name in sorted(providers.PROVIDERS):
+        p = providers.PROVIDERS[name]
+        if p.kind == "api":
+            base = p.base_url or "(base_url unset)"
+            detail = f"api  {p.model:20} {base}  key=${p.key_env}"
+        else:
+            detail = f"{p.kind:4} {p.model}"
+        print(f"  {name:20} {detail}")
+
+
 def main() -> None:
-    """CLI: sanity-check the proposer, then launch the swarm."""
+    """CLI: select the proposer, sanity-check it, then launch (or switch) the swarm."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workers", type=int, default=3)
     parser.add_argument(
-        "--proposer", choices=["local", "api", "codex"], help="sets JED_PROPOSER"
-    )
-    parser.add_argument(
-        "--model",
-        help="proposer model override (JED_PROPOSER_MODEL or PROPOSER_API_MODEL)",
+        "--proposer",
+        choices=sorted(providers.PROVIDERS),
+        help="provider name (see --list); persisted to proposer.json for live switch",
     )
     parser.add_argument(
         "--proposals", type=int, default=optimize_prompts.DEFAULT_PROPOSALS
@@ -107,25 +121,39 @@ def main() -> None:
         "--restart", action="store_true", help="stop any running workers first"
     )
     parser.add_argument(
+        "--switch",
+        action="store_true",
+        help="only update the live proposer (needs --proposer); do not launch",
+    )
+    parser.add_argument(
         "--skip-sanity", action="store_true", help="launch without the proposer check"
+    )
+    parser.add_argument(
+        "--list", action="store_true", help="list proposer providers and exit"
     )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+
+    if args.list:
+        _print_providers()
+        return
+
     config.ensure_dirs()
 
-    # Proposer config flows to the workers via the environment; also mirror it onto the
-    # in-process module globals so the sanity check below uses the same backend.
+    # Selecting a provider writes proposer.json; the sanity check and every worker read
+    # it via current_provider(), so no proposer state is passed through the environment.
     if args.proposer:
-        os.environ["JED_PROPOSER"] = args.proposer
-        optimize_prompts.PROPOSER_BACKEND = args.proposer
-    backend = os.environ.get("JED_PROPOSER", "local")
-    if args.model:
-        if backend == "api":
-            os.environ["PROPOSER_API_MODEL"] = args.model
-            optimize_prompts.PROPOSER_API_MODEL = args.model
-        else:
-            os.environ["JED_PROPOSER_MODEL"] = args.model
-            optimize_prompts.PROPOSER_MODEL = args.model
+        optimize_prompts.set_provider(args.proposer)
+        _log.info("proposer set to '%s'", args.proposer)
+
+    if args.switch:
+        if not args.proposer:
+            parser.error("--switch requires --proposer")
+        _log.info(
+            "live proposer -> '%s' (running workers pick it up next generation)",
+            args.proposer,
+        )
+        return
 
     existing = running_workers()
     if existing and not args.restart:
@@ -141,24 +169,23 @@ def main() -> None:
         produced = optimize_prompts.proposer_sanity(args.proposals)
         if not produced:
             _log.error(
-                "proposer '%s' produced no valid proposals — not launching. Check the "
-                "backend config (api needs PROPOSER_API_BASE + PROPOSER_API_KEY).",
-                backend,
+                "proposer produced no valid proposals — not launching. For an api "
+                "provider, check its base_url in providers.py and that its key_env is "
+                "exported in this shell."
             )
             raise SystemExit(2)
-        _log.info("sanity ok: proposer '%s' produced %d proposals", backend, produced)
+        _log.info("sanity ok: proposer produced %d proposals", produced)
 
     pids = spawn(args.workers, config.CAMPAIGN_ROOT / "logs")
-    model = (
-        os.environ.get("PROPOSER_API_MODEL")
-        if backend == "api"
-        else os.environ.get("JED_PROPOSER_MODEL", "gpt_oss")
-    )
+    provider = optimize_prompts.current_provider()
     _log.info(
-        "swarm running: %d workers | proposer=%s model=%s | logs: %s | wandb: %s",
+        "swarm running: %d workers | proposer=%s (%s %s) | logs: %s | wandb: %s",
         len(pids),
-        backend,
-        model,
+        os.getenv("JED_PROPOSER", providers.DEFAULT)
+        if not args.proposer
+        else args.proposer,
+        provider.kind,
+        provider.model,
         config.CAMPAIGN_ROOT / "logs",
         "will-rice/jed-prompt-opt",
     )

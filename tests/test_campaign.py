@@ -25,6 +25,7 @@ from jed_attack.campaign import (
     optimize_prompts,
     produce,
     prompt_opt,
+    providers,
     store,
 )
 from jed_attack.campaign.guardrails import HardenedGuardrail
@@ -493,6 +494,12 @@ def test_optimize_runs_a_generation_via_local_proposer(
 ) -> None:
     """One generation scores a local-model proposal and promotes it, W&B disabled."""
     monkeypatch.setenv("JED_WANDB", "0")
+    monkeypatch.delenv(
+        "JED_PROPOSER", raising=False
+    )  # default provider (gpt_oss, local)
+    monkeypatch.setattr(
+        optimize_prompts.config, "PROPOSER_CONFIG_FILE", tmp_path / "none.json"
+    )
     monkeypatch.setattr(prompt_opt.config, "BEST_PROMPT_FILE", tmp_path / "best.json")
     monkeypatch.setattr(knowledge.config, "NOTES_DIR", tmp_path / "notes")
 
@@ -520,10 +527,13 @@ def test_optimize_via_codex_backend_parses_stdout(
 ) -> None:
     """The opt-in codex backend parses proposals from the subprocess stdout."""
     monkeypatch.setenv("JED_WANDB", "0")
+    monkeypatch.setenv("JED_PROPOSER", "codex")  # select the codex provider
+    monkeypatch.setattr(
+        optimize_prompts.config, "PROPOSER_CONFIG_FILE", tmp_path / "none.json"
+    )
     monkeypatch.setattr(prompt_opt.config, "BEST_PROMPT_FILE", tmp_path / "best.json")
     monkeypatch.setattr(knowledge.config, "NOTES_DIR", tmp_path / "notes")
     monkeypatch.setattr(optimize_prompts.config, "CODEX_SCRATCH_DIR", tmp_path / "cx")
-    monkeypatch.setattr(optimize_prompts, "PROPOSER_BACKEND", "codex")
 
     stdout = '[{"template": "GEN SECRET_MARKER {urls}", "posts": 5}]'
     monkeypatch.setattr(
@@ -538,6 +548,27 @@ def test_optimize_via_codex_backend_parses_stdout(
     best = prompt_opt.best_prompt()
     assert best is not None
     assert best["template"] == "GEN SECRET_MARKER {urls}"
+
+
+def test_set_and_current_provider_roundtrip_for_live_switching(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """set_provider persists a name current_provider reads back (live switch)."""
+    cfg = tmp_path / "proposer.json"
+    monkeypatch.setattr(optimize_prompts.config, "PROPOSER_CONFIG_FILE", cfg)
+    monkeypatch.delenv("JED_PROPOSER", raising=False)
+
+    # No file, no env -> the registry default.
+    assert optimize_prompts.current_provider() == providers.get(providers.DEFAULT)
+
+    optimize_prompts.set_provider("zai-glm4.6")
+    assert optimize_prompts.current_provider() == providers.get("zai-glm4.6")
+
+    # An unknown selection is refused on write and degrades to the default on read.
+    with pytest.raises(KeyError):
+        optimize_prompts.set_provider("nope")
+    cfg.write_text('{"provider": "nope"}', encoding="utf-8")
+    assert optimize_prompts.current_provider() == providers.get(providers.DEFAULT)
 
 
 def test_proposer_sanity_counts_valid_and_zeroes_on_failure(
@@ -582,13 +613,15 @@ def test_launch_spawn_starts_one_process_per_worker(
 def test_optimize_via_api_backend_parses_response(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The opt-in api backend (GLM via z.ai) parses proposals from the chat reply."""
+    """The api backend posts to the provider's endpoint and parses the chat reply."""
     monkeypatch.setenv("JED_WANDB", "0")
-    monkeypatch.setenv("PROPOSER_API_KEY", "dummy-key")
+    monkeypatch.setenv("TEST_API_KEY", "dummy-key")
     monkeypatch.setattr(prompt_opt.config, "BEST_PROMPT_FILE", tmp_path / "best.json")
     monkeypatch.setattr(knowledge.config, "NOTES_DIR", tmp_path / "notes")
-    monkeypatch.setattr(optimize_prompts, "PROPOSER_BACKEND", "api")
-    monkeypatch.setattr(optimize_prompts, "PROPOSER_API_BASE", "https://glm.test/v1")
+    test_provider = providers.Provider(
+        "api", model="glm-test", base_url="https://glm.test/v1", key_env="TEST_API_KEY"
+    )
+    monkeypatch.setattr(optimize_prompts, "current_provider", lambda: test_provider)
 
     content = '[{"template": "GEN SECRET_MARKER {urls}", "posts": 5}]'
     payload = json.dumps({"choices": [{"message": {"content": content}}]}).encode()
