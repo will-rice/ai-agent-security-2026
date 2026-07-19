@@ -179,15 +179,64 @@ def _launch_swarm(args: argparse.Namespace) -> None:
         _log.info("sanity ok: proposer produced %d proposals", produced)
 
     pids = spawn(args.workers, config.CAMPAIGN_ROOT / "logs")
-    provider = optimize_prompts.current_provider()
+    chain = " -> ".join(p.model or p.kind for p in optimize_prompts.current_providers())
     _log.info(
-        "swarm running: %d workers | proposer=%s %s | logs: %s | wandb: %s",
+        "swarm running: %d workers | proposer chain: %s | logs: %s | wandb: %s",
         len(pids),
-        provider.kind,
-        provider.model,
+        chain,
         config.CAMPAIGN_ROOT / "logs",
         "will-rice/jed-prompt-opt",
     )
+
+
+def _validated_selection(
+    args: argparse.Namespace, parser: argparse.ArgumentParser
+) -> list[str]:
+    """Parse ``--proposer`` into validated registry names (empty if not given).
+
+    Args:
+        args: Parsed CLI args.
+        parser: The parser (used to ``error`` on an unknown name).
+
+    Returns:
+        The ordered, validated provider names.
+    """
+    names = (
+        [name.strip() for name in args.proposer.split(",") if name.strip()]
+        if args.proposer
+        else []
+    )
+    for name in names:
+        if name not in providers.PROVIDERS:
+            parser.error(f"unknown proposer '{name}'; see --list")
+    return names
+
+
+def _print_catalog(
+    chain: list[providers.Provider], parser: argparse.ArgumentParser
+) -> None:
+    """Print the first api provider's live model catalog (for ``--models``).
+
+    Args:
+        chain: The resolved provider chain.
+        parser: The parser (used to ``error`` if the chain has no api provider).
+    """
+    api = [provider for provider in chain if provider.kind == "api"]
+    if not api:
+        parser.error("--models needs an api provider (pass --proposer <api-name>)")
+    for model in sorted(optimize_prompts.fetch_api_models(api[0])):
+        print(f"  {model}")
+
+
+def _preflight_chain(chain: list[providers.Provider]) -> None:
+    """Warn-only pre-flight of each api provider's model against its catalog.
+
+    Args:
+        chain: The resolved provider chain.
+    """
+    for provider in chain:
+        if provider.kind == "api":
+            _preflight_api_model(provider)
 
 
 def main() -> None:
@@ -199,8 +248,8 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=3)
     parser.add_argument(
         "--proposer",
-        choices=sorted(providers.PROVIDERS),
-        help="provider name (see --list); persisted to proposer.json for live switch",
+        help="provider name(s), comma-separated preference chain (see --list); "
+        "persisted to proposer.json for live switching",
     )
     parser.add_argument(
         "--proposals", type=int, default=optimize_prompts.DEFAULT_PROPOSALS
@@ -233,37 +282,26 @@ def main() -> None:
 
     config.ensure_dirs()
 
-    # The provider we are about to select/use (validated before we commit to it).
-    provider = (
-        providers.get(args.proposer)
-        if args.proposer
-        else optimize_prompts.current_provider()
-    )
+    # Selecting writes proposer.json; the sanity check and every worker read the chain
+    # via current_providers(), so no proposer state passes through the environment.
+    selected = _validated_selection(args, parser)
+    if selected:
+        optimize_prompts.set_providers(selected)
+        _log.info("proposer chain set to %s", selected)
 
+    chain = optimize_prompts.current_providers()
     if args.models:
-        if provider.kind != "api":
-            parser.error("--models only applies to api providers")
-        for model in sorted(optimize_prompts.fetch_api_models(provider)):
-            print(f"  {model}")
+        _print_catalog(chain, parser)
         return
 
-    # Pre-flight the api model against its live catalog (warn-only: the swarm falls back
-    # to the local model per-generation when an api provider is unavailable).
-    if provider.kind == "api" and not args.skip_sanity:
-        _preflight_api_model(provider)
-
-    # Selecting a provider writes proposer.json; the sanity check and every worker read
-    # it via current_provider(), so no proposer state is passed through the environment.
-    if args.proposer:
-        optimize_prompts.set_provider(args.proposer)
-        _log.info("proposer set to '%s'", args.proposer)
+    if not args.skip_sanity:
+        _preflight_chain(chain)
 
     if args.switch:
-        if not args.proposer:
+        if not selected:
             parser.error("--switch requires --proposer")
         _log.info(
-            "live proposer -> '%s' (running workers pick it up next generation)",
-            args.proposer,
+            "live proposer chain -> %s (workers pick it up next generation)", selected
         )
         return
 

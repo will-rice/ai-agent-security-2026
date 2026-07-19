@@ -68,6 +68,12 @@ PROVIDERS: dict[str, Provider] = {
 # Default proposer when nothing is selected (free, always available on green).
 DEFAULT = "gpt_oss"
 
+# Preference order for "use whatever's available" (jed-optimize with no --proposer). The
+# proposer walks it each generation, SKIPS api providers whose key_env is unset, and
+# uses the first that responds; DEFAULT (local) is the guaranteed tail. With both keys:
+# flat-rate cheapest (in its window), then metered z.ai, then local.
+PREFERENCE: tuple[str, ...] = ("cheapest-kimi", "zai-glm4.6", DEFAULT)
+
 
 def get(name: str) -> Provider:
     """Return the named provider, or raise with the list of valid names.

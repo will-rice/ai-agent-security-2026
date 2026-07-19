@@ -87,44 +87,73 @@ _MAX_POSTS = 8  # replay is capped at 8 tool hops; more posts cannot fire
 _DIGEST_LIMIT = 6  # recently-tried variants shown to the proposer
 
 
-def current_provider() -> providers.Provider:
-    """Resolve the live proposer provider for dynamic switching.
-
-    Reads the provider NAME from ``config.PROPOSER_CONFIG_FILE`` (written by
-    ``jed-optimize --switch``, re-read every generation so a running swarm switches
-    without a restart), else the ``JED_PROPOSER`` env var, else ``providers.DEFAULT``.
-    An unknown name degrades to the default rather than killing the loop.
-
-    Returns:
-        The resolved :class:`providers.Provider`.
-    """
-    name = os.getenv("JED_PROPOSER", providers.DEFAULT)
+def _configured_chain() -> list[str]:
+    """The configured proposer names: proposer.json, env, else PREFERENCE."""
     path = config.PROPOSER_CONFIG_FILE
     if path.exists():
         try:
-            name = json.loads(path.read_text()).get("provider", name)
+            data = json.loads(path.read_text())
         except (OSError, json.JSONDecodeError):
-            _log.warning("proposer.json unreadable; using '%s'", name, exc_info=True)
-    try:
-        return providers.get(name)
-    except KeyError:
-        _log.error("proposer '%s' not registered; using '%s'", name, providers.DEFAULT)
-        return providers.get(providers.DEFAULT)
+            _log.warning("proposer.json unreadable; using defaults", exc_info=True)
+            data = {}
+        if isinstance(data.get("providers"), list) and data["providers"]:
+            return [str(name) for name in data["providers"]]
+        if data.get("provider"):  # legacy single-provider form
+            return [str(data["provider"])]
+    env = os.getenv("JED_PROPOSER")
+    if env:
+        return [name.strip() for name in env.split(",") if name.strip()]
+    return list(providers.PREFERENCE)
 
 
-def set_provider(name: str) -> None:
-    """Persist the live proposer selection (name only — no secret) for a running swarm.
+def current_providers() -> list[providers.Provider]:
+    """Resolve the live proposer preference chain for "use whatever's available".
 
-    Validates the name against the registry, then writes ``proposer.json`` atomically.
-    Running workers pick it up on their next generation.
+    Order comes from ``config.PROPOSER_CONFIG_FILE`` (a ``providers`` list or a legacy
+    single ``provider``, re-read every generation so a running swarm switches without a
+    restart), else the comma-separated ``JED_PROPOSER`` env, else the PREFERENCE list.
+    api providers whose ``key_env`` isn't set are dropped (unusable), unknown names are
+    skipped, and the local default is guaranteed as the final entry. The proposer tries
+    them in order and uses the first that responds (see :func:`_propose_via_backend`).
+
+    Returns:
+        The ordered, usable providers (always non-empty; local tail).
+    """
+    names = _configured_chain()
+    if providers.DEFAULT not in names:
+        names = [*names, providers.DEFAULT]
+    chain: list[providers.Provider] = []
+    for name in names:
+        try:
+            provider = providers.get(name)
+        except KeyError:
+            _log.error("proposer '%s' not registered; skipping", name)
+            continue
+        if provider.kind == "api" and provider.key_env not in os.environ:
+            continue  # no token for this provider in the env — cannot use it
+        chain.append(provider)
+    return chain or [providers.get(providers.DEFAULT)]
+
+
+def current_provider() -> providers.Provider:
+    """The first (preferred) usable provider in the live chain."""
+    return current_providers()[0]
+
+
+def set_providers(names: list[str]) -> None:
+    """Persist the live proposer preference chain (names only — no secret).
+
+    Validates each name against the registry, then writes ``proposer.json`` atomically.
+    Running workers pick up the new chain on their next generation.
 
     Args:
-        name: A ``providers.PROVIDERS`` key.
+        names: Ordered ``providers.PROVIDERS`` keys (most preferred first).
     """
-    providers.get(name)  # validate; raises KeyError on unknown name
+    for name in names:
+        providers.get(name)  # validate; raises KeyError on unknown name
     config.PROPOSER_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     tmp = config.PROPOSER_CONFIG_FILE.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps({"provider": name}, indent=2), encoding="utf-8")
+    tmp.write_text(json.dumps({"providers": names}, indent=2), encoding="utf-8")
     tmp.replace(config.PROPOSER_CONFIG_FILE)
 
 
@@ -283,13 +312,12 @@ def propose(
 
 
 def _propose_via_backend(prompt: str, timeout_s: float) -> list[dict[str, Any]]:
-    """Dispatch to the live proposer provider, falling back to the local model.
+    """Walk the live provider chain and return the first non-empty proposals.
 
-    Uses whatever :func:`current_provider` resolves. If that is an ``api`` provider that
-    is unavailable — endpoint down, outside its usage window, bad/absent key, or
-    blocked — the proposal falls back to the local served model instead of failing, so
-    the swarm keeps producing real (non-parametric) proposals across a metered
-    provider's gaps. :func:`propose` is the final parametric net if even local is empty.
+    Uses :func:`current_providers` — try each in preference order and use the first that
+    responds, so the swarm picks whatever is currently available (a flat-rate api inside
+    its window, else a metered api, else local). :func:`propose` adds parametric
+    mutations only if the whole chain (local included) yields nothing.
 
     Args:
         prompt: The proposer prompt.
@@ -298,22 +326,44 @@ def _propose_via_backend(prompt: str, timeout_s: float) -> list[dict[str, Any]]:
     Returns:
         The parsed proposals (possibly empty).
     """
-    provider = current_provider()
-    if provider.kind == "codex":
-        return propose_via_codex(prompt, timeout_s)
-    if provider.kind == "api":
-        try:
-            proposed = propose_via_api(prompt, timeout_s, provider)
-        except Exception:  # endpoint down / out of window / bad key / blocked
-            _log.warning(
-                "api proposer (%s) unavailable; falling back to local '%s'",
-                provider.model,
-                providers.DEFAULT,
-                exc_info=True,
-            )
-            proposed = []
-        return proposed or propose_via_local_model(prompt)
-    return propose_via_local_model(prompt, provider.model)
+    for index, provider in enumerate(current_providers()):
+        proposed = _propose_from(provider, prompt, timeout_s)
+        if proposed:
+            if index:  # a non-preferred provider answered — note the fallback
+                _log.info(
+                    "proposer fell back to '%s' (%s)", provider.model, provider.kind
+                )
+            return proposed
+    return []
+
+
+def _propose_from(
+    provider: providers.Provider, prompt: str, timeout_s: float
+) -> list[dict[str, Any]]:
+    """Ask one provider for proposals; empty on any failure so the chain can advance.
+
+    Args:
+        provider: The provider to query.
+        prompt: The proposer prompt.
+        timeout_s: Codex/api call timeout.
+
+    Returns:
+        The parsed proposals, or ``[]`` if this provider is unavailable.
+    """
+    try:
+        if provider.kind == "codex":
+            return propose_via_codex(prompt, timeout_s)
+        if provider.kind == "api":
+            return propose_via_api(prompt, timeout_s, provider)
+        return propose_via_local_model(prompt, provider.model)
+    except Exception:  # unavailable / out of window / bad key / blocked
+        _log.warning(
+            "proposer '%s' (%s) unavailable",
+            provider.model or provider.kind,
+            provider.kind,
+            exc_info=True,
+        )
+        return []
 
 
 def propose_via_api(

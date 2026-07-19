@@ -494,9 +494,9 @@ def test_optimize_runs_a_generation_via_local_proposer(
 ) -> None:
     """One generation scores a local-model proposal and promotes it, W&B disabled."""
     monkeypatch.setenv("JED_WANDB", "0")
-    monkeypatch.delenv(
-        "JED_PROPOSER", raising=False
-    )  # default provider (gpt_oss, local)
+    monkeypatch.delenv("JED_PROPOSER", raising=False)  # -> PREFERENCE chain
+    monkeypatch.delenv("ZAI_API_KEY", raising=False)  # api providers filtered out,
+    monkeypatch.delenv("CHEAPEST_API_KEY", raising=False)  # so the chain is local-only
     monkeypatch.setattr(
         optimize_prompts.config, "PROPOSER_CONFIG_FILE", tmp_path / "none.json"
     )
@@ -550,25 +550,33 @@ def test_optimize_via_codex_backend_parses_stdout(
     assert best["template"] == "GEN SECRET_MARKER {urls}"
 
 
-def test_set_and_current_provider_roundtrip_for_live_switching(
+def test_provider_chain_persists_filters_by_key_and_tails_local(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """set_provider persists a name current_provider reads back (live switch)."""
+    """set_providers persists a chain; current_providers filters + tails local."""
     cfg = tmp_path / "proposer.json"
     monkeypatch.setattr(optimize_prompts.config, "PROPOSER_CONFIG_FILE", cfg)
     monkeypatch.delenv("JED_PROPOSER", raising=False)
+    monkeypatch.delenv("ZAI_API_KEY", raising=False)
+    monkeypatch.delenv("CHEAPEST_API_KEY", raising=False)
 
-    # No file, no env -> the registry default.
-    assert optimize_prompts.current_provider() == providers.get(providers.DEFAULT)
+    optimize_prompts.set_providers(["zai-glm4.6", "gpt_oss"])
+    assert optimize_prompts._configured_chain() == ["zai-glm4.6", "gpt_oss"]
 
-    optimize_prompts.set_provider("zai-glm4.6")
-    assert optimize_prompts.current_provider() == providers.get("zai-glm4.6")
+    # No ZAI key in env -> the api provider is dropped, local remains.
+    assert optimize_prompts.current_providers() == [providers.get("gpt_oss")]
+    # With the key present, the api provider leads the chain.
+    monkeypatch.setenv("ZAI_API_KEY", "dummy")
+    assert optimize_prompts.current_providers() == [
+        providers.get("zai-glm4.6"),
+        providers.get("gpt_oss"),
+    ]
 
-    # An unknown selection is refused on write and degrades to the default on read.
+    # An unknown name is refused on write and skipped on read (local tail guaranteed).
     with pytest.raises(KeyError):
-        optimize_prompts.set_provider("nope")
-    cfg.write_text('{"provider": "nope"}', encoding="utf-8")
-    assert optimize_prompts.current_provider() == providers.get(providers.DEFAULT)
+        optimize_prompts.set_providers(["nope"])
+    cfg.write_text('{"providers": ["nope"]}', encoding="utf-8")
+    assert optimize_prompts.current_providers() == [providers.get(providers.DEFAULT)]
 
 
 def test_proposer_sanity_counts_valid_and_zeroes_on_failure(
@@ -621,7 +629,7 @@ def test_optimize_via_api_backend_parses_response(
     test_provider = providers.Provider(
         "api", model="glm-test", base_url="https://glm.test/v1", key_env="TEST_API_KEY"
     )
-    monkeypatch.setattr(optimize_prompts, "current_provider", lambda: test_provider)
+    monkeypatch.setattr(optimize_prompts, "current_providers", lambda: [test_provider])
 
     content = '[{"template": "GEN SECRET_MARKER {urls}", "posts": 5}]'
     payload = json.dumps({"choices": [{"message": {"content": content}}]}).encode()
@@ -685,7 +693,11 @@ def test_api_proposer_falls_back_to_local_when_unavailable(
         "api", model="x", base_url="https://x.test/v1", key_env="DEFINITELY_UNSET_KEY"
     )
     monkeypatch.delenv("DEFINITELY_UNSET_KEY", raising=False)  # api call will KeyError
-    monkeypatch.setattr(optimize_prompts, "current_provider", lambda: api)
+    monkeypatch.setattr(
+        optimize_prompts,
+        "current_providers",
+        lambda: [api, providers.get(providers.DEFAULT)],
+    )
     local_calls: list[str] = []
 
     def _fake_local(
