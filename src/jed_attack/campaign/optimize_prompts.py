@@ -281,7 +281,13 @@ def propose(
 
 
 def _propose_via_backend(prompt: str, timeout_s: float) -> list[dict[str, Any]]:
-    """Dispatch to the live proposer provider (see :func:`current_provider`).
+    """Dispatch to the live proposer provider, falling back to the local model.
+
+    Uses whatever :func:`current_provider` resolves. If that is an ``api`` provider that
+    is unavailable — endpoint down, outside its usage window, bad/absent key, or
+    blocked — the proposal falls back to the local served model instead of failing, so
+    the swarm keeps producing real (non-parametric) proposals across a metered
+    provider's gaps. :func:`propose` is the final parametric net if even local is empty.
 
     Args:
         prompt: The proposer prompt.
@@ -294,7 +300,17 @@ def _propose_via_backend(prompt: str, timeout_s: float) -> list[dict[str, Any]]:
     if provider.kind == "codex":
         return propose_via_codex(prompt, timeout_s)
     if provider.kind == "api":
-        return propose_via_api(prompt, timeout_s, provider)
+        try:
+            proposed = propose_via_api(prompt, timeout_s, provider)
+        except Exception:  # endpoint down / out of window / bad key / blocked
+            _log.warning(
+                "api proposer (%s) unavailable; falling back to local '%s'",
+                provider.model,
+                providers.DEFAULT,
+                exc_info=True,
+            )
+            proposed = []
+        return proposed or propose_via_local_model(prompt)
     return propose_via_local_model(prompt, provider.model)
 
 

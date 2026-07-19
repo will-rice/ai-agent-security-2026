@@ -105,12 +105,13 @@ def _print_providers() -> None:
         print(f"  {name:20} {detail}")
 
 
-def _validate_api_model(provider: providers.Provider) -> None:
-    """Fail fast (``SystemExit``) if an api provider's model isn't in its live catalog.
+def _preflight_api_model(provider: providers.Provider) -> None:
+    """Warn (do not fail) if an api provider's model isn't in its live catalog.
 
     Queries the provider's ``/v1/models`` endpoint and checks ``provider.model`` is
-    advertised, so a wrong/guessed id is caught with the real options listed rather than
-    surfacing later as a cryptic proposer error.
+    advertised. A mismatch or unreachable endpoint only warns, because the swarm falls
+    back to the local model per-generation when an api provider is unavailable — so a
+    wrong id or a closed usage window degrades to local rather than blocking the launch.
 
     Args:
         provider: The ``api`` provider to check.
@@ -118,21 +119,25 @@ def _validate_api_model(provider: providers.Provider) -> None:
     try:
         catalog = optimize_prompts.fetch_api_models(provider)
     except Exception as exc:
-        _log.error(
-            "could not read the model catalog at %s (%s); check its base_url and that "
-            "%s is exported in this shell",
+        _log.warning(
+            "catalog unreachable at %s (%s); swarm uses local '%s' until '%s' is "
+            "reachable (check base_url and that %s is exported)",
             provider.base_url,
             exc,
+            providers.DEFAULT,
+            provider.model,
             provider.key_env,
         )
-        raise SystemExit(2) from None
+        return
     if provider.model not in catalog:
-        _log.error(
-            "model '%s' is not in the provider catalog; available: %s",
+        _log.warning(
+            "model '%s' is not in the provider catalog; the swarm will use local '%s'. "
+            "Available: %s",
             provider.model,
+            providers.DEFAULT,
             sorted(catalog),
         )
-        raise SystemExit(2)
+        return
     _log.info(
         "model '%s' validated against the provider catalog (%d models)",
         provider.model,
@@ -237,10 +242,10 @@ def main() -> None:
             print(f"  {model}")
         return
 
-    # Validate an api provider's model against its live catalog BEFORE persisting the
-    # selection, so a wrong id never reaches proposer.json or a running swarm.
+    # Pre-flight the api model against its live catalog (warn-only: the swarm falls back
+    # to the local model per-generation when an api provider is unavailable).
     if provider.kind == "api" and not args.skip_sanity:
-        _validate_api_model(provider)
+        _preflight_api_model(provider)
 
     # Selecting a provider writes proposer.json; the sanity check and every worker read
     # it via current_provider(), so no proposer state is passed through the environment.

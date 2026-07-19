@@ -675,3 +675,27 @@ def test_fetch_api_models_parses_catalog_ids(monkeypatch: pytest.MonkeyPatch) ->
         "glm-4.6",
         "deepseek-v4-flash",
     ]
+
+
+def test_api_proposer_falls_back_to_local_when_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unavailable api provider degrades to the local model, not parametric."""
+    api = providers.Provider(
+        "api", model="x", base_url="https://x.test/v1", key_env="DEFINITELY_UNSET_KEY"
+    )
+    monkeypatch.delenv("DEFINITELY_UNSET_KEY", raising=False)  # api call will KeyError
+    monkeypatch.setattr(optimize_prompts, "current_provider", lambda: api)
+    local_calls: list[str] = []
+
+    def _fake_local(
+        prompt: str, model_key: str = providers.DEFAULT
+    ) -> list[dict[str, str]]:
+        local_calls.append(model_key)
+        return [{"template": "L", "posts": "5"}]
+
+    monkeypatch.setattr(optimize_prompts, "propose_via_local_model", _fake_local)
+    out = optimize_prompts._propose_via_backend("prompt", 1.0)
+
+    assert out == [{"template": "L", "posts": "5"}]
+    assert local_calls == [providers.DEFAULT]  # fell back to the local default model
