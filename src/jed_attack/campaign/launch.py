@@ -179,7 +179,7 @@ def _launch_swarm(args: argparse.Namespace) -> None:
             # to parametric) every generation, so launch anyway rather than abort.
             _log.warning(
                 "sanity: proposer produced nothing right now (api 429 or server busy); "
-                "launching anyway — workers retry the chain + parametric each generation"
+                "launching anyway — workers retry the chain + parametric each gen"
             )
 
     pids = spawn(args.workers, config.CAMPAIGN_ROOT / "logs")
