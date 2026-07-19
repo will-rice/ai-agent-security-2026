@@ -157,6 +157,35 @@ def run_generation(gen: int, proposals: int, timeout_s: float) -> dict[str, Any]
     return metrics
 
 
+def proposer_sanity(
+    proposals: int = DEFAULT_PROPOSALS, timeout_s: float = CODEX_TIMEOUT_S
+) -> int:
+    """Run the configured proposer once and return how many valid proposals it produced.
+
+    A read-only check (no scoring, no promotion) that the configured
+    :data:`PROPOSER_BACKEND` actually yields parseable ``{template, posts}`` proposals,
+    so a blocked or misconfigured proposer is caught before a swarm is launched. Zero
+    means the backend produced nothing (blocked, bad endpoint/key, or unparseable).
+
+    Args:
+        proposals: Number of variants to request.
+        timeout_s: Per-call timeout (codex/api backends).
+
+    Returns:
+        The count of valid proposals the proposer returned.
+    """
+    incumbent = prompt_opt.best_prompt()
+    template = incumbent["template"] if incumbent else produce._TEMPLATE
+    posts = int(incumbent["posts"]) if incumbent else produce.POSTS_PER_CANDIDATE
+    rps = float(incumbent["fitness"]["mean_raw_per_s"]) if incumbent else 0.0
+    prompt = _proposer_prompt(template, posts, rps, proposals)
+    try:
+        return len(_propose_via_backend(prompt, timeout_s))
+    except Exception:  # blocked / bad endpoint / unreachable — treat as zero
+        _log.exception("proposer sanity check raised")
+        return 0
+
+
 def _incumbent_metrics(gen: int, valid: int, scored: int) -> dict[str, Any]:
     """Build the per-generation metrics dict from the current incumbent.
 

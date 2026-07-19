@@ -21,6 +21,7 @@ from jed_attack.campaign import (
     assemble,
     gate,
     knowledge,
+    launch,
     optimize_prompts,
     produce,
     prompt_opt,
@@ -537,6 +538,45 @@ def test_optimize_via_codex_backend_parses_stdout(
     best = prompt_opt.best_prompt()
     assert best is not None
     assert best["template"] == "GEN SECRET_MARKER {urls}"
+
+
+def test_proposer_sanity_counts_valid_and_zeroes_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The sanity helper returns the proposal count, or 0 when the backend raises."""
+    monkeypatch.setattr(prompt_opt, "best_prompt", lambda: None)
+    monkeypatch.setattr(
+        optimize_prompts,
+        "_propose_via_backend",
+        lambda *a, **k: [{"template": "x", "posts": 5}, {"template": "y", "posts": 6}],
+    )
+    assert optimize_prompts.proposer_sanity(2, 1.0) == 2
+
+    def _boom(*a: object, **k: object) -> list[dict[str, Any]]:
+        raise RuntimeError("provider blocked")
+
+    monkeypatch.setattr(optimize_prompts, "_propose_via_backend", _boom)
+    assert optimize_prompts.proposer_sanity(2, 1.0) == 0
+
+
+def test_launch_spawn_starts_one_process_per_worker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """spawn() starts one detached process per worker; only worker 1 owns W&B."""
+    calls: list[tuple[list[str], str]] = []
+
+    def _fake_popen(
+        cmd: list[str], *, env: dict[str, str] | None = None, **_: object
+    ) -> SimpleNamespace:
+        calls.append((cmd, (env or {}).get("JED_WANDB", "")))
+        return SimpleNamespace(pid=1000 + len(calls))
+
+    monkeypatch.setattr(launch.subprocess, "Popen", _fake_popen)
+    pids = launch.spawn(3, tmp_path)
+
+    assert len(pids) == 3
+    assert [wandb for _, wandb in calls] == ["1", "0", "0"]  # only worker 1 logs
+    assert all("jed_attack.campaign.optimize_prompts" in cmd for cmd, _ in calls)
 
 
 def test_optimize_via_api_backend_parses_response(
