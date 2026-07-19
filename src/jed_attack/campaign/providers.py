@@ -44,8 +44,8 @@ PROVIDERS: dict[str, Provider] = {
         "api", model="glm-5.2", base_url=_ZAI, key_env="ZAI_API_KEY"
     ),
     # cheapestinference.com flat-rate pools (token in CHEAPEST_API_KEY). Model ids
-    # verified from their docs (/docs/getting-started/models). Core pool = deepseek/mimo;
-    # Frontier pool = kimi/glm/minimax (stronger, pricier flat rate).
+    # verified from their docs (/docs/getting-started/models). Core = deepseek/mimo;
+    # Frontier = kimi/glm/minimax (stronger, pricier flat rate).
     "cheapest-deepseek": Provider(
         "api", model="deepseek-v4-flash", base_url=_CHEAP, key_env="CHEAPEST_API_KEY"
     ),
