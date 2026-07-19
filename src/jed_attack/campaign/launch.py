@@ -156,8 +156,7 @@ def _launch_swarm(args: argparse.Namespace) -> None:
         args: Parsed CLI args (restart, skip_sanity, proposals, workers).
 
     Raises:
-        SystemExit: If workers already run without ``--restart``, or the proposer
-            produces no valid proposals.
+        SystemExit: If workers are already running and ``--no-restart`` was passed.
     """
     existing = running_workers()
     if existing and args.no_restart:
@@ -172,14 +171,16 @@ def _launch_swarm(args: argparse.Namespace) -> None:
 
     if not args.skip_sanity:
         produced = optimize_prompts.proposer_sanity(args.proposals)
-        if not produced:
-            _log.error(
-                "proposer produced no valid proposals — not launching. For an api "
-                "provider, check its base_url in providers.py and that its key_env is "
-                "exported in this shell."
+        if produced:
+            _log.info("sanity ok: proposer produced %d proposals", produced)
+        else:
+            # Non-blocking: a one-shot 0 is usually transient (api rate-limited or a
+            # busy single-request server). The workers retry the whole chain (and fall
+            # to parametric) every generation, so launch anyway rather than abort.
+            _log.warning(
+                "sanity: proposer produced nothing right now (api 429 or server busy); "
+                "launching anyway — workers retry the chain + parametric each generation"
             )
-            raise SystemExit(2)
-        _log.info("sanity ok: proposer produced %d proposals", produced)
 
     pids = spawn(args.workers, config.CAMPAIGN_ROOT / "logs")
     chain = " -> ".join(p.model or p.kind for p in optimize_prompts.current_providers())
