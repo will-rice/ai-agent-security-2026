@@ -88,6 +88,12 @@ DEFAULT_PROPOSALS = 6  # template variants requested from the proposer per gener
 _MAX_POSTS = 8  # replay is capped at 8 tool hops; more posts cannot fire
 _DIGEST_LIMIT = 6  # recently-tried variants shown to the proposer
 
+# Which proposer actually answered the latest generation, for the wandb dashboard: the
+# provider's model/kind, or "parametric" on full fallback. Set by the proposal path,
+# read into the metrics by run_generation.
+_active_proposer: str = ""
+_active_proposer_is_api: bool = False
+
 
 def _configured_chain() -> list[str]:
     """The configured proposer names: proposer.json, env, else PREFERENCE."""
@@ -213,8 +219,10 @@ def run_generation(gen: int, proposals: int, timeout_s: float) -> dict[str, Any]
             _log.exception("scoring a proposal failed; skipping it")
 
     metrics = _incumbent_metrics(gen, len(candidates), scored)
+    metrics["proposer"] = _active_proposer
+    metrics["proposer_is_api"] = 1.0 if _active_proposer_is_api else 0.0
     summary = (
-        f"gen {gen}: scored {scored}/{len(candidates)} proposals; "
+        f"gen {gen}: {scored}/{len(candidates)} scored via {_active_proposer}; "
         f"best mean_raw_per_s={metrics['best/mean_raw_per_s']:.4f}"
     )
     _log.info(summary)
@@ -301,6 +309,7 @@ def propose(
         A non-empty list of ``{"template", "posts"}`` proposals whenever the incumbent
         is renderable (the fallback mutations always are).
     """
+    global _active_proposer, _active_proposer_is_api
     prompt = _proposer_prompt(template, posts, incumbent_rps, proposals)
     try:
         proposed = _propose_via_backend(prompt, timeout_s)
@@ -310,6 +319,7 @@ def propose(
     if not proposed:
         _log.info("proposer returned no valid proposals; using parametric mutations")
         proposed = parametric_mutations(template, posts)
+        _active_proposer, _active_proposer_is_api = "parametric", False
     return proposed
 
 
@@ -328,9 +338,12 @@ def _propose_via_backend(prompt: str, timeout_s: float) -> list[dict[str, Any]]:
     Returns:
         The parsed proposals (possibly empty).
     """
+    global _active_proposer, _active_proposer_is_api
     for index, provider in enumerate(current_providers()):
         proposed = _propose_from(provider, prompt, timeout_s)
         if proposed:
+            _active_proposer = provider.model or provider.kind
+            _active_proposer_is_api = provider.kind == "api"
             if index:  # a non-preferred provider answered — note the fallback
                 _log.info(
                     "proposer fell back to '%s' (%s)", provider.model, provider.kind
