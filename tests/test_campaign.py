@@ -1,6 +1,7 @@
 """Campaign core: store dedup, anti-overfit hardened guardrail, gate, assemble."""
 
 import ast
+import json
 import sys
 import threading
 import time
@@ -528,6 +529,42 @@ def test_optimize_via_codex_backend_parses_stdout(
         optimize_prompts.subprocess,
         "run",
         lambda *a, **k: SimpleNamespace(stdout=stdout),
+    )
+    monkeypatch.setattr(prompt_opt, "score_prompt", lambda *a, **k: _SCORED_FITNESS)
+
+    optimize_prompts.optimize(generations=1, proposals=1, timeout_s=1.0, wandb_run=None)
+
+    best = prompt_opt.best_prompt()
+    assert best is not None
+    assert best["template"] == "GEN SECRET_MARKER {urls}"
+
+
+def test_optimize_via_api_backend_parses_response(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The opt-in api backend (GLM via z.ai) parses proposals from the chat reply."""
+    monkeypatch.setenv("JED_WANDB", "0")
+    monkeypatch.setenv("PROPOSER_API_KEY", "dummy-key")
+    monkeypatch.setattr(prompt_opt.config, "BEST_PROMPT_FILE", tmp_path / "best.json")
+    monkeypatch.setattr(knowledge.config, "NOTES_DIR", tmp_path / "notes")
+    monkeypatch.setattr(optimize_prompts, "PROPOSER_BACKEND", "api")
+    monkeypatch.setattr(optimize_prompts, "PROPOSER_API_BASE", "https://glm.test/v1")
+
+    content = '[{"template": "GEN SECRET_MARKER {urls}", "posts": 5}]'
+    payload = json.dumps({"choices": [{"message": {"content": content}}]}).encode()
+
+    class _FakeResp:
+        def __enter__(self) -> "_FakeResp":
+            return self
+
+        def __exit__(self, *args: object) -> bool:
+            return False
+
+        def read(self) -> bytes:
+            return payload
+
+    monkeypatch.setattr(
+        optimize_prompts.urllib.request, "urlopen", lambda *a, **k: _FakeResp()
     )
     monkeypatch.setattr(prompt_opt, "score_prompt", lambda *a, **k: _SCORED_FITNESS)
 

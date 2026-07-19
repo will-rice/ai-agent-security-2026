@@ -33,6 +33,7 @@ import os
 import random
 import subprocess
 import time
+import urllib.request
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Protocol
@@ -64,10 +65,15 @@ class _WandbRun(Protocol):
 
 _log = logging.getLogger("optimize_prompts")
 
-# Proposer backend. "local" (default) prompts a locally-served target model as the
-# variant generator; "codex" shells out to the codex CLI (blocked by its provider's
-# safety on these red-team prompts, kept only for environments where it is available).
+# Proposer backend. "local" (default) prompts a locally-served target model; "api"
+# calls any OpenAI-compatible chat endpoint (PROPOSER_API_*; e.g. GLM via z.ai or
+# OpenRouter — a stronger open-weight proposer with no OpenAI/Anthropic provider block
+# on the red-team prompt); "codex" shells out to the codex CLI (provider-blocked here).
 PROPOSER_BACKEND = os.getenv("JED_PROPOSER", "local")
+# OpenAI-compatible chat endpoint for the "api" backend. The key is read from the env
+# so the secret is supplied by the host (green), never hardcoded or logged here.
+PROPOSER_API_BASE = os.getenv("PROPOSER_API_BASE", "")
+PROPOSER_API_MODEL = os.getenv("PROPOSER_API_MODEL", "glm-4.6")
 # Served model used as the local proposer. gpt_oss (20B, :8080) keeps gemma_4 free for
 # the binding scoring path; set JED_PROPOSER_MODEL=gemma_4 if its JSON is cleaner.
 PROPOSER_MODEL = os.getenv("JED_PROPOSER_MODEL", "gpt_oss")
@@ -230,7 +236,51 @@ def _propose_via_backend(prompt: str, timeout_s: float) -> list[dict[str, Any]]:
     """
     if PROPOSER_BACKEND == "codex":
         return propose_via_codex(prompt, timeout_s)
+    if PROPOSER_BACKEND == "api":
+        return propose_via_api(prompt, timeout_s)
     return propose_via_local_model(prompt)
+
+
+def propose_via_api(prompt: str, timeout_s: float) -> list[dict[str, Any]]:
+    """Prompt an OpenAI-compatible chat API (e.g. GLM via z.ai/OpenRouter) as proposer.
+
+    The endpoint (:data:`PROPOSER_API_BASE`), model (:data:`PROPOSER_API_MODEL`), and
+    the bearer key (``PROPOSER_API_KEY``, read at call time) come from the environment,
+    so the secret is supplied by the host and never hardcoded or logged. A stronger
+    open-weight proposer than the served targets, with no OpenAI/Anthropic provider
+    block on the red-team prompt. Parsed with the same tolerant :func:`parse_proposals`.
+
+    Args:
+        prompt: The proposer prompt.
+        timeout_s: Per-request timeout in seconds.
+
+    Returns:
+        The parsed proposals (possibly empty).
+    """
+    body = json.dumps(
+        {
+            "model": PROPOSER_API_MODEL,
+            "messages": [
+                {"role": "system", "content": _PROPOSER_SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": _PROPOSER_TEMPERATURE,
+            "max_tokens": _PROPOSER_MAX_TOKENS,
+        }
+    ).encode()
+    request = urllib.request.Request(
+        PROPOSER_API_BASE.rstrip("/") + "/chat/completions",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {os.environ['PROPOSER_API_KEY']}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout_s) as response:
+        data = json.loads(response.read())
+    content = data["choices"][0]["message"].get("content") or ""
+    return parse_proposals(content)
 
 
 def propose_via_local_model(
