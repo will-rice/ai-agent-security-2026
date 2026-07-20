@@ -113,6 +113,23 @@ SCORE_CAP = int(os.getenv("JED_SCORE_CAP", "80"))
 SCORE_FILE = CAMPAIGN_ROOT / "score.json"  # latest calibrated public-LB prediction
 SCORE_CACHE = CAMPAIGN_ROOT / "score_cache.jsonl"  # per-(message,model) replay cache
 
+# Green-seconds ceiling for the composer's budget check (submission composer, later
+# task). Calibrated from the real T4 pass/fail boundary: the 80-candidate K=5 pool
+# PASSED and scored 34.315, the 105-candidate pool TIMED OUT. So CEILING ≈ 80 × the
+# mean green replay-seconds of one K=5 candidate. PROVISIONAL: this default (2.5s/
+# candidate, i.e. 80 * 2.5 = 200.0) is a placeholder guess, not yet a green
+# measurement — Task 8 measures the real mean on green and overwrites this constant.
+GREEN_SECONDS_CEILING = float(os.getenv("JED_GREEN_CEILING_S", "200.0"))
+
+# Pack to this fraction of the ceiling, leaving margin for T4-vs-green variance (the
+# ceiling is measured on green; the actual submission runs on the stricter T4).
+BUDGET_FILL_FRACTION = 0.85
+
+# Green-seconds of exfil reserved for the public floor (the promoted best submission,
+# see config.FLOOR_DIR). Modest default; tune once real green per-candidate cost_s is
+# measured (Task 8).
+PUBLIC_FLOOR_COST_S = float(os.getenv("JED_PUBLIC_FLOOR_COST_S", "20.0"))
+
 
 def ensure_dirs() -> None:
     """Create the runtime directories if missing."""

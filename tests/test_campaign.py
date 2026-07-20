@@ -910,3 +910,14 @@ def test_archive_keeps_non_dominated_and_protects_pinned(tmp_path: Path) -> None
     )  # dominates pin (>= all, > some)
     survivors = {x.template for x in archive.read(p)}
     assert "pin" in survivors and "E" in survivors
+
+
+def test_budget_fits_uses_calibrated_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
+    """fits() sums count*cost_s against CEILING * FILL_FRACTION."""
+    from jed_attack.campaign import archive, budget, config
+
+    monkeypatch.setattr(config, "GREEN_SECONDS_CEILING", 100.0)
+    monkeypatch.setattr(config, "BUDGET_FILL_FRACTION", 0.85)
+    e = archive.Entry("t", 5, {"optimal": 1, "rules": 1, "hardened": 1}, 2.0)
+    assert budget.fits([(e, 42)]) is True  # 84 <= 85
+    assert budget.fits([(e, 43)]) is False  # 86 > 85
