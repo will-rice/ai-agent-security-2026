@@ -891,7 +891,7 @@ def _setup_logging() -> None:
 
 def main() -> None:
     """CLI: run the prompt-optimization loop."""
-    load_dotenv()  # api tokens from a gitignored .env (also inherited from launcher)
+    load_dotenv(config.ENV_FILE)  # explicit path: find_dotenv() fails under `python -m`
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--generations", type=int, default=None, help="generations to run (default: ∞)"

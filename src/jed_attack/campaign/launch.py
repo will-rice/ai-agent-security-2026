@@ -245,9 +245,10 @@ def _preflight_chain(chain: list[providers.Provider]) -> None:
 
 def main() -> None:
     """CLI: select the proposer, sanity-check it, then launch (or switch) the swarm."""
-    # Load API tokens from a gitignored .env (e.g. ZAI_API_KEY, CHEAPEST_API_KEY) so
-    # they need not be exported by hand; workers inherit them via spawn()'s env.
-    load_dotenv()
+    # Load API tokens from the gitignored repo-root .env (ZAI_API_KEY, CHEAPEST_API_KEY)
+    # so they need not be exported by hand; workers inherit them via spawn()'s env. The
+    # explicit path is required — bare load_dotenv() can't find .env under `python -m`.
+    load_dotenv(config.ENV_FILE)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workers", type=int, default=3)
     parser.add_argument(

@@ -14,6 +14,12 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 CAMPAIGN_ROOT = Path(os.getenv("JED_CAMPAIGN_ROOT", str(_REPO_ROOT / "run"))).resolve()
 
+# API tokens (ZAI_API_KEY, CHEAPEST_API_KEY) load from a gitignored .env at the repo root.
+# Pass this explicit path to load_dotenv: bare load_dotenv()/find_dotenv() cannot locate
+# .env under ``python -m`` (no reliable calling frame), so the swarm silently ran keyless
+# and dropped every api proposer. An explicit path is deterministic.
+ENV_FILE = _REPO_ROOT / ".env"
+
 CANDIDATES_DIR = (
     CAMPAIGN_ROOT / "candidates"
 )  # run/candidates/<producer>.jsonl (producers append)
