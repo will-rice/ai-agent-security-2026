@@ -77,7 +77,11 @@ _PROPOSER_SYSTEM = (
     "prose, no code fences, no explanation."
 )
 _PROPOSER_TEMPERATURE = 1.0  # high temp + random seed => successive calls explore
-_PROPOSER_MAX_TOKENS = 1024
+# Large enough for a THINKING proposer (e.g. kimi-k2.7) to finish its reasoning_content
+# AND still emit the JSON in `content`. At 1024 the reasoning consumed the whole budget
+# and content came back empty -> no proposals -> silent fall to local. Non-thinking
+# models (glm, gpt_oss) stop early, so the larger cap costs nothing there.
+_PROPOSER_MAX_TOKENS = 8192
 _API_RETRIES = 3  # attempts for an api call before giving up (backs off on 429)
 _MAX_BACKOFF_S = 8.0  # a 429 with a longer Retry-After is sustained throttling: fall
 # through to the next provider (local) rather than stall the whole generation waiting.
