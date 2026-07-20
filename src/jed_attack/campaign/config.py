@@ -55,13 +55,13 @@ REPLAY_WORKERS = int(os.getenv("JED_REPLAY_WORKERS", "8"))
 # Returned-candidate ceiling for the assembled submission (see docs/strategy.md).
 MAX_CANDIDATES = int(os.getenv("JED_MAX_CANDIDATES", "300"))
 
-# Ship ARTIFACT: the shape of build_next/attack.py. "adaptive" (default) ships the
-# self-sizing adaptive.build_adaptive run() that probes the live env and fills only as
-# many candidates as fit the 9000s/cell budget on the actual hardware — it CANNOT time
-# out the way a fixed pool does (a static 150× multi-post pool overran the T4 and scored
-# a zero). "static" ships the fixed assemble() pool (legacy; only safe when the
-# per-candidate replay cost is known to fit the budget — e.g. single-post).
-SHIP_ARTIFACT = os.getenv("JED_SHIP_ARTIFACT", "adaptive")
+# Ship ARTIFACT: the shape of build_next/attack.py. "static" (default) ships the fixed
+# assemble() pool at SCORE_CAP candidates — locked to the PROVEN config: 80 × K=5, the
+# only submission that scored (34.315). "adaptive" ships the self-sizing
+# adaptive.build_adaptive run(); it OVER-fills and timed out on the T4 (v7 blanked),
+# so it is not the default until its probe/fill is fixed. Static-80 provably fits: the
+# 105/120/230-candidate pools all timed out; 80 sits right at the T4 ceiling for K=5.
+SHIP_ARTIFACT = os.getenv("JED_SHIP_ARTIFACT", "static")
 
 # Ship-pool source (the STATIC path / score-daemon proxy). "multipost" uses the
 # deterministic multi-post template directly (produce.multipost_chain — the winning
@@ -104,8 +104,11 @@ PROPOSER_CONFIG_FILE = CAMPAIGN_ROOT / "proposer.json"
 OPTIMIZE_LOG = CAMPAIGN_ROOT / "optimize_prompts.log"
 CODEX_SCRATCH_DIR = CAMPAIGN_ROOT / "codex_scratch"
 
-# Calibrated-score daemon: the single-message ship pool it scores + its result/cache.
-SCORE_CAP = int(os.getenv("JED_SCORE_CAP", "300"))
+# Ship + calibrated-score pool size. 80 is the PROVEN T4 ceiling for K=5 multi-post: the
+# 80-candidate pool scored 34.315, everything larger (105/120/230) timed out to ~0. Both
+# the shipped static pool (assemble cap) and the local score daemon use this, so local
+# calibration reflects exactly what ships.
+SCORE_CAP = int(os.getenv("JED_SCORE_CAP", "80"))
 SCORE_FILE = CAMPAIGN_ROOT / "score.json"  # latest calibrated public-LB prediction
 SCORE_CACHE = CAMPAIGN_ROOT / "score_cache.jsonl"  # per-(message,model) replay cache
 
