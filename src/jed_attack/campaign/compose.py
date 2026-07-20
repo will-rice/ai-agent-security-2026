@@ -58,7 +58,7 @@ def _add_copies(
     entry: archive.Entry,
     pool_items: list[tuple[archive.Entry, int]],
     messages: list[str],
-    counter: list[int],
+    cursor: list[int],
     should_add: Callable[[], bool],
 ) -> None:
     """Append rendered copies of ``entry`` while ``should_add`` allows more.
@@ -67,20 +67,24 @@ def _add_copies(
         entry: The archive entry to render repeatedly.
         pool_items: The running (entry, count) pool; appended to in place.
         messages: The running rendered-message list; appended to in place.
-        counter: A single-element mutable counter supplying globally unique indices.
+        cursor: A single-element mutable high-water mark of the next free render
+            index. Each copy claims the block ``[index*hops, index*hops+hops)`` at
+            ``index = ceil(cursor / hops)`` and advances the cursor past it, so
+            rendered domains/addresses never collide even across entries with
+            differing ``hops``.
         should_add: Zero-arg predicate re-checked before every copy; return True to
             add one more rendered copy of ``entry``.
     """
     misses = 0
     while should_add() and misses < _MAX_RENDER_MISSES:
-        index = counter[0]
-        counter[0] += 1
+        index = -(-cursor[0] // entry.hops)  # ceil(cursor / hops)
         rendered = _render(entry, index)
         if rendered is None:
             misses += 1
             continue
         messages.append(rendered)
         pool_items.append((entry, 1))
+        cursor[0] = index * entry.hops + entry.hops
         misses = 0
 
 
@@ -93,7 +97,8 @@ def _robust_weight(entry: archive.Entry) -> float:
     Returns:
         The ranking key (higher is better).
     """
-    return min(entry.gates.get("rules", 0.0), entry.gates.get("hardened", 0.0))
+    survives = min(entry.gates.get("rules", 0.0), entry.gates.get("hardened", 0.0))
+    return survives / entry.cost_s
 
 
 def compose_pool(archive_path: Path) -> list[str]:
@@ -123,7 +128,7 @@ def compose_pool(archive_path: Path) -> list[str]:
 
     pool_items: list[tuple[archive.Entry, int]] = []
     messages: list[str] = []
-    counter = [0]
+    cursor = [0]
 
     if pinned and pinned[0].cost_s > 0:
         exfil_entry = pinned[0]
@@ -131,10 +136,11 @@ def compose_pool(archive_path: Path) -> list[str]:
             exfil_entry,
             pool_items,
             messages,
-            counter,
+            cursor,
             lambda: (
                 sum(count * e.cost_s for e, count in pool_items if e is exfil_entry)
                 < config.PUBLIC_FLOOR_COST_S
+                and budget.fits([*pool_items, (exfil_entry, 1)])
             ),
         )
 
@@ -143,7 +149,7 @@ def compose_pool(archive_path: Path) -> list[str]:
             entry,
             pool_items,
             messages,
-            counter,
+            cursor,
             lambda entry=entry: budget.fits([*pool_items, (entry, 1)]),
         )
 
