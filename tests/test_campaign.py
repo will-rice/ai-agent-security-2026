@@ -354,17 +354,32 @@ def test_best_prompt_roundtrips_and_ranks(
     assert (best := prompt_opt.best_prompt("exfil")) is not None
     assert best["template"] == "SECRET_MARKER {urls} D"
 
-    # --- deputy has its OWN incumbent file and is ranked on ROBUST (maximin) ---
+    # --- deputy: promote ONLY on a non-regressing improvement across ALL gates ---
     assert (
         prompt_opt.best_prompt("deputy") is None
     )  # untouched by the exfil writes above
-    strong_robust = {"public": 32.0, "robust": 16.0, "posts": 8}
-    assert prompt_opt.record_prompt("{addrs} X", 8, strong_robust, "deputy") is True
-    # Higher PUBLIC but lower ROBUST loses for deputy (ranked on robust, not public).
-    high_public = {"public": 96.0, "robust": 8.0, "posts": 8}
-    assert prompt_opt.record_prompt("{addrs} Y", 8, high_public, "deputy") is False
-    assert (best := prompt_opt.best_prompt("deputy")) is not None
-    assert best["template"] == "{addrs} X"
+    base = {
+        "gates": {"optimal": 30.0, "rules": 16.0, "hardened": 20.0},
+        "robust": 16.0,
+        "posts": 8,
+    }
+    assert prompt_opt.record_prompt("{addrs} X", 8, base, "deputy") is True
+    # Higher robust (worst gate 16->20) but REGRESSES optimal (30->24): NOT written.
+    regress = {
+        "gates": {"optimal": 24.0, "rules": 20.0, "hardened": 22.0},
+        "robust": 20.0,
+        "posts": 8,
+    }
+    assert prompt_opt.record_prompt("{addrs} Y", 8, regress, "deputy") is False
+    assert prompt_opt.best_prompt("deputy")["template"] == "{addrs} X"
+    # Dominates every gate (no regression, strictly better robust): written.
+    better = {
+        "gates": {"optimal": 30.0, "rules": 18.0, "hardened": 22.0},
+        "robust": 18.0,
+        "posts": 8,
+    }
+    assert prompt_opt.record_prompt("{addrs} Z", 8, better, "deputy") is True
+    assert prompt_opt.best_prompt("deputy")["template"] == "{addrs} Z"
 
 
 def test_record_prompt_is_lock_safe_under_concurrency(
