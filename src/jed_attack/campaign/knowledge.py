@@ -28,7 +28,7 @@ from jed_attack.campaign.store import chain_id
 
 _log = logging.getLogger("knowledge")
 
-# Note kinds. Agents write insight/deadend; the gate daemon writes gate_reject/gate_adopt.
+# Note kinds. Agents write insight/deadend; gate daemon writes gate_reject/gate_adopt.
 INSIGHT = "insight"
 DEADEND = "deadend"
 GATE_REJECT = "gate_reject"

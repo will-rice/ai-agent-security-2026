@@ -75,9 +75,18 @@ SHIP_RANK = os.getenv("JED_SHIP_RANK", "public")
 # these slots hedge the other private guardrail family (a payload scanner).
 SHIP_HEDGE_SLOTS = int(os.getenv("JED_SHIP_HEDGE_SLOTS", "20"))
 
-# Prompt-optimization incumbent. The fitness harness (prompt_opt.py) writes the best
-# multi-post template + post count here; produce/adaptive read it to build the pool.
-BEST_PROMPT_FILE = CAMPAIGN_ROOT / "best_prompt.json"
+# Prompt-optimization incumbents (one per attack FAMILY — the portfolio hedge). The
+# fitness harness (prompt_opt.py) writes the best template + count for each family.
+# EXFIL = SECRET_MARKER multi-post: maximizes PUBLIC (OptimalGuardrail) severity, but is
+# 0 under the RulesGuardrail (which denies exactly the scored exfil payload) — the bet
+# that the private LB is lenient. DEPUTY = single-message multi-email confused-deputy:
+# lower per-hit severity but survives ALL guardrails (optimal/rules/hardened) — the bet
+# that the private LB is strict. produce/adaptive read the EXFIL file; the hedged ship
+# pool draws from both.
+BEST_PROMPT_FILE = (
+    CAMPAIGN_ROOT / "best_prompt.json"
+)  # EXFIL incumbent (back-compat name)
+BEST_DEPUTY_FILE = CAMPAIGN_ROOT / "best_deputy.json"  # DEPUTY (robust) incumbent
 
 # Live proposer config (optimize_prompts.read_proposer). Workers re-read this each
 # generation, so `jed-optimize --switch` can change the proposer backend/model/endpoint
