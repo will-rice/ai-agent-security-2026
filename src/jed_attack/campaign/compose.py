@@ -30,24 +30,27 @@ _MAX_RENDER_MISSES = 8
 def _render(entry: archive.Entry, index: int) -> str | None:
     """Render one concrete copy of an archive entry via its placeholder's renderer.
 
-    Delegates to :func:`prompt_opt.render_message`, which dispatches on the template's
-    fan-out placeholder across all four predicate families (``{urls}`` exfil,
-    ``{addrs}`` deputy, ``{acts}`` untrusted-to-action, ``{deletes}`` destructive).
+    Dispatches on the template's placeholder: ``{urls}`` is an EXFIL template
+    (:func:`prompt_opt.render`); ``{addrs}`` is a DEPUTY template
+    (:func:`prompt_opt.render_deputy`).
 
     Args:
-        entry: The archive entry to render; its ``hops`` sets the render fan-out.
+        entry: The archive entry to render; its ``hops`` sets the render fan-out
+            (posts or emails).
         index: A globally unique index across the whole composed pool, so rendered
             domains/addresses never collide.
 
     Returns:
-        The rendered message, or None if it fails a renderer invariant OR carries no
-        known placeholder (counted as a render miss by :func:`_add_copies`, never a
-        crash of the ship cycle).
+        The rendered message, or None if it fails a renderer invariant OR carries
+        neither a ``{urls}`` nor an ``{addrs}`` placeholder (counted as a render miss
+        by :func:`_add_copies`, never a crash of the ship cycle).
     """
-    rendered = prompt_opt.render_message(entry.template, index, entry.hops)
-    if rendered is None:
-        _log.warning("archive entry did not render: %r", entry.template[:80])
-    return rendered
+    if "{urls}" in entry.template:
+        return prompt_opt.render(entry.template, index, entry.hops)
+    if "{addrs}" in entry.template:
+        return prompt_opt.render_deputy(entry.template, index, entry.hops)
+    _log.warning("archive entry has no {urls}/{addrs} placeholder: %r", entry.template)
+    return None
 
 
 def _add_copies(
