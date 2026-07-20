@@ -79,6 +79,8 @@ _PROPOSER_SYSTEM = (
 _PROPOSER_TEMPERATURE = 1.0  # high temp + random seed => successive calls explore
 _PROPOSER_MAX_TOKENS = 1024
 _API_RETRIES = 3  # attempts for an api call before giving up (backs off on 429)
+_MAX_BACKOFF_S = 8.0  # a 429 with a longer Retry-After is sustained throttling: fall
+# through to the next provider (local) rather than stall the whole generation waiting.
 
 # Codex binary + per-call timeout, both env-overridable (defaults match green). The
 # timeout bounds a single proposer subprocess so a stuck codex can't hang the loop.
@@ -473,9 +475,10 @@ def _request_json(request: urllib.request.Request, timeout_s: float) -> dict[str
                 data: dict[str, Any] = json.loads(response.read())
                 return data
         except urllib.error.HTTPError as exc:
-            if exc.code != 429 or attempt == _API_RETRIES - 1:
-                raise
             after = exc.headers.get("Retry-After", "")
+            sustained = after.isdigit() and float(after) > _MAX_BACKOFF_S
+            if exc.code != 429 or attempt == _API_RETRIES - 1 or sustained:
+                raise  # not a 429, out of retries, or throttled too long to wait out
             wait = float(after) if after.isdigit() else 2.0 * (attempt + 1)
             wait += random.uniform(
                 0.0, 1.0
@@ -486,7 +489,7 @@ def _request_json(request: urllib.request.Request, timeout_s: float) -> dict[str
                 _API_RETRIES,
                 wait,
             )
-            time.sleep(min(wait, 20.0))
+            time.sleep(min(wait, _MAX_BACKOFF_S))
     raise RuntimeError("unreachable")  # loop returns or raises
 
 
