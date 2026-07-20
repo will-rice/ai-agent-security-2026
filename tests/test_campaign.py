@@ -321,32 +321,32 @@ def test_best_prompt_roundtrips_and_ranks(
     monkeypatch.setattr(prompt_opt.config, "BEST_DEPUTY_FILE", tmp_path / "deputy.json")
     monkeypatch.setattr(knowledge.config, "NOTES_DIR", tmp_path / "notes")
 
-    # --- exfil is ranked on PUBLIC (OptimalGuardrail) severity ---
+    # --- exfil is ranked on public_rps (binding-cell throughput), not raw severity ---
     assert prompt_opt.best_prompt("exfil") is None
-    base = {"public": 80.0, "robust": 0.0, "posts": 5}
+    base = {"public_rps": 20.0, "public": 80.0, "robust": 0.0, "posts": 5}
     assert prompt_opt.record_prompt("SECRET_MARKER {urls} A", 5, base, "exfil") is True
     assert prompt_opt.best_prompt("exfil") == {
         "template": "SECRET_MARKER {urls} A",
         "posts": 5,
         "fitness": base,
     }
-    # Lower public does NOT displace, even with more posts.
-    weaker = {"public": 48.0, "robust": 0.0, "posts": 8}
+    # Higher raw severity but LOWER throughput does NOT displace (the K=8 trap).
+    slower = {"public_rps": 12.0, "public": 112.0, "robust": 0.0, "posts": 8}
     assert (
-        prompt_opt.record_prompt("SECRET_MARKER {urls} B", 8, weaker, "exfil") is False
+        prompt_opt.record_prompt("SECRET_MARKER {urls} B", 8, slower, "exfil") is False
     )
     assert (best := prompt_opt.best_prompt("exfil")) is not None
     assert best["template"] == "SECRET_MARKER {urls} A"
-    # Higher public wins on the primary key, even with fewer posts.
-    stronger = {"public": 112.0, "robust": 0.0, "posts": 7}
+    # Higher throughput wins even with fewer posts / lower raw severity.
+    faster = {"public_rps": 28.0, "public": 40.0, "robust": 0.0, "posts": 2}
     assert (
-        prompt_opt.record_prompt("SECRET_MARKER {urls} C", 7, stronger, "exfil") is True
+        prompt_opt.record_prompt("SECRET_MARKER {urls} C", 2, faster, "exfil") is True
     )
     assert (best := prompt_opt.best_prompt("exfil")) is not None
     assert best["template"] == "SECRET_MARKER {urls} C"
-    # Same public: more posts breaks the tie.
-    tie = {"public": 112.0, "robust": 0.0, "posts": 8}
-    assert prompt_opt.record_prompt("SECRET_MARKER {urls} D", 8, tie, "exfil") is True
+    # Same throughput: more posts breaks the tie.
+    tie = {"public_rps": 28.0, "public": 80.0, "robust": 0.0, "posts": 4}
+    assert prompt_opt.record_prompt("SECRET_MARKER {urls} D", 4, tie, "exfil") is True
     assert (best := prompt_opt.best_prompt("exfil")) is not None
     assert best["template"] == "SECRET_MARKER {urls} D"
 
@@ -371,8 +371,8 @@ def test_record_prompt_is_lock_safe_under_concurrency(
     monkeypatch.setattr(prompt_opt.config, "BEST_PROMPT_FILE", best_file)
     monkeypatch.setattr(knowledge.config, "NOTES_DIR", tmp_path / "notes")
 
-    hi = {"public": 9.0, "robust": 0.0, "posts": 3}
-    lo = {"public": 1.0, "robust": 0.0, "posts": 9}
+    hi = {"public_rps": 9.0, "robust": 0.0, "posts": 3}
+    lo = {"public_rps": 1.0, "robust": 0.0, "posts": 9}
     barrier = threading.Barrier(2)
 
     def record(tag: str, fitness: dict[str, float]) -> None:
@@ -507,6 +507,7 @@ _SCORED_FITNESS = {
         "hardened": {"gpt_oss": 53.0, "gemma_4": 85.0},
     },
     "public": 80.0,
+    "public_rps": 20.0,
     "robust": 0.0,
     "mean_posts": 5.0,
 }
@@ -515,10 +516,15 @@ _SCORED_FITNESS = {
 def _fake_score(template: str, *args: object, **kwargs: object) -> dict[str, Any]:
     """Deterministic stand-in for score_prompt in generation tests.
 
-    The proposed "GEN ..." template outscores any seed template on public severity, so a
-    generation promotes the proposal rather than the injected seed floor.
+    The proposed "GEN ..." template outscores any seed template on the rank keys
+    (exfil public_rps, deputy robust), so a generation promotes the proposal.
     """
-    return {**_SCORED_FITNESS, "public": 80.0 if "GEN" in template else 40.0}
+    hi = "GEN" in template
+    return {
+        **_SCORED_FITNESS,
+        "public": 80.0 if hi else 40.0,
+        "public_rps": 25.0 if hi else 12.0,
+    }
 
 
 def test_optimize_runs_a_generation_via_local_proposer(
