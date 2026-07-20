@@ -450,11 +450,12 @@ def archive_incumbent(family: str = "deputy") -> dict[str, Any] | None:
         return {
             "public": entry.gates.get("optimal", 0.0),
             "robust": min(entry.gates.values()) if entry.gates else 0.0,
-            "public_rps": 0.0,  # binding-cell throughput isn't stored per entry
         }
 
+    # public_rps (binding-cell throughput) is not stored per archive entry, so an exfil
+    # incumbent ranks by "public"; every other rank_key is a stored fitness key.
     rank_key = FAMILIES[family].rank_key
-    sort_key = rank_key if rank_key in {"public", "robust"} else "public"
+    sort_key = "public" if rank_key == "public_rps" else rank_key
     best = max(entries, key=lambda entry: _fitness(entry)[sort_key])
     return {"template": best.template, "posts": best.hops, "fitness": _fitness(best)}
 
@@ -523,7 +524,7 @@ def seed_pinned_exfil() -> None:
     """
     from jed_attack.campaign import produce  # deferred: produce imports this module
 
-    if any(entry.pinned for entry in archive.read(config.ARCHIVE_FILE)):
+    if archive.has_pinned(config.ARCHIVE_FILE):
         return
     entry = archive.Entry(
         produce._TEMPLATE,

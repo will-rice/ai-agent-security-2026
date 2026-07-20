@@ -946,6 +946,14 @@ def test_archive_keeps_non_dominated_and_protects_pinned(tmp_path: Path) -> None
     )  # dominates pin (>= all, > some)
     survivors = {x.template for x in archive.read(p)}
     assert "pin" in survivors and "E" in survivors
+    # A pinned candidate is authoritative: it lands even when an existing entry already
+    # dominates it, so the composer's public floor is never silently rejected.
+    q = tmp_path / "arc2.jsonl"
+    assert archive.has_pinned(q) is False
+    assert archive.insert(e("strong", 90, 40, 60), q) is True
+    assert archive.insert(e("pin2", 80, 0, 53, pin=True), q) is True  # dominated, lands
+    assert archive.has_pinned(q) is True
+    assert "pin2" in {x.template for x in archive.read(q)}
 
 
 def test_budget_fits_uses_calibrated_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:

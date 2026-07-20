@@ -103,13 +103,14 @@ def read(path: Path) -> list[Entry]:
 
 
 def insert(entry: Entry, path: Path) -> bool:
-    """Insert ``entry`` into the archive if it is not Pareto-dominated.
+    """Insert ``entry`` into the archive unless it is Pareto-dominated.
 
     Locks the archive (a sibling ``<path>.lock`` file, ``fcntl`` exclusive), reads the
     current entries, and either rejects ``entry`` (an existing entry dominates it) or
     keeps it, dropping every existing NON-pinned entry that ``entry`` dominates. Pinned
-    entries are never evicted, even if ``entry`` dominates them. The rewrite is atomic
-    (temp file + ``os.replace``).
+    entries are authoritative: a ``pinned`` candidate is NEVER rejected as dominated (so
+    the composer's public floor always lands), and an existing pinned entry is NEVER
+    evicted. The rewrite is atomic (temp file + ``os.replace``).
 
     Args:
         entry: The candidate entry to add.
@@ -123,7 +124,7 @@ def insert(entry: Entry, path: Path) -> bool:
     with lock_path.open("a", encoding="utf-8") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)  # released on close (end of the with-block)
         existing = read(path)
-        if any(dominates(other, entry) for other in existing):
+        if not entry.pinned and any(dominates(other, entry) for other in existing):
             return False
         kept = [
             other for other in existing if other.pinned or not dominates(entry, other)
@@ -131,6 +132,18 @@ def insert(entry: Entry, path: Path) -> bool:
         kept.append(entry)
         _write_all(kept, path)
     return True
+
+
+def has_pinned(path: Path) -> bool:
+    """Return whether the archive already holds a pinned entry.
+
+    Args:
+        path: The archive jsonl file.
+
+    Returns:
+        True iff at least one entry has ``pinned=True``.
+    """
+    return any(entry.pinned for entry in read(path))
 
 
 def _write_all(entries: list[Entry], path: Path) -> None:

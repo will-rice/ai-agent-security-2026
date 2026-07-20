@@ -345,11 +345,12 @@ def _append_json(path: Path, record: dict[str, Any]) -> None:
 def main() -> None:
     """CLI: score the adopted pool and write score.json.
 
-    Both paths score through the SDK. Default is the cached single-message replay
-    (``predict_public_score`` — SDK replay under ``OptimalGuardrail``, cached per
-    ``(message, model)`` so it is fast once warm). ``--replay`` runs the full
-    ground-truth submission replay (both guardrails, budgeted) against the served
-    models.
+    Both paths score through the SDK and need the served models running (the old
+    no-GPU ledger default is gone; a cold cache under-reports on the first call).
+    Default is the cached single-message replay (``predict_public_score`` — SDK replay
+    under ``OptimalGuardrail``, cached per ``(message, model)`` so it is fast once
+    warm). ``--replay`` runs the full ground-truth submission replay (both guardrails,
+    budgeted) against the served models.
     """
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
     parser = argparse.ArgumentParser(description=__doc__)
