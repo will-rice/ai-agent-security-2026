@@ -41,17 +41,16 @@ def _render(entry: archive.Entry, index: int) -> str | None:
             domains/addresses never collide.
 
     Returns:
-        The rendered message, or None if it fails a renderer invariant.
-
-    Raises:
-        ValueError: The template carries neither a ``{urls}`` nor an ``{addrs}``
-            placeholder.
+        The rendered message, or None if it fails a renderer invariant OR carries
+        neither a ``{urls}`` nor an ``{addrs}`` placeholder (counted as a render miss
+        by :func:`_add_copies`, never a crash of the ship cycle).
     """
     if "{urls}" in entry.template:
         return prompt_opt.render(entry.template, index, entry.hops)
     if "{addrs}" in entry.template:
         return prompt_opt.render_deputy(entry.template, index, entry.hops)
-    raise ValueError(f"unknown placeholder in template: {entry.template!r}")
+    _log.warning("archive entry has no {urls}/{addrs} placeholder: %r", entry.template)
+    return None
 
 
 def _add_copies(
@@ -171,6 +170,9 @@ def build(out_dir: Path) -> Path:
     Returns:
         The path to the written ``attack.py``.
     """
+    # Guarantee the public-LB exfil floor exists even if the search only ever fed the
+    # archive deputy entries (idempotent — no-op once a pinned entry is present).
+    prompt_opt.seed_pinned_exfil()
     messages = compose_pool(config.ARCHIVE_FILE)
     pairs: list[tuple[tuple[str, ...], str]] = [
         ((message,), "composed") for message in messages

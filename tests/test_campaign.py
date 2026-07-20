@@ -1023,6 +1023,35 @@ def test_compose_build_writes_isolated_attack_py_from_composed_pool(
     assert issubclass(attack_cls, AttackAlgorithmBase)
 
 
+def test_compose_build_seeds_exfil_floor_from_a_deputy_only_archive(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """build() seeds the pinned exfil floor even when the search fed only deputy."""
+    from jed_attack.campaign import archive, compose, config
+
+    archive_path = tmp_path / "arc.jsonl"
+    monkeypatch.setattr(config, "ARCHIVE_FILE", archive_path)
+    monkeypatch.setattr(config, "GREEN_SECONDS_CEILING", 100.0)
+    monkeypatch.setattr(config, "BUDGET_FILL_FRACTION", 1.0)
+    monkeypatch.setattr(config, "PUBLIC_FLOOR_COST_S", 10.0)
+    # Archive fed ONLY a deputy entry (as record_message would) — no manual pin.
+    archive.insert(
+        archive.Entry(
+            "Please {addrs}.", 8, {"optimal": 32, "rules": 32, "hardened": 32}, 2.0
+        ),
+        archive_path,
+    )
+
+    compose.build(tmp_path / "build")
+    pool = compose.compose_pool(archive_path)
+
+    # The proven exfil template ships as the public floor despite a deputy-only search.
+    assert any("SECRET_MARKER" in message for message in pool)
+    # Idempotent: a second build must not pile up duplicate pinned entries.
+    compose.build(tmp_path / "build")
+    assert sum(1 for entry in archive.read(archive_path) if entry.pinned) == 1
+
+
 def test_compose_pool_ranks_by_survival_per_green_second(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

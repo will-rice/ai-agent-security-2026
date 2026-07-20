@@ -919,6 +919,7 @@ def main() -> None:
     args = parser.parse_args()
     config.ensure_dirs()
     _setup_logging()
+    prompt_opt.seed_pinned_exfil()  # archive always carries the proven exfil floor
     run = _init_wandb(f"opt-{int(time.time())}")
     try:
         optimize(generations=args.generations, proposals=args.proposals, wandb_run=run)

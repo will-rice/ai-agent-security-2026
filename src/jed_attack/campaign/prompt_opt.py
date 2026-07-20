@@ -466,15 +466,23 @@ _PINNED_EXFIL_COST_S = 1.2  # nominal per-candidate green replay cost
 
 
 def seed_pinned_exfil() -> None:
-    """Seed the archive with the pinned, proven v8 exfil template.
+    """Idempotently seed the archive with the pinned, proven v8 exfil template.
 
     :mod:`produce` never searches this template (green public didn't transfer to the
     real T4 once already), so it must be seeded explicitly rather than discovered by
     scoring — it is the one candidate with a REAL scored LB result. ``pinned=True``
     means :func:`archive.insert` never evicts it, even if a later entry dominates it.
+
+    Idempotent: returns early if the archive already holds a pinned entry, so it is safe
+    to call on every compose/optimizer start without piling up duplicate pins (identical
+    gates never Pareto-dominate, so :func:`archive.insert` would not otherwise dedup
+    them). This is what structurally guarantees the composed pool always has its
+    public-LB exfil floor, regardless of which process built the archive.
     """
     from jed_attack.campaign import produce  # deferred: produce imports this module
 
+    if any(entry.pinned for entry in archive.read(config.ARCHIVE_FILE)):
+        return
     entry = archive.Entry(
         produce._TEMPLATE,
         produce.POSTS_PER_CANDIDATE,
