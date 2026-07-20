@@ -749,6 +749,34 @@ def test_optimize_runs_a_generation_via_local_proposer(
     assert any(e.template == "GEN SECRET_MARKER {urls}" for e in entries)
 
 
+def test_generation_searches_all_three_families(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """One generation feeds deputy, untrusted, AND destructive entries to the pool."""
+    from jed_attack.campaign import archive
+
+    monkeypatch.setenv("JED_WANDB", "0")
+    monkeypatch.delenv("JED_PROPOSER", raising=False)
+    monkeypatch.delenv("CHEAPEST_API_KEY", raising=False)
+    monkeypatch.setattr(
+        optimize_prompts.config, "PROPOSER_CONFIG_FILE", tmp_path / "none.json"
+    )
+    monkeypatch.setattr(knowledge.config, "NOTES_DIR", tmp_path / "notes")
+    monkeypatch.setattr(prompt_opt.config, "ARCHIVE_FILE", tmp_path / "arc.jsonl")
+    # Empty proposer reply -> each family scores its own seed + parametric mutations.
+    monkeypatch.setattr(
+        optimize_prompts.providers, "openai_client", lambda p: _fake_openai_chat("[]")
+    )
+    monkeypatch.setattr(prompt_opt, "score_prompt", _fake_score)
+
+    optimize_prompts.optimize(generations=1, proposals=1, timeout_s=1.0, wandb_run=None)
+
+    families = {
+        prompt_opt.family_of(e.template) for e in archive.read(tmp_path / "arc.jsonl")
+    }
+    assert {"deputy", "untrusted", "destructive"} <= families
+
+
 def test_optimize_via_codex_backend_parses_stdout(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
