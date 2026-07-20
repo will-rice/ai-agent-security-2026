@@ -857,3 +857,27 @@ def test_proposal_batch_validates_and_rejects() -> None:
         proposals.ProposalBatch.model_validate(many)
     # schema is derivable (for response_format)
     assert "proposals" in proposals.ProposalBatch.model_json_schema()["properties"]
+
+
+def test_archive_keeps_non_dominated_and_protects_pinned(tmp_path: Path) -> None:
+    """Non-dominated entries survive, dominated ones are evicted, pins never are."""
+    from jed_attack.campaign import archive
+
+    p = tmp_path / "arc.jsonl"
+    e = lambda t, o, r, h, pin=False: archive.Entry(  # noqa: E731
+        t, 5, {"optimal": o, "rules": r, "hardened": h}, 1.0, pin
+    )
+    assert archive.insert(e("pin", 80, 0, 50, pin=True), p) is True
+    assert archive.insert(e("A", 30, 16, 20), p) is True  # non-dominated corner
+    assert archive.insert(e("B", 24, 20, 22), p) is True  # incomparable -> kept
+    assert archive.insert(e("C", 30, 10, 18), p) is False  # dominated by A -> rejected
+    assert archive.insert(e("D", 32, 18, 24), p) is True  # dominates A -> A evicted
+    templates = {x.template for x in archive.read(p)}
+    assert "pin" in templates and "A" not in templates and "D" in templates
+    assert "B" in templates
+    # A newcomer that DOMINATES the pinned entry is added, but the pin is never evicted.
+    assert (
+        archive.insert(e("E", 90, 5, 55), p) is True
+    )  # dominates pin (>= all, > some)
+    survivors = {x.template for x in archive.read(p)}
+    assert "pin" in survivors and "E" in survivors

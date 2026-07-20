@@ -93,6 +93,7 @@ BEST_PROMPT_FILE = (
     CAMPAIGN_ROOT / "best_prompt.json"
 )  # EXFIL incumbent (back-compat name)
 BEST_DEPUTY_FILE = CAMPAIGN_ROOT / "best_deputy.json"  # DEPUTY (robust) incumbent
+ARCHIVE_FILE = CAMPAIGN_ROOT / "archive.jsonl"  # Pareto archive of scored messages
 
 # Live proposer config (optimize_prompts.read_proposer). Workers re-read this each
 # generation, so `jed-optimize --switch` can change the proposer backend/model/endpoint
