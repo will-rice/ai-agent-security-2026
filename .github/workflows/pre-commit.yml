@@ -1,0 +1,67 @@
+name: pre-commit
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  COMPETITION: ai-agent-security-multi-step-tool-attacks
+  SDK_WHEEL: vendor/aicomp_sdk-3.1.2-py3-none-any.whl
+
+jobs:
+  pre-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      # The SDK wheel is gitignored (rebuilt from competition data); cache it
+      # so Kaggle is only contacted when the SDK version changes.
+      - name: Restore vendored SDK wheel
+        id: sdk-wheel
+        uses: actions/cache@v4
+        with:
+          path: vendor/aicomp_sdk-3.1.2-py3-none-any.whl
+          key: aicomp-sdk-3.1.2
+
+      - name: Rebuild vendored SDK wheel from Kaggle
+        if: steps.sdk-wheel.outputs.cache-hit != 'true'
+        env:
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+        run: |
+          uvx kaggle competitions download "$COMPETITION" -p vendor/
+          unzip -o -q "vendor/$COMPETITION.zip" -d vendor/bundle
+          python3 - <<'PY'
+          import pathlib
+          import zipfile
+
+          bundle = pathlib.Path("vendor/bundle")
+          whl = pathlib.Path("vendor/aicomp_sdk-3.1.2-py3-none-any.whl")
+          with zipfile.ZipFile(whl, "w", zipfile.ZIP_DEFLATED) as z:
+              for sub in ("aicomp_sdk", "aicomp_sdk-3.1.2.dist-info"):
+                  for p in sorted((bundle / sub).rglob("*")):
+                      if p.is_file():
+                          z.write(p, p.relative_to(bundle).as_posix())
+          print("wrote", whl, whl.stat().st_size, "bytes")
+          PY
+
+      - name: Sync project environment
+        run: uv sync --locked
+
+      - name: Cache pre-commit hook environments
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
+
+      - name: Run pre-commit
+        run: uv run pre-commit run --all-files --show-diff-on-failure
