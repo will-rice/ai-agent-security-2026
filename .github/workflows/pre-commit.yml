@@ -1,42 +1,48 @@
-name: pre-commit
+# This workflow will install Python dependencies, run tests and lint with a variety of Python versions
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python
+
+name: Python package
 
 on:
   push:
-    branches: [main]
+    branches: ["main"]
   pull_request:
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
-env:
-  COMPETITION: ai-agent-security-multi-step-tool-attacks
-  SDK_WHEEL: vendor/aicomp_sdk-3.1.2-py3-none-any.whl
+    branches: ["main"]
 
 jobs:
-  pre-commit:
+  build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12"]
+
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v3
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v3
         with:
-          enable-cache: true
+          python-version: ${{ matrix.python-version }}
 
-      # The SDK wheel is gitignored (rebuilt from competition data); cache it
-      # so Kaggle is only contacted when the SDK version changes.
-      - name: Restore vendored SDK wheel
-        id: sdk-wheel
-        uses: actions/cache@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          path: vendor/aicomp_sdk-3.1.2-py3-none-any.whl
-          key: aicomp-sdk-3.1.2
+          node-version: "24.4"
 
+      - name: Install prettier and toml plugin
+        run: npm install prettier prettier-plugin-toml
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      # The SDK wheel is gitignored (rebuilt from competition data), and
+      # aicomp-sdk is a path dependency, so uv sync fails without it.
       - name: Rebuild vendored SDK wheel from Kaggle
-        if: steps.sdk-wheel.outputs.cache-hit != 'true'
         env:
           KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
           KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+          COMPETITION: ai-agent-security-multi-step-tool-attacks
         run: |
           uvx kaggle competitions download "$COMPETITION" -p vendor/
           unzip -o -q "vendor/$COMPETITION.zip" -d vendor/bundle
@@ -54,14 +60,6 @@ jobs:
           print("wrote", whl, whl.stat().st_size, "bytes")
           PY
 
-      - name: Sync project environment
-        run: uv sync --locked
-
-      - name: Cache pre-commit hook environments
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pre-commit
-          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
-
-      - name: Run pre-commit
-        run: uv run pre-commit run --all-files --show-diff-on-failure
+      - name: Run pre-commit hook
+        run: |
+          uv run pre-commit run -a
