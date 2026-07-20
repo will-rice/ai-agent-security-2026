@@ -441,6 +441,42 @@ def test_record_message_inserts_entry_and_notes(
     assert any("cost_s=1.2" in n.text for n in notes)
 
 
+def test_archive_incumbent_ranks_deputy_by_robust_from_the_archive(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """archive_incumbent seeds the proposer from the archive, not best_prompt.json."""
+    from jed_attack.campaign import archive
+
+    monkeypatch.setattr(prompt_opt.config, "ARCHIVE_FILE", tmp_path / "arc.jsonl")
+    assert prompt_opt.archive_incumbent("deputy") is None  # empty archive -> no seed
+
+    archive.insert(
+        archive.Entry(
+            "weak {addrs}", 8, {"optimal": 8, "rules": 8, "hardened": 8}, 2.0
+        ),
+        tmp_path / "arc.jsonl",
+    )
+    archive.insert(
+        archive.Entry(
+            "strong {addrs}", 6, {"optimal": 40, "rules": 30, "hardened": 30}, 2.0
+        ),
+        tmp_path / "arc.jsonl",
+    )
+    # An exfil {urls} entry must not be picked for the deputy family.
+    archive.insert(
+        archive.Entry(
+            "SECRET_MARKER {urls}", 5, {"optimal": 80, "rules": 0, "hardened": 53}, 1.2
+        ),
+        tmp_path / "arc.jsonl",
+    )
+
+    incumbent = prompt_opt.archive_incumbent("deputy")
+    assert incumbent is not None
+    assert incumbent["template"] == "strong {addrs}"  # higher robust (min gate = 30)
+    assert incumbent["posts"] == 6
+    assert incumbent["fitness"]["robust"] == 30.0
+
+
 def test_multipost_chain_uses_the_pinned_template() -> None:
     """multipost_chain always renders the pinned v8 _TEMPLATE at the default K."""
     expected = prompt_opt.render(produce._TEMPLATE, 2, produce.POSTS_PER_CANDIDATE)

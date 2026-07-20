@@ -3,7 +3,7 @@
 The control loop, measurement, and persistence all live here in Python; codex is used
 only as the creative *proposer*. Each generation:
 
-1. reads the current incumbent (:func:`prompt_opt.best_prompt`, else the hardcoded
+1. reads the current incumbent (:func:`prompt_opt.archive_incumbent`, else the hardcoded
    :data:`produce._TEMPLATE`) plus a short digest of recently tried templates + fitness
    (reused from the shared :mod:`knowledge` log);
 2. asks the proposer chain (``providers.PREFERENCE``, else ``JED_PROPOSER``) for
@@ -230,7 +230,7 @@ def run_generation(gen: int, proposals: int, timeout_s: float) -> dict[str, Any]
     """
     valid = scored = 0
     for family in _FAMILIES:
-        incumbent = prompt_opt.best_prompt(family)
+        incumbent = prompt_opt.archive_incumbent(family)
         rank_key = prompt_opt.FAMILIES[family].rank_key
         if incumbent:
             template = incumbent["template"]
@@ -289,7 +289,7 @@ def proposer_sanity(
     Returns:
         The count of valid proposals the proposer returned.
     """
-    incumbent = prompt_opt.best_prompt("exfil")
+    incumbent = prompt_opt.archive_incumbent("exfil")
     template = incumbent["template"] if incumbent else produce._TEMPLATE
     posts = int(incumbent["posts"]) if incumbent else produce.POSTS_PER_CANDIDATE
     best_score = float(incumbent["fitness"].get("public", 0.0)) if incumbent else 0.0
@@ -319,7 +319,7 @@ def _incumbent_metrics(gen: int, valid: int, scored: int) -> dict[str, Any]:
         "proposals_scored": scored,
     }
     for family in _FAMILIES:
-        best = prompt_opt.best_prompt(family)
+        best = prompt_opt.archive_incumbent(family)
         fitness = best["fitness"] if best else {}
         metrics[f"{family}/public"] = float(fitness.get("public", 0.0))
         metrics[f"{family}/public_rps"] = float(fitness.get("public_rps", 0.0))

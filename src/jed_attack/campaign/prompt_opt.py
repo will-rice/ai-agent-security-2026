@@ -417,6 +417,48 @@ def best_prompt(family: str = "exfil") -> dict[str, Any] | None:
         return None
 
 
+def archive_incumbent(family: str = "deputy") -> dict[str, Any] | None:
+    """Return a family's best archive entry, shaped like :func:`best_prompt`.
+
+    The optimizer loop records every scored message into the Pareto :mod:`archive`
+    (:func:`record_message`) and no longer writes ``best_prompt.json``, so the proposer
+    seed and the run metrics must read the incumbent from the archive instead. Selects
+    among the archive entries whose template carries the family's render placeholder
+    (``{addrs}`` for deputy, ``{urls}`` for exfil) and ranks them by the family's
+    :attr:`Family.rank_key`, reconstructed from the stored gate vector: ``"robust"`` =
+    the worst gate (``min`` over ``{optimal, rules, hardened}``); ``"public"`` = the
+    optimal gate. The binding-cell ``"public_rps"`` is not stored on an archive entry,
+    so an exfil query falls back to ranking by ``"public"``.
+
+    Args:
+        family: ``"deputy"`` (default) or ``"exfil"``.
+
+    Returns:
+        ``{"template", "posts", "fitness"}`` for the best entry, or ``None`` if the
+        family has no archive entry yet.
+    """
+    placeholder = "{addrs}" if family == "deputy" else "{urls}"
+    entries = [
+        entry
+        for entry in archive.read(config.ARCHIVE_FILE)
+        if placeholder in entry.template
+    ]
+    if not entries:
+        return None
+
+    def _fitness(entry: archive.Entry) -> dict[str, float]:
+        return {
+            "public": entry.gates.get("optimal", 0.0),
+            "robust": min(entry.gates.values()) if entry.gates else 0.0,
+            "public_rps": 0.0,  # binding-cell throughput isn't stored per entry
+        }
+
+    rank_key = FAMILIES[family].rank_key
+    sort_key = rank_key if rank_key in {"public", "robust"} else "public"
+    best = max(entries, key=lambda entry: _fitness(entry)[sort_key])
+    return {"template": best.template, "posts": best.hops, "fitness": _fitness(best)}
+
+
 _NOTE_FORMAT = (  # matches optimize_prompts._feedback_digest's expected substrings
     "hops={hops} gates{{optimal:{optimal:.0f},rules:{rules:.0f},"
     "hardened:{hardened:.0f}}} cost_s={cost_s:.1f} :: {template!r}"
