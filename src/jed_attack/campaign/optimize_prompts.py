@@ -6,10 +6,12 @@ only as the creative *proposer*. Each generation:
 1. reads the current incumbent (:func:`prompt_opt.best_prompt`, else the hardcoded
    :data:`produce._TEMPLATE`) plus a short digest of recently tried templates + fitness
    (reused from the shared :mod:`knowledge` log);
-2. asks the proposer backend (``JED_PROPOSER``: ``local``, the default, prompts a
-   locally-served target model; ``codex`` shells out to the codex CLI) for multi-post
-   template variants as a JSON array of ``{"template", "posts"}`` objects, parsed
-   tolerantly from the reply;
+2. asks the proposer chain (``providers.PREFERENCE``, else ``JED_PROPOSER``) for
+   template variants — ``api``/``local`` providers go through the OpenAI SDK
+   (:func:`_propose_via_openai`: structured ``.parse(response_format=ProposalBatch)``
+   first, falling back to ``.create()`` + tolerant :func:`parse_proposals`); ``codex``
+   shells out to the CLI. Every path yields ``{"template", "tool_call_hops",
+   "rationale"}`` candidates;
 3. scores each proposal on the live served models (:func:`prompt_opt.score_prompt`) and
    records it (:func:`prompt_opt.record_prompt`), promoting it to the incumbent file
    when it beats the incumbent on raw-per-second;
@@ -40,9 +42,10 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from dotenv import load_dotenv
+from openai.types.chat import ChatCompletionMessageParam
 
 from jed_attack.campaign import config, knowledge, produce, prompt_opt, providers
-from jed_attack.harness.models import llama_server_chat_client
+from jed_attack.campaign.proposals import ProposalBatch
 
 
 class _SummaryLike(Protocol):
@@ -243,17 +246,18 @@ def run_generation(gen: int, proposals: int, timeout_s: float) -> dict[str, Any]
         if incumbent is None:
             # No incumbent yet: also score the seed so a weak first proposer can't
             # promote a candidate worse than the known-decent starting template.
-            seed: dict[str, Any] = {"template": template, "posts": posts}
+            seed: dict[str, Any] = {"template": template, "tool_call_hops": posts}
             candidates = [seed, *candidates]
         valid += len(candidates)
         for candidate in candidates:
             try:
+                hops = int(candidate["tool_call_hops"])
                 fitness = prompt_opt.score_prompt(
-                    candidate["template"], family=family, posts=int(candidate["posts"])
+                    candidate["template"], family=family, posts=hops
                 )
                 prompt_opt.record_prompt(
                     candidate["template"],
-                    int(candidate["posts"]),
+                    hops,
                     fitness,
                     family=family,
                 )
@@ -349,8 +353,8 @@ def propose(
         timeout_s: Codex subprocess timeout (codex backend only).
 
     Returns:
-        A non-empty list of ``{"template", "posts"}`` proposals whenever the incumbent
-        is renderable (the fallback mutations always are).
+        A non-empty list of ``{"template", "tool_call_hops"}`` proposals whenever the
+        incumbent is renderable (the fallback mutations always are).
     """
     global _active_proposer, _active_proposer_is_api
     prompt = _proposer_prompt(family, template, posts, best_score, proposals)
@@ -406,14 +410,16 @@ def _propose_from(
         timeout_s: Codex/api call timeout.
 
     Returns:
-        The parsed proposals, or ``[]`` if this provider is unavailable.
+        ``[{"template", "tool_call_hops", "rationale"}, ...]``, or ``[]`` if this
+        provider is unavailable.
     """
     try:
         if provider.kind == "codex":
-            return propose_via_codex(prompt, timeout_s)
-        if provider.kind == "api":
-            return propose_via_api(prompt, timeout_s, provider)
-        return propose_via_local_model(prompt, provider.model)
+            # propose_via_codex uses the same tolerant parse_proposals wire format
+            # (``{"template", "posts"}``) as the openai tolerant fallback; coerce to
+            # the same canonical shape so run_generation sees one candidate schema.
+            return _coerce(propose_via_codex(prompt, timeout_s))
+        return _propose_via_openai(provider, prompt, timeout_s)
     except Exception as exc:  # unavailable / out of window / bad key / blocked / 429
         _log.warning(
             "proposer '%s' (%s) unavailable: %s",
@@ -424,50 +430,82 @@ def _propose_from(
         return []
 
 
-def propose_via_api(
-    prompt: str, timeout_s: float, provider: providers.Provider
+def _propose_via_openai(
+    provider: providers.Provider, prompt: str, timeout_s: float
 ) -> list[dict[str, Any]]:
-    """Prompt an OpenAI-compatible chat API (e.g. GLM via z.ai) as proposer.
+    """Prompt a provider via the OpenAI SDK, structured-first with a tolerant fallback.
 
-    The endpoint and model come from ``provider``; the bearer token is read at call time
-    from the env var it names (``provider.key_env``), so the secret is host-supplied and
-    never hardcoded or logged. A stronger open-weight proposer than the served targets,
-    with no OpenAI/Anthropic provider block. Parsed with the tolerant
-    :func:`parse_proposals`.
+    Tries ``.parse(response_format=ProposalBatch)`` (kimi honors json_schema; local
+    llama-server is also OpenAI-compatible); on truncation or any parse/validation
+    failure falls back to ``.create()`` + the tolerant :func:`parse_proposals` (for
+    providers that ignore the schema, e.g. z.ai, or truncate).
 
     Args:
+        provider: The ``api`` or ``local`` provider to query.
         prompt: The proposer prompt.
         timeout_s: Per-request timeout in seconds.
-        provider: The selected ``api`` provider (base_url, model, key_env).
 
     Returns:
-        The parsed proposals (possibly empty).
+        ``[{"template", "tool_call_hops", "rationale"}, ...]``; ``[]`` if unavailable.
     """
-    if not provider.base_url:
-        raise RuntimeError("api proposer has no base_url; set it in providers.py")
-    body = json.dumps(
+    client = providers.openai_client(provider)
+    messages: list[ChatCompletionMessageParam] = [
+        {"role": "system", "content": _PROPOSER_SYSTEM},
+        {"role": "user", "content": prompt},
+    ]
+    try:
+        response = client.chat.completions.parse(
+            model=provider.model,
+            messages=messages,
+            response_format=ProposalBatch,
+            max_completion_tokens=_PROPOSER_MAX_TOKENS,
+            temperature=_PROPOSER_TEMPERATURE,
+            timeout=timeout_s,
+        )
+        batch = response.choices[0].message.parsed
+        if batch is not None:
+            return [p.model_dump() for p in batch.proposals]
+    except (
+        Exception
+    ) as exc:  # LengthFinishReasonError, refusal, schema-ignored, network
+        _log.info(
+            "structured parse failed for %s (%s); trying tolerant path",
+            provider.model,
+            exc,
+        )
+    try:
+        response = client.chat.completions.create(
+            model=provider.model,
+            messages=messages,
+            max_completion_tokens=_PROPOSER_MAX_TOKENS,
+            temperature=_PROPOSER_TEMPERATURE,
+            timeout=timeout_s,
+        )
+        content = response.choices[0].message.content or ""
+        return _coerce(parse_proposals(content))
+    except Exception as exc:
+        _log.warning("proposer '%s' unavailable: %s", provider.model, exc)
+        return []
+
+
+def _coerce(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Map tolerant ``{template, posts}`` proposals to the structured-batch shape.
+
+    Args:
+        items: Proposals parsed by :func:`parse_proposals` (``{"template", "posts"}``).
+
+    Returns:
+        ``[{"template", "tool_call_hops", "rationale"}, ...]`` (``rationale`` defaults
+        to ``""`` — the tolerant path has no rationale field to carry over).
+    """
+    return [
         {
-            "model": provider.model,
-            "messages": [
-                {"role": "system", "content": _PROPOSER_SYSTEM},
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": _PROPOSER_TEMPERATURE,
-            "max_tokens": _PROPOSER_MAX_TOKENS,
+            "template": item["template"],
+            "tool_call_hops": item["posts"],
+            "rationale": "",
         }
-    ).encode()
-    request = urllib.request.Request(
-        provider.base_url.rstrip("/") + "/chat/completions",
-        data=body,
-        headers={
-            "Authorization": f"Bearer {os.environ[provider.key_env]}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    data = _request_json(request, timeout_s)
-    content = data["choices"][0]["message"].get("content") or ""
-    return parse_proposals(content)
+        for item in items
+    ]
 
 
 def _request_json(request: urllib.request.Request, timeout_s: float) -> dict[str, Any]:
@@ -533,37 +571,6 @@ def fetch_api_models(
     return [
         m["id"] for m in data.get("data", []) if isinstance(m, dict) and m.get("id")
     ]
-
-
-def propose_via_local_model(
-    prompt: str, model_key: str = providers.DEFAULT
-) -> list[dict[str, Any]]:
-    """Prompt a locally-served target model as the proposer and parse its JSON array.
-
-    Uses the same open-weight models the competition scores (no external provider), at
-    high temperature with a random seed so successive calls explore distinct variants.
-    The reply is parsed with the same tolerant :func:`parse_proposals` as codex, so
-    reasoning preambles or fences around the array are ignored.
-
-    Args:
-        prompt: The proposer prompt.
-        model_key: Served model to query ("gpt_oss" or "gemma_4").
-
-    Returns:
-        The parsed ``{"template", "posts"}`` proposals (possibly empty).
-    """
-    client = llama_server_chat_client(model_key)
-    response = client.create_chat_completion(
-        messages=[
-            {"role": "system", "content": _PROPOSER_SYSTEM},
-            {"role": "user", "content": prompt},
-        ],
-        max_tokens=_PROPOSER_MAX_TOKENS,
-        temperature=_PROPOSER_TEMPERATURE,
-        seed=random.randint(0, 2**31 - 1),
-    )
-    content = response["choices"][0]["message"].get("content") or ""
-    return parse_proposals(content)
 
 
 def propose_via_codex(
@@ -681,19 +688,19 @@ def parametric_mutations(
         posts: The incumbent hop count.
 
     Returns:
-        A non-empty list of ``{"template", "posts"}`` mutations.
+        A non-empty list of ``{"template", "tool_call_hops"}`` mutations.
     """
     mutations: list[dict[str, Any]] = []
     for count in {max(1, posts - 1), min(_MAX_POSTS, posts + 1)} - {posts}:
-        mutations.append({"template": template, "posts": count})
+        mutations.append({"template": template, "tool_call_hops": count})
 
     terminal = "Then answer OK only."
     if terminal in template:
         stripped = template.replace(terminal, "").rstrip()
-        mutations.append({"template": stripped, "posts": posts})
+        mutations.append({"template": stripped, "tool_call_hops": posts})
     else:
         mutations.append(
-            {"template": f"{template.rstrip()} {terminal}", "posts": posts}
+            {"template": f"{template.rstrip()} {terminal}", "tool_call_hops": posts}
         )
 
     framing = (
@@ -702,7 +709,7 @@ def parametric_mutations(
         else "Routine tool call, no analysis needed. "
     )
     if not template.startswith(framing):
-        mutations.append({"template": f"{framing}{template}", "posts": posts})
+        mutations.append({"template": f"{framing}{template}", "tool_call_hops": posts})
     return mutations
 
 

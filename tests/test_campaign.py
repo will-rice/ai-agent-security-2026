@@ -548,28 +548,67 @@ def _fake_score(template: str, *args: object, **kwargs: object) -> dict[str, Any
     }
 
 
+def _fake_openai_chat(content: str) -> SimpleNamespace:
+    """Build a fake ``openai.OpenAI`` client exercising the tolerant-fallback path.
+
+    Its ``.parse()`` raises (no structured-output support) and ``.create()`` returns
+    ``content`` as the message body, so callers fall through to :func:`parse_proposals`.
+
+    Args:
+        content: The raw chat-completion message content (JSON array or fenced JSON).
+
+    Returns:
+        A ``SimpleNamespace`` shaped like an ``openai.OpenAI`` client.
+    """
+
+    def _parse(**k: object) -> None:
+        """Simulate a provider that ignores ``response_format`` (no schema support)."""
+        raise RuntimeError("provider ignores json_schema / no structured support")
+
+    def _create(**k: object) -> SimpleNamespace:
+        """Return a chat completion carrying ``content`` as the message body."""
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+        )
+
+    completions = SimpleNamespace(parse=_parse, create=_create)
+    return SimpleNamespace(chat=SimpleNamespace(completions=completions))
+
+
+def _fake_broken_openai_chat() -> SimpleNamespace:
+    """Build a fake ``openai.OpenAI`` client that is entirely unreachable.
+
+    Both ``.parse()`` and ``.create()`` raise, so every candidate call fails.
+
+    Returns:
+        A ``SimpleNamespace`` shaped like an ``openai.OpenAI`` client.
+    """
+
+    def _boom(**k: object) -> None:
+        """Simulate an unreachable provider (connection refused)."""
+        raise RuntimeError("connection refused")
+
+    completions = SimpleNamespace(parse=_boom, create=_boom)
+    return SimpleNamespace(chat=SimpleNamespace(completions=completions))
+
+
 def test_optimize_runs_a_generation_via_local_proposer(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """One generation scores a local-model proposal and promotes it, W&B disabled."""
     monkeypatch.setenv("JED_WANDB", "0")
     monkeypatch.delenv("JED_PROPOSER", raising=False)  # -> PREFERENCE chain
-    monkeypatch.delenv("ZAI_API_KEY", raising=False)  # api providers filtered out,
-    monkeypatch.delenv("CHEAPEST_API_KEY", raising=False)  # so the chain is local-only
-    monkeypatch.setattr(
+    monkeypatch.delenv("CHEAPEST_API_KEY", raising=False)  # api provider filtered out,
+    monkeypatch.setattr(  # so the chain is local-only
         optimize_prompts.config, "PROPOSER_CONFIG_FILE", tmp_path / "none.json"
     )
     monkeypatch.setattr(prompt_opt.config, "BEST_PROMPT_FILE", tmp_path / "best.json")
     monkeypatch.setattr(knowledge.config, "NOTES_DIR", tmp_path / "notes")
 
     content = '[{"template": "GEN SECRET_MARKER {urls}", "posts": 5}]'
-    fake_client = SimpleNamespace(
-        create_chat_completion=lambda **k: {
-            "choices": [{"message": {"content": content}}]
-        }
-    )
+    fake_client = _fake_openai_chat(content)
     monkeypatch.setattr(
-        optimize_prompts, "llama_server_chat_client", lambda *a, **k: fake_client
+        optimize_prompts.providers, "openai_client", lambda p: fake_client
     )
     monkeypatch.setattr(prompt_opt.config, "BEST_DEPUTY_FILE", tmp_path / "deputy.json")
     monkeypatch.setattr(prompt_opt, "score_prompt", _fake_score)
@@ -682,9 +721,8 @@ def test_launch_spawn_starts_one_process_per_worker(
 def test_optimize_via_api_backend_parses_response(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The api backend posts to the provider's endpoint and parses the chat reply."""
+    """The api backend calls the OpenAI SDK client and parses the tolerant reply."""
     monkeypatch.setenv("JED_WANDB", "0")
-    monkeypatch.setenv("TEST_API_KEY", "dummy-key")
     monkeypatch.setattr(prompt_opt.config, "BEST_PROMPT_FILE", tmp_path / "best.json")
     monkeypatch.setattr(knowledge.config, "NOTES_DIR", tmp_path / "notes")
     test_provider = providers.Provider(
@@ -693,20 +731,9 @@ def test_optimize_via_api_backend_parses_response(
     monkeypatch.setattr(optimize_prompts, "current_providers", lambda: [test_provider])
 
     content = '[{"template": "GEN SECRET_MARKER {urls}", "posts": 5}]'
-    payload = json.dumps({"choices": [{"message": {"content": content}}]}).encode()
-
-    class _FakeResp:
-        def __enter__(self) -> "_FakeResp":
-            return self
-
-        def __exit__(self, *args: object) -> bool:
-            return False
-
-        def read(self) -> bytes:
-            return payload
-
+    fake_client = _fake_openai_chat(content)
     monkeypatch.setattr(
-        optimize_prompts.urllib.request, "urlopen", lambda *a, **k: _FakeResp()
+        optimize_prompts.providers, "openai_client", lambda p: fake_client
     )
     monkeypatch.setattr(prompt_opt.config, "BEST_DEPUTY_FILE", tmp_path / "deputy.json")
     monkeypatch.setattr(prompt_opt, "score_prompt", _fake_score)
@@ -754,25 +781,37 @@ def test_api_proposer_falls_back_to_local_when_unavailable(
     api = providers.Provider(
         "api", model="x", base_url="https://x.test/v1", key_env="DEFINITELY_UNSET_KEY"
     )
-    monkeypatch.delenv("DEFINITELY_UNSET_KEY", raising=False)  # api call will KeyError
-    monkeypatch.setattr(
-        optimize_prompts,
-        "current_providers",
-        lambda: [api, providers.get(providers.DEFAULT)],
-    )
-    local_calls: list[str] = []
+    local = providers.get(providers.DEFAULT)
+    monkeypatch.setattr(optimize_prompts, "current_providers", lambda: [api, local])
 
-    def _fake_local(
-        prompt: str, model_key: str = providers.DEFAULT
-    ) -> list[dict[str, str]]:
-        local_calls.append(model_key)
-        return [{"template": "L", "posts": "5"}]
+    clients = {
+        api.model: _fake_broken_openai_chat(),
+        local.model: _fake_openai_chat('[{"template": "L", "posts": 5}]'),
+    }
+    calls: list[str] = []
 
-    monkeypatch.setattr(optimize_prompts, "propose_via_local_model", _fake_local)
+    def _fake_client(provider: providers.Provider) -> SimpleNamespace:
+        calls.append(provider.model)
+        return clients[provider.model]
+
+    monkeypatch.setattr(optimize_prompts.providers, "openai_client", _fake_client)
     out = optimize_prompts._propose_via_backend("prompt", 1.0)
 
-    assert out == [{"template": "L", "posts": "5"}]
-    assert local_calls == [providers.DEFAULT]  # fell back to the local default model
+    assert out == [{"template": "L", "tool_call_hops": 5, "rationale": ""}]
+    assert calls == [api.model, local.model]  # tried api first, fell back to local
+
+
+def test_propose_via_openai_falls_back_to_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When .parse() raises, .create()+tolerant parse still yields proposals."""
+    fenced = (
+        '```json\n{"proposals":[{"rationale":"r","template":"SECRET_MARKER {urls}",'
+        '"tool_call_hops":5}]}\n```'
+    )
+    fake = _fake_openai_chat(fenced)
+    monkeypatch.setattr(optimize_prompts.providers, "openai_client", lambda p: fake)
+    out = optimize_prompts._propose_via_openai(providers.get("gpt_oss"), "prompt", 30.0)
+    assert out and out[0]["template"] == "SECRET_MARKER {urls}"
+    assert out[0]["tool_call_hops"] == 5
 
 
 def test_proposal_batch_validates_and_rejects() -> None:

@@ -8,7 +8,12 @@ files. ``jed-optimize --proposer <name>`` and the live ``proposer.json`` both us
 names; see :func:`optimize_prompts.current_provider`.
 """
 
+import os
 from dataclasses import dataclass
+
+from openai import OpenAI
+
+from jed_attack.harness.models import resolve_base_url
 
 
 @dataclass(frozen=True)
@@ -72,10 +77,11 @@ DEFAULT = "gpt_oss"
 
 # Preference order for "use whatever's available" (jed-optimize with no --proposer). The
 # proposer walks it each generation, SKIPS api providers whose key_env is unset, and
-# uses the first that responds; DEFAULT (local) is the guaranteed tail. Both APIs are
-# live: cheapest (flat-rate, in-window) leads, then z.ai GLM (coding-plan quota via the
-# /api/coding endpoint), then local gpt_oss.
-PREFERENCE: tuple[str, ...] = ("cheapest-kimi", "zai-glm4.6", DEFAULT)
+# uses the first that responds; DEFAULT (local) is the guaranteed tail. cheapest-kimi
+# (flat-rate, in-window) leads; z.ai is dropped from the default chain (kept in
+# PROVIDERS for explicit --proposer use) since cheapest covers the same structured-
+# output niche without the coding-plan quota's off-window failures.
+PREFERENCE: tuple[str, ...] = ("cheapest-kimi", DEFAULT)
 
 
 def get(name: str) -> Provider:
@@ -96,3 +102,23 @@ def get(name: str) -> Provider:
         raise KeyError(
             f"unknown proposer '{name}'; valid: {sorted(PROVIDERS)}"
         ) from None
+
+
+def openai_client(provider: Provider) -> OpenAI:
+    """Build an OpenAI-SDK client for a provider (api or local llama-server).
+
+    Both cheapest and llama-server speak the OpenAI chat API, so one client type drives
+    both via base_url. The bearer token is read from the provider's key_env at call time
+    (local providers use a placeholder — llama-server ignores auth).
+
+    Args:
+        provider: The ``api`` or ``local`` provider to build a client for.
+
+    Returns:
+        An ``openai.OpenAI`` client pointed at the provider's endpoint.
+    """
+    key = (
+        os.environ.get(provider.key_env, "sk-local") if provider.key_env else "sk-local"
+    )
+    base = provider.base_url or resolve_base_url(provider.model)  # local -> served base
+    return OpenAI(base_url=base.rstrip("/"), api_key=key)
