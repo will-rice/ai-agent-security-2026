@@ -371,7 +371,8 @@ def test_best_prompt_roundtrips_and_ranks(
         "posts": 8,
     }
     assert prompt_opt.record_prompt("{addrs} Y", 8, regress, "deputy") is False
-    assert prompt_opt.best_prompt("deputy")["template"] == "{addrs} X"
+    assert (best := prompt_opt.best_prompt("deputy")) is not None
+    assert best["template"] == "{addrs} X"
     # Dominates every gate (no regression, strictly better robust): written.
     better = {
         "gates": {"optimal": 30.0, "rules": 18.0, "hardened": 22.0},
@@ -379,7 +380,8 @@ def test_best_prompt_roundtrips_and_ranks(
         "posts": 8,
     }
     assert prompt_opt.record_prompt("{addrs} Z", 8, better, "deputy") is True
-    assert prompt_opt.best_prompt("deputy")["template"] == "{addrs} Z"
+    assert (best := prompt_opt.best_prompt("deputy")) is not None
+    assert best["template"] == "{addrs} Z"
 
 
 def test_record_prompt_is_lock_safe_under_concurrency(
@@ -771,3 +773,34 @@ def test_api_proposer_falls_back_to_local_when_unavailable(
 
     assert out == [{"template": "L", "posts": "5"}]
     assert local_calls == [providers.DEFAULT]  # fell back to the local default model
+
+
+def test_proposal_batch_validates_and_rejects() -> None:
+    """The batch parses good proposals and rejects bad hops / empty / oversize."""
+    from jed_attack.campaign import proposals
+
+    good = {
+        "proposals": [
+            {"rationale": "r", "template": "post {urls}", "tool_call_hops": 5}
+        ]
+    }
+    batch = proposals.ProposalBatch.model_validate(good)
+    assert batch.proposals[0].tool_call_hops == 5
+    import pydantic
+
+    for bad in (
+        {"proposals": [{"rationale": "r", "template": "t", "tool_call_hops": 9}]},
+        {"proposals": [{"rationale": "r", "template": "t", "tool_call_hops": 0}]},
+        {"proposals": []},
+        {"proposals": [{"template": "t", "tool_call_hops": 5}]},
+    ):
+        with pytest.raises(pydantic.ValidationError):
+            proposals.ProposalBatch.model_validate(bad)
+    # oversize
+    many = {
+        "proposals": [{"rationale": "r", "template": "t", "tool_call_hops": 1}] * 25
+    }
+    with pytest.raises(pydantic.ValidationError):
+        proposals.ProposalBatch.model_validate(many)
+    # schema is derivable (for response_format)
+    assert "proposals" in proposals.ProposalBatch.model_json_schema()["properties"]
