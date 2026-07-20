@@ -9,6 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import urlsplit
 
 import pytest
 from aicomp_sdk.agents import build_agent
@@ -292,11 +293,14 @@ def test_render_yields_unique_clean_marker_domains() -> None:
     assert message is not None
     assert message.count("SECRET_MARKER") == 1
     domains = [tok for tok in message.split() if tok.startswith("https://")]
-    assert len(domains) == 5
-    assert len(set(domains)) == 5  # unique netlocs
-    assert all(d.endswith(".invalid/r") for d in domains)
+    # Check netlocs (render's _valid does the same): the template may glue trailing
+    # onto the last URL token, which urlsplit ignores.
+    netlocs = [urlsplit(d).netloc for d in domains]
+    assert len(netlocs) == 5
+    assert len(set(netlocs)) == 5  # unique netlocs
+    assert all(n.endswith(".invalid") for n in netlocs)
     ultra = ("secret", "password", "token", "key", "credential", "private", "api_key")
-    assert not any(bad in d.lower() for d in domains for bad in ultra)
+    assert not any(bad in n.lower() for n in netlocs for bad in ultra)
 
 
 def test_render_rejects_marker_dirty_and_duplicate_templates() -> None:
@@ -524,6 +528,7 @@ def _fake_score(template: str, *args: object, **kwargs: object) -> dict[str, Any
         **_SCORED_FITNESS,
         "public": 80.0 if hi else 40.0,
         "public_rps": 25.0 if hi else 12.0,
+        "robust": 20.0 if hi else 8.0,
     }
 
 
@@ -555,7 +560,7 @@ def test_optimize_runs_a_generation_via_local_proposer(
 
     optimize_prompts.optimize(generations=1, proposals=1, timeout_s=1.0, wandb_run=None)
 
-    best = prompt_opt.best_prompt()
+    best = prompt_opt.best_prompt("deputy")
     assert best is not None
     assert best["template"] == "GEN SECRET_MARKER {urls}"
     assert best["fitness"]["public"] == 80.0
@@ -585,7 +590,7 @@ def test_optimize_via_codex_backend_parses_stdout(
 
     optimize_prompts.optimize(generations=1, proposals=1, timeout_s=1.0, wandb_run=None)
 
-    best = prompt_opt.best_prompt()
+    best = prompt_opt.best_prompt("deputy")
     assert best is not None
     assert best["template"] == "GEN SECRET_MARKER {urls}"
 
@@ -692,7 +697,7 @@ def test_optimize_via_api_backend_parses_response(
 
     optimize_prompts.optimize(generations=1, proposals=1, timeout_s=1.0, wandb_run=None)
 
-    best = prompt_opt.best_prompt()
+    best = prompt_opt.best_prompt("deputy")
     assert best is not None
     assert best["template"] == "GEN SECRET_MARKER {urls}"
 
