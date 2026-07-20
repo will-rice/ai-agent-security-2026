@@ -97,6 +97,8 @@ BEST_PROMPT_FILE = (
     CAMPAIGN_ROOT / "best_prompt.json"
 )  # EXFIL incumbent (back-compat name)
 BEST_DEPUTY_FILE = CAMPAIGN_ROOT / "best_deputy.json"  # DEPUTY (robust) incumbent
+BEST_UNTRUSTED_FILE = CAMPAIGN_ROOT / "best_untrusted.json"  # UNTRUSTED_TO_ACTION (CLI)
+BEST_DESTRUCTIVE_FILE = CAMPAIGN_ROOT / "best_destructive.json"  # DESTRUCTIVE (CLI)
 ARCHIVE_FILE = CAMPAIGN_ROOT / "archive.jsonl"  # Pareto archive of scored messages
 
 # Live proposer config (optimize_prompts.read_proposer). Workers re-read this each
