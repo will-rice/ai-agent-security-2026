@@ -9,6 +9,8 @@ around the same Q4_K_M GGUF files, matching
 
 import json
 import os
+import time
+import urllib.error
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -16,6 +18,9 @@ from pathlib import Path
 from typing import Any
 
 from aicomp_sdk.agents.protocol import AgentProtocol
+
+_MAX_RETRIES = 4  # transient 5xx under concurrent load; total wait ~ 1+2+4 = 7s
+_RETRY_BACKOFF_S = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,6 +209,10 @@ class _LlamaServerClient:
     def create_chat_completion(self, **kwargs: object) -> dict[str, Any]:
         """POST a chat-completion request to the server and return the JSON dict.
 
+        Retries transient server errors (HTTP 5xx / connection resets) with backoff:
+        under heavy concurrent load (gate + producers + scorer on one server) the
+        server intermittently 500s, which must not crash a long replay/gate run.
+
         Args:
             **kwargs: The OpenAI chat-completion body (messages, tools, max_tokens...).
 
@@ -217,8 +226,21 @@ class _LlamaServerClient:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=self._timeout) as response:
-            return json.loads(response.read())
+        last_error: Exception | None = None
+        for attempt in range(_MAX_RETRIES):
+            try:
+                with urllib.request.urlopen(request, timeout=self._timeout) as response:
+                    return json.loads(response.read())
+            except urllib.error.HTTPError as err:
+                if err.code < 500:
+                    raise  # client error (bad request) — retrying won't help
+                last_error = err
+            except (urllib.error.URLError, TimeoutError, ConnectionError) as err:
+                last_error = err
+            time.sleep(_RETRY_BACKOFF_S * (2**attempt))
+        raise RuntimeError(
+            f"llama-server request failed after {_MAX_RETRIES} retries"
+        ) from last_error
 
     def close(self) -> None:
         """No persistent resources to release."""
@@ -268,6 +290,26 @@ def llama_server_agent_factory(
         return make_agent(backend)
 
     return factory
+
+
+def llama_server_chat_client(
+    model_key: str, override: str | None = None, *, timeout: float = 600.0
+) -> _LlamaServerClient:
+    """Return a raw OpenAI-compatible chat client for a served model (no agent/tools).
+
+    Unlike the agent factories, this exposes plain ``create_chat_completion`` so
+    callers can prompt the model directly — used by the adversarial attacker to
+    generate its next user message from the target's observed behavior.
+
+    Args:
+        model_key: ``"gpt_oss"`` or ``"gemma_4"``.
+        override: Explicit base URL, if given.
+        timeout: Per-request timeout in seconds.
+
+    Returns:
+        A client whose ``create_chat_completion(**body)`` returns the OpenAI dict.
+    """
+    return _LlamaServerClient(resolve_base_url(model_key, override), timeout=timeout)
 
 
 def resolve_base_url(model_key: str, override: str | None = None) -> str:

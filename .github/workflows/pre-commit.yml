@@ -1,0 +1,65 @@
+# This workflow will install Python dependencies, run tests and lint with a variety of Python versions
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python
+
+name: Python package
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12"]
+
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v3
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.4"
+
+      - name: Install prettier and toml plugin
+        run: npm install prettier prettier-plugin-toml
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      # The SDK wheel is gitignored (rebuilt from competition data), and
+      # aicomp-sdk is a path dependency, so uv sync fails without it.
+      - name: Rebuild vendored SDK wheel from Kaggle
+        env:
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+          COMPETITION: ai-agent-security-multi-step-tool-attacks
+        run: |
+          uvx kaggle competitions download "$COMPETITION" -p vendor/
+          unzip -o -q "vendor/$COMPETITION.zip" -d vendor/bundle
+          python3 - <<'PY'
+          import pathlib
+          import zipfile
+
+          bundle = pathlib.Path("vendor/bundle")
+          whl = pathlib.Path("vendor/aicomp_sdk-3.1.2-py3-none-any.whl")
+          with zipfile.ZipFile(whl, "w", zipfile.ZIP_DEFLATED) as z:
+              for sub in ("aicomp_sdk", "aicomp_sdk-3.1.2.dist-info"):
+                  for p in sorted((bundle / sub).rglob("*")):
+                      if p.is_file():
+                          z.write(p, p.relative_to(bundle).as_posix())
+          print("wrote", whl, whl.stat().st_size, "bytes")
+          PY
+
+      - name: Run pre-commit hook
+        run: |
+          uv run pre-commit run -a
