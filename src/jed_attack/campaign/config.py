@@ -55,13 +55,17 @@ REPLAY_WORKERS = int(os.getenv("JED_REPLAY_WORKERS", "8"))
 # Returned-candidate ceiling for the assembled submission (see docs/strategy.md).
 MAX_CANDIDATES = int(os.getenv("JED_MAX_CANDIDATES", "300"))
 
-# Ship ARTIFACT: the shape of build_next/attack.py. "static" (default) ships the fixed
-# assemble() pool at SCORE_CAP candidates — locked to the PROVEN config: 80 × K=5, the
-# only submission that scored (34.315). "adaptive" ships the self-sizing
-# adaptive.build_adaptive run(); it OVER-fills and timed out on the T4 (v7 blanked),
-# so it is not the default until its probe/fill is fixed. Static-80 provably fits: the
-# 105/120/230-candidate pools all timed out; 80 sits right at the T4 ceiling for K=5.
-SHIP_ARTIFACT = os.getenv("JED_SHIP_ARTIFACT", "static")
+# Ship ARTIFACT: the shape of build_next/attack.py. "composed" (default) packs the
+# Pareto archive (archive.py) via the submission composer (compose.py): reserves a
+# public floor of the pinned exfil template, then greedily fills the rest of the
+# green-seconds budget with the archive entry with the best surviving robust weight per
+# green-second (min(gates["rules"], gates["hardened"]) / cost_s) — replaces the
+# exfil-only ship path with a maximin hedge over whichever guardrail is private, while
+# keeping a public-LB floor. "static" ships the fixed assemble() pool at SCORE_CAP
+# candidates — locked to the PROVEN config: 80 × K=5, the only submission that scored
+# (34.315). "adaptive" ships the self-sizing adaptive.build_adaptive run(); it
+# OVER-fills and timed out on the T4 (v7 blanked).
+SHIP_ARTIFACT = os.getenv("JED_SHIP_ARTIFACT", "composed")
 
 # Ship-pool source (the STATIC path / score-daemon proxy). "multipost" uses the
 # deterministic multi-post template directly (produce.multipost_chain — the winning
