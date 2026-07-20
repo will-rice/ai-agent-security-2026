@@ -501,6 +501,20 @@ def test_parse_proposals_extracts_json_array_from_codex_stdout() -> None:
     assert proposals[1]["posts"] == 8  # clamped to the 8-hop replay ceiling
 
 
+def test_feedback_digest_shows_per_gate_and_cost(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The proposer feedback digest surfaces a prior note's gates and cost verbatim."""
+    monkeypatch.setattr(knowledge.config, "NOTES_DIR", tmp_path / "notes")
+    knowledge.note(
+        "prompt_opt",
+        "hops=5 gates{optimal:80,rules:0,hardened:53} cost_s=1.2 :: "
+        "'SECRET_MARKER {urls}'",
+    )
+    text = optimize_prompts._feedback_digest(limit=3)
+    assert "rules:0" in text and "cost_s=1.2" in text
+
+
 def test_propose_falls_back_to_parametric_on_codex_failure(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
