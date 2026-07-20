@@ -420,6 +420,27 @@ def test_record_prompt_is_lock_safe_under_concurrency(
         assert best["template"].startswith("HI")  # highest public severity wins, always
 
 
+def test_record_message_inserts_entry_and_notes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """record_message archives the scored entry and writes the feedback note."""
+    monkeypatch.setattr(prompt_opt.config, "ARCHIVE_FILE", tmp_path / "arc.jsonl")
+    monkeypatch.setattr(knowledge.config, "NOTES_DIR", tmp_path / "notes")
+    fit = {
+        "gates": {"optimal": 80.0, "rules": 0.0, "hardened": 53.0},
+        "cost_s": 1.2,
+        "hops": 5,
+    }
+    assert prompt_opt.record_message("SECRET_MARKER {urls}", 5, fit) is True
+
+    from jed_attack.campaign import archive
+
+    entries = archive.read(tmp_path / "arc.jsonl")
+    assert entries and entries[0].gates["rules"] == 0.0 and entries[0].cost_s == 1.2
+    notes = knowledge.read_notes(tmp_path / "notes")
+    assert any("cost_s=1.2" in n.text for n in notes)
+
+
 def test_multipost_chain_uses_the_pinned_template() -> None:
     """multipost_chain always renders the pinned v8 _TEMPLATE at the default K."""
     expected = prompt_opt.render(produce._TEMPLATE, 2, produce.POSTS_PER_CANDIDATE)
@@ -535,11 +556,14 @@ def test_propose_falls_back_to_parametric_on_codex_failure(
 _SCORED_FITNESS = {
     "family": "exfil",
     "posts": 5,
+    "hops": 5,
     "vector": {
         "optimal": {"gpt_oss": 80.0, "gemma_4": 80.0},
         "rules": {"gpt_oss": 0.0, "gemma_4": 0.0},
         "hardened": {"gpt_oss": 53.0, "gemma_4": 85.0},
     },
+    "gates": {"optimal": 80.0, "rules": 0.0, "hardened": 53.0},
+    "cost_s": 1.0,
     "public": 80.0,
     "public_rps": 20.0,
     "robust": 0.0,
@@ -618,6 +642,7 @@ def test_optimize_runs_a_generation_via_local_proposer(
     )
     monkeypatch.setattr(prompt_opt.config, "BEST_PROMPT_FILE", tmp_path / "best.json")
     monkeypatch.setattr(knowledge.config, "NOTES_DIR", tmp_path / "notes")
+    monkeypatch.setattr(prompt_opt.config, "ARCHIVE_FILE", tmp_path / "arc.jsonl")
 
     content = '[{"template": "GEN SECRET_MARKER {urls}", "posts": 5}]'
     fake_client = _fake_openai_chat(content)
@@ -629,10 +654,10 @@ def test_optimize_runs_a_generation_via_local_proposer(
 
     optimize_prompts.optimize(generations=1, proposals=1, timeout_s=1.0, wandb_run=None)
 
-    best = prompt_opt.best_prompt("deputy")
-    assert best is not None
-    assert best["template"] == "GEN SECRET_MARKER {urls}"
-    assert best["fitness"]["public"] == 80.0
+    from jed_attack.campaign import archive
+
+    entries = archive.read(tmp_path / "arc.jsonl")
+    assert any(e.template == "GEN SECRET_MARKER {urls}" for e in entries)
 
 
 def test_optimize_via_codex_backend_parses_stdout(
@@ -647,6 +672,7 @@ def test_optimize_via_codex_backend_parses_stdout(
     monkeypatch.setattr(prompt_opt.config, "BEST_PROMPT_FILE", tmp_path / "best.json")
     monkeypatch.setattr(knowledge.config, "NOTES_DIR", tmp_path / "notes")
     monkeypatch.setattr(optimize_prompts.config, "CODEX_SCRATCH_DIR", tmp_path / "cx")
+    monkeypatch.setattr(prompt_opt.config, "ARCHIVE_FILE", tmp_path / "arc.jsonl")
 
     stdout = '[{"template": "GEN SECRET_MARKER {urls}", "posts": 5}]'
     monkeypatch.setattr(
@@ -659,9 +685,10 @@ def test_optimize_via_codex_backend_parses_stdout(
 
     optimize_prompts.optimize(generations=1, proposals=1, timeout_s=1.0, wandb_run=None)
 
-    best = prompt_opt.best_prompt("deputy")
-    assert best is not None
-    assert best["template"] == "GEN SECRET_MARKER {urls}"
+    from jed_attack.campaign import archive
+
+    entries = archive.read(tmp_path / "arc.jsonl")
+    assert any(e.template == "GEN SECRET_MARKER {urls}" for e in entries)
 
 
 def test_provider_chain_persists_filters_by_key_and_tails_local(
@@ -739,6 +766,7 @@ def test_optimize_via_api_backend_parses_response(
     monkeypatch.setenv("JED_WANDB", "0")
     monkeypatch.setattr(prompt_opt.config, "BEST_PROMPT_FILE", tmp_path / "best.json")
     monkeypatch.setattr(knowledge.config, "NOTES_DIR", tmp_path / "notes")
+    monkeypatch.setattr(prompt_opt.config, "ARCHIVE_FILE", tmp_path / "arc.jsonl")
     test_provider = providers.Provider(
         "api", model="glm-test", base_url="https://glm.test/v1", key_env="TEST_API_KEY"
     )
@@ -754,9 +782,10 @@ def test_optimize_via_api_backend_parses_response(
 
     optimize_prompts.optimize(generations=1, proposals=1, timeout_s=1.0, wandb_run=None)
 
-    best = prompt_opt.best_prompt("deputy")
-    assert best is not None
-    assert best["template"] == "GEN SECRET_MARKER {urls}"
+    from jed_attack.campaign import archive
+
+    entries = archive.read(tmp_path / "arc.jsonl")
+    assert any(e.template == "GEN SECRET_MARKER {urls}" for e in entries)
 
 
 def test_fetch_api_models_parses_catalog_ids(monkeypatch: pytest.MonkeyPatch) -> None:

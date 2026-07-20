@@ -13,8 +13,8 @@ only as the creative *proposer*. Each generation:
    shells out to the CLI. Every path yields ``{"template", "tool_call_hops",
    "rationale"}`` candidates;
 3. scores each proposal on the live served models (:func:`prompt_opt.score_prompt`) and
-   records it (:func:`prompt_opt.record_prompt`), promoting it to the incumbent file
-   when it beats the incumbent on raw-per-second;
+   records it (:func:`prompt_opt.record_message`) into the shared Pareto :mod:`archive`
+   of non-dominated messages, keyed on the ``{optimal, rules, hardened}`` gate vector;
 4. logs a one-line generation summary to the logfile and the knowledge log.
 
 Every proposer call and every score is wrapped so one bad generation never kills the
@@ -255,12 +255,7 @@ def run_generation(gen: int, proposals: int, timeout_s: float) -> dict[str, Any]
                 fitness = prompt_opt.score_prompt(
                     candidate["template"], family=family, posts=hops
                 )
-                prompt_opt.record_prompt(
-                    candidate["template"],
-                    hops,
-                    fitness,
-                    family=family,
-                )
+                prompt_opt.record_message(candidate["template"], hops, fitness)
                 scored += 1
             except Exception:  # a single bad score must not kill the loop
                 _log.exception("scoring a %s proposal failed; skipping it", family)
@@ -716,7 +711,7 @@ def parametric_mutations(
 def _feedback_digest(limit: int = _DIGEST_LIMIT) -> str:
     """Render the newest ``prompt_opt`` knowledge notes verbatim for the proposer.
 
-    Each note (written by :func:`prompt_opt.record_prompt`) already carries the hop
+    Each note (written by :func:`prompt_opt.record_message`) already carries the hop
     count, per-guardrail surviving severity, and measured cost for one prior template —
     so the proposer sees exactly what was tried and how it fared, not a re-derived
     summary. Notes are shown newest-first, same source as :func:`knowledge.digest`.
