@@ -166,10 +166,29 @@ marginal contribution to the total per resource-second** and pack greedily. Chan
   collapsing to one board. Winners are decided by the unprobeable private LB, so betting the
   whole pool on the strict proxy stays the trap the hedge exists to avoid.
 - **Both resource models logged** (`frontier/{public,robust}_per_{slot,sec}`) plus the
-  headline `total_score` (daemon replay) and `total_score_est` (in-loop closed form). The
-  packing uses the **seconds** budget (per-second ranking); whether the real T4 limit is
-  seconds or candidate-count is still to be **resolved empirically** by correlating these
-  ceilings with real T4 submissions (the per-slot vs per-sec question).
+  headline `total_score` (daemon replay) and `total_score_est` (in-loop closed form).
+
+### Resource model resolved from the gateway (per-second is correct)
+
+Reading `aicomp_sdk/evaluation/ops.py` settles the per-slot-vs-per-second question that was
+open above — it is **time-bound**, so per-second ranking is right:
+
+- **Each candidate is scored in isolation.** `_replay_candidate_trace` (ops.py:512–533)
+  builds a fresh `SandboxEnv` and calls `reset()` per candidate — no shared session — so the
+  submission total is a genuine per-candidate sum. This is why per-message treatment is
+  exact, not an approximation (and why our isolated-replay `score.py` matched 3.67 vs 3.675).
+  The only cross-candidate term is the `unique_cells` novelty set, neutralized by our
+  globally-unique rendered domains (every copy a distinct cell).
+- **The binding limit is a whole-pool wall-clock deadline.** The replay loop runs under
+  `replay_deadline_s = now + time_budget_s` (ops.py:791); `_run_until_deadline` **raises
+  `TimeoutError`** on overrun (ops.py:62, 78) and the loop doesn't catch it, so a pool that
+  can't replay in `time_budget_s` **zeros the entire submission** — exactly the 105/120/230
+  "blank entirely" failures. The candidate-count cap (`MAX_REPLAY_FINDINGS = 2000`) is far
+  above our pools, so count never binds.
+- **Consequence:** maximize Σ value subject to Σ replay-seconds ≤ deadline → fractional
+  knapsack → rank by value-per-**second** (implemented). `BUDGET_FILL_FRACTION = 0.85` is
+  mandatory insurance (overrun is catastrophic, not marginal), and the green→T4 time mapping
+  — verified by the real-T4 verifier kernel — is the risk to manage, not the ranking.
 
 ## Out of scope / deferred
 
@@ -177,5 +196,6 @@ marginal contribution to the total per resource-second** and pack greedily. Chan
   submission (manual constants for now).
 - Multi-pool emission (a public-heavy and a private-heavy variant for final selection) — one
   packed hedge list for now.
-- **Empirical resource-model resolution**: an A/B of a per-slot-packed vs per-second-packed
-  pool against the real T4 to pin whether the binding limit is candidate-count or wall-clock.
+- ~~Empirical resource-model resolution~~ — **resolved from the gateway code**: time-bound,
+  per-second (see "Resource model resolved" above). The `frontier/*_per_slot` metrics stay as
+  a monitoring cross-check but are no longer a pending decision.
