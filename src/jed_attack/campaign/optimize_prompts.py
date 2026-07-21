@@ -714,7 +714,7 @@ def _feedback_digest(limit: int = _DIGEST_LIMIT) -> str:
     Each note (written by :func:`prompt_opt.record_message`) already carries the hop
     count, per-guardrail surviving severity, and measured cost for one prior template —
     so the proposer sees exactly what was tried and how it fared, not a re-derived
-    summary. Notes are shown newest-first, same source as :func:`knowledge.digest`.
+    summary. Notes are shown newest-first (:func:`knowledge.read_notes`).
 
     Args:
         limit: Maximum recent notes to show.
