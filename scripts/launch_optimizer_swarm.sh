@@ -1,8 +1,8 @@
 #!/bin/bash
 # Launch the prompt-optimizer swarm: N workers running jed_attack.campaign.optimize_prompts.
 # Each worker asks the local served model (JED_PROPOSER=local) for multi-post template
-# variants, scores them on both models, and promotes winners to the shared, fcntl-locked
-# best_prompt.json. Run ON green (or `ssh green bash scripts/launch_optimizer_swarm.sh`).
+# variants, scores them on both models, and records non-dominated winners into the shared,
+# fcntl-locked Pareto archive.jsonl. Run ON green (or `ssh green bash scripts/launch_optimizer_swarm.sh`).
 # Sanity-checks one generation first and refuses to launch a parametric-only loop (i.e. if
 # the proposer model can't produce parseable JSON). Host config via env (green defaults):
 #   CAMPAIGN_REPO=$HOME/projects/ai-agent-security-2026   JED_CAMPAIGN_ROOT=$REPO/run
