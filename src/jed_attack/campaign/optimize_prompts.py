@@ -297,7 +297,8 @@ def _incumbent_metrics(gen: int, valid: int, scored: int) -> dict[str, Any]:
         scored: Number successfully scored + recorded.
 
     Returns:
-        A flat ``wandb.log``-shaped metrics dict: per-family incumbent
+        A flat ``wandb.log``-shaped metrics dict: the headline ``total_score`` (the
+        score daemon's public-LB prediction for the composed pool); per-family incumbent
         (``<family>/public``, ``<family>/robust``, ``<family>/posts``,
         ``<family>_template``); archive frontier (``archive/size``, per-family counts,
         discovered ceilings); and the composed ship pool's hedge split
@@ -340,6 +341,17 @@ def _incumbent_metrics(gen: int, valid: int, scored: int) -> dict[str, Any]:
     metrics["ship/pool_size"] = float(len(pool))
     metrics["ship/exfil_copies"] = float(exfil_copies)
     metrics["ship/deputy_copies"] = float(len(pool) - exfil_copies)
+
+    # Headline total_score: the score daemon's authoritative public-LB prediction for
+    # the composed pool (real SDK replays under OptimalGuardrail, cached — see score.py,
+    # validated 3.67 vs 3.675 actual). A lower bound until the replay cache warms; 0.0
+    # before the daemon's first cycle or if score.json is missing/unreadable.
+    try:
+        metrics["total_score"] = float(
+            json.loads(config.SCORE_FILE.read_text()).get("public_lb", 0.0)
+        )
+    except (OSError, json.JSONDecodeError, ValueError, TypeError):
+        metrics["total_score"] = 0.0
     return metrics
 
 
