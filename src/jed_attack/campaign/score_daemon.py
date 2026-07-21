@@ -18,10 +18,10 @@ _log = logging.getLogger("scoredaemon")
 def score_once() -> int:
     """Recompute the calibrated public-LB prediction and write score.json.
 
-    Scores the single-message ship pool (``ship_pool_chains(config.SCORE_CAP)``).
-    The assemble daemon regenerates ``build_next/attack.py`` from the SAME cap
-    and source, so the shipped artifact tracks this number (single owner — see
-    ``assemble_daemon``).
+    Scores the exact composed ship pool (``compose.compose_pool`` via
+    ``score.predict_public_score``). The assemble daemon regenerates
+    ``build_next/attack.py`` from the SAME composed pool, so the shipped artifact
+    tracks this number (single owner — see ``assemble_daemon``).
 
     Returns:
         The number of messages replayed this cycle (0 once the cache is warm).
