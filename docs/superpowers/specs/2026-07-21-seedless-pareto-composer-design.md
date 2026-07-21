@@ -141,14 +141,41 @@ daemons rebuild and re-score the composed pool as the archive grows.
   relaunched. The proven ≈22.34-T4 pool is preserved in the backup for restore before any
   ship deadline.
 
+## Revision — maximize the hedged total submission (2026-07-21, later same day)
+
+A follow-up sharpened the objective: the search + composer should directly maximize the
+**total submission score**, not per-message severity. Because the pool's LB score is a
+separable sum — `total = Σ_copies (surviving_severity + 2) / 200` (each unique-domain copy
+is a distinct score cell, so novelty is `+2` per copy; verified against `aicomp_sdk`'s
+`cell_signature`) — maximizing it is a fractional knapsack: **rank every template by its
+marginal contribution to the total per resource-second** and pack greedily. Changes:
+
+- **Composer** (`compose._public_value` / `_robust_value`): floor selection and fill both
+  rank by `(gate + 2) / cost_s` — the public floor by `(optimal + 2) / cost_s` (marginal
+  public total per second), the private fill by `(min(rules, hardened) + 2) / cost_s`.
+  Replaces the raw-`max(optimal)` floor and the `min(rules,hardened)/cost_s` fill.
+- **Archive frontier** now includes `cost_s` as a **minimized** Pareto dimension
+  (`archive.dominates`), so the cheap, throughput-optimal templates the composer needs are
+  no longer evicted by costlier, marginally-higher-gate ones. (Resolves the deferred item
+  below.)
+- **Search rank keys** become `public_value` / `robust_value` (same per-second marginals,
+  reconstructed in `archive_incumbent`), and the exfil/deputy proposer objectives are
+  retargeted from raw severity to severity-**per-second**. `public_rps` is deleted.
+- **Hedge preserved** (user decision): both boards' totals are maximized — the public floor
+  maximizes the public total, the private fill the private-proxy total — rather than
+  collapsing to one board. Winners are decided by the unprobeable private LB, so betting the
+  whole pool on the strict proxy stays the trap the hedge exists to avoid.
+- **Both resource models logged** (`frontier/{public,robust}_per_{slot,sec}`) plus the
+  headline `total_score` (daemon replay) and `total_score_est` (in-loop closed form). The
+  packing uses the **seconds** budget (per-second ranking); whether the real T4 limit is
+  seconds or candidate-count is still to be **resolved empirically** by correlating these
+  ceilings with real T4 submissions (the per-slot vs per-sec question).
+
 ## Out of scope / deferred
 
-- **Cost as an archive Pareto dimension.** The archive dominance uses gates only; a cheap
-  candidate can be evicted by a costlier one with a marginally higher gate, so the throughput
-  the composer wants for the fill is not itself protected in the frontier. Adding `cost_s`
-  (lower-is-better) as a dominance dimension would keep cheap survivors. Deferred as a
-  refinement.
 - Auto-recalibrating `GREEN_SECONDS_CEILING` / `PUBLIC_FLOOR_COST_S` from each real
   submission (manual constants for now).
 - Multi-pool emission (a public-heavy and a private-heavy variant for final selection) — one
   packed hedge list for now.
+- **Empirical resource-model resolution**: an A/B of a per-slot-packed vs per-second-packed
+  pool against the real T4 to pin whether the binding limit is candidate-count or wall-clock.

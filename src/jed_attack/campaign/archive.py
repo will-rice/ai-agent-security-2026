@@ -1,7 +1,9 @@
 """Pareto archive of scored attack messages over the guardrail gate-vector.
 
 A persistent, deduplication-free jsonl of :class:`Entry` records, kept non-dominated
-under the ``{optimal, rules, hardened}`` gate vector (guardrails.GATE_GUARDRAILS).
+over the ``{optimal, rules, hardened}`` gate vector (maximized) AND ``cost_s``
+(minimized), so the cheap, throughput-optimal templates the composer needs to maximize
+the total submission survive the frontier.
 The composer draws its submission pool from this archive instead of a single family
 incumbent, so it can hedge across whichever guardrail turns out to be private. Every
 entry is discovered by the seedless search; the archive keeps only non-dominated ones.
@@ -71,7 +73,14 @@ class Entry:
 
 
 def dominates(a: Entry, b: Entry) -> bool:
-    """Return True iff ``a`` Pareto-dominates ``b`` on the gate vector.
+    """Return True iff ``a`` Pareto-dominates ``b`` over the gate vector AND cost.
+
+    ``cost_s`` is a MINIMIZED objective alongside the (maximized) gates: the composer
+    maximizes the total submission by packing marginal value per green-second
+    (``(gate + novelty) / cost_s``), so a cheaper template with equal gates has strictly
+    higher value and MUST survive the frontier. Dropping cost from it would let
+    a costlier, marginally-higher-gate entry evict the throughput-optimal one that
+    actually maximizes the packed total.
 
     Args:
         a: Candidate dominator.
@@ -79,11 +88,14 @@ def dominates(a: Entry, b: Entry) -> bool:
 
     Returns:
         True iff ``a.gates[g] >= b.gates[g]`` for every gate in ``b.gates`` AND
-        ``a.gates[g] > b.gates[g]`` for at least one.
+        ``a.cost_s <= b.cost_s``, with at least one of those inequalities strict.
     """
-    at_least_as_good = all(a.gates.get(g, 0.0) >= v for g, v in b.gates.items())
-    strictly_better = any(a.gates.get(g, 0.0) > v for g, v in b.gates.items())
-    return at_least_as_good and strictly_better
+    gates_ge = all(a.gates.get(g, 0.0) >= v for g, v in b.gates.items())
+    cost_le = a.cost_s <= b.cost_s
+    if not (gates_ge and cost_le):
+        return False
+    gates_gt = any(a.gates.get(g, 0.0) > v for g, v in b.gates.items())
+    return gates_gt or a.cost_s < b.cost_s
 
 
 def read(path: Path) -> list[Entry]:

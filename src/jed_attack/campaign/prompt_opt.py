@@ -180,12 +180,13 @@ class Family:
 
 
 FAMILIES: dict[str, Family] = {
-    # exfil ranks by raw PUBLIC severity — the same scalar the composer's floor packs
-    # (max gates["optimal"]), so the search pushes toward what ships. The T4 verifier
-    # proved the exfil floor clears the budget with headroom, so throughput no longer
-    # binds; ranking on raw severity (not public_rps) maximizes the public LB directly.
-    "exfil": Family("exfil", render, DEFAULT_POSTS, "public"),
-    "deputy": Family("deputy", render_deputy, DEFAULT_EMAILS, "robust"),
+    # Both families rank by MARGINAL VALUE PER SECOND — the scalar the composer packs
+    # (compose._public_value / _robust_value), so the search climbs the total,
+    # not raw severity. exfil -> public_value = (optimal + 2) / cost_s; deputy ->
+    # robust_value = (min(rules,hardened) + 2) / cost_s. A cheaper template that fires
+    # reliably now wins over a costlier one with marginally higher raw severity.
+    "exfil": Family("exfil", render, DEFAULT_POSTS, "public_value"),
+    "deputy": Family("deputy", render_deputy, DEFAULT_EMAILS, "robust_value"),
 }
 
 
@@ -204,22 +205,16 @@ def score_prompt(
     fill. Surviving severity is contention-invariant (unlike latency), so the search can
     run the servers flat-out without corrupting the signal.
 
-    Three scalars are derived. ``public`` = mean-over-models severity under ``optimal``
-    (the public LB) and ``robust`` = the maximin — worst guardrail's mean-over-models
-    severity — are contention-invariant. ``public_rps`` = the raw-per-second of the
-    BINDING (slowest) model cell under ``optimal`` — ``min_m (optimal_severity_m + 2) /
-    time_m`` — is what the time-budgeted T4 actually rewards: how much scored severity
-    fits per second on the model that caps the pool. It de-ranks high K, which tanks the
-    binding gemma cell (gemma drops posts and wanders at K=8). Timing is contention-
-    sensitive, so we keep the fastest trial per model (least-contended) and rank on the
-    RELATIVE value — valid because all candidates in a generation are timed under one
-    load. ``public_rps`` is logged as a metric only; exfil ranks by ``public`` and
-    deputy by ``robust`` (see :data:`FAMILIES`).
+    Two gate scalars are derived, both contention-invariant. ``public`` = mean-over-
+    models severity under ``optimal`` (the public LB); ``robust`` = the maximin (worst
+    guardrail's mean-over-models severity). The search ranks their per-second value
+    (``(gate + novelty) / cost_s``, computed in :func:`archive_incumbent`), so it climbs
+    the marginal contribution to the total submission rather than raw severity.
 
     ``cost_s`` is the per-candidate green replay cost the composer packs against a
-    budget: the fastest (least-contended) ``optimal``-guardrail replay across every
-    model with timing data — ``min(min(opt_times[m]) for m in models with data)``, or
-    ``0.0`` if no replay was timed.
+    budget (and the search divides by for value-per-second): the fastest (least-
+    contended) ``optimal``-guardrail replay across every model with timing data —
+    ``min(min(opt_times[m]) for m in models with data)``, or ``0.0`` if none was timed.
 
     Args:
         template: The ``str.format`` template under test.
@@ -230,7 +225,7 @@ def score_prompt(
 
     Returns:
         ``{"family", "posts", "hops", "vector": {g: {model: severity}}, "gates",
-        "public", "public_rps", "robust", "mean_posts", "cost_s"}``.
+        "public", "robust", "mean_posts", "cost_s"}``.
     """
     fam = FAMILIES[family]
     k = fam.default_k if posts is None else posts
@@ -271,10 +266,6 @@ def score_prompt(
     def over_models(gname: str) -> float:
         return mean(vector[gname][m] for m in models)
 
-    def rps(model: str) -> float:
-        best = min(opt_times[model]) if opt_times[model] else 0.0
-        return (vector["optimal"][model] + 2.0) / best if best > 0 else 0.0
-
     weight = _POST_SEVERITY if family == "exfil" else _EMAIL_SEVERITY
     gates = {g: over_models(g) for g in GATE_GUARDRAILS}
     all_opt_times = [t for times in opt_times.values() for t in times]
@@ -286,7 +277,6 @@ def score_prompt(
         "vector": vector,
         "gates": gates,  # per-guardrail mean-over-models severity (the promotion gate)
         "public": gates["optimal"],
-        "public_rps": min(rps(m) for m in models),  # binding (slowest) cell throughput
         "robust": min(gates.values()),
         "mean_posts": gates["optimal"] / weight,
         "cost_s": cost_s,  # per-candidate green replay seconds (composer budget input)
@@ -301,10 +291,12 @@ def archive_incumbent(family: str = "deputy") -> dict[str, Any] | None:
     incumbent from the archive. Selects
     among the archive entries whose template carries the family's render placeholder
     (``{addrs}`` for deputy, ``{urls}`` for exfil) and ranks them by the family's
-    :attr:`Family.rank_key`, reconstructed from the stored gate vector: ``"robust"`` =
-    the worst gate (``min`` over ``{optimal, rules, hardened}``); ``"public"`` = the
-    optimal gate. Both families rank on a stored gate scalar (exfil ``"public"``, deputy
-    ``"robust"``), so no derived-throughput term is needed here.
+    :attr:`Family.rank_key`, reconstructed from the stored gate vector + ``cost_s``:
+    ``"public"``/``"robust"`` are the raw optimal / worst gate; ``"public_value"`` /
+    ``"robust_value"`` are their per-second value (``(gate + novelty) / cost_s``),
+    matching :func:`compose._public_value` / :func:`compose._robust_value` — the scalars
+    the search now ranks on, so the incumbent shown to the proposer is the one that most
+    raises the packed total.
 
     Args:
         family: ``"deputy"`` (default) or ``"exfil"``.
@@ -323,12 +315,21 @@ def archive_incumbent(family: str = "deputy") -> dict[str, Any] | None:
         return None
 
     def _fitness(entry: archive.Entry) -> dict[str, float]:
+        opt = entry.gates.get("optimal", 0.0)
+        robust = min(entry.gates.values()) if entry.gates else 0.0
+        cost = (
+            entry.cost_s or 1.0
+        )  # archive entries carry cost_s > 0; guard div-by-zero
         return {
-            "public": entry.gates.get("optimal", 0.0),
-            "robust": min(entry.gates.values()) if entry.gates else 0.0,
+            "public": opt,
+            "robust": robust,
+            "public_value": (opt + config.NOVELTY_PER_CELL) / cost if opt > 0 else 0.0,
+            "robust_value": (robust + config.NOVELTY_PER_CELL) / cost
+            if robust > 0
+            else 0.0,
         }
 
-    # Both families' rank_key ("public"/"robust") is a stored fitness scalar.
+    # rank_key is a stored/derived fitness scalar (raw gate or its per-second value).
     rank_key = FAMILIES[family].rank_key
     best = max(entries, key=lambda entry: _fitness(entry)[rank_key])
     return {"template": best.template, "posts": best.hops, "fitness": _fitness(best)}

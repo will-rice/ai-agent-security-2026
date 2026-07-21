@@ -522,6 +522,65 @@ def test_archive_keeps_non_dominated(tmp_path: Path) -> None:
     assert "A" not in templates and "D" in templates and "B" in templates
 
 
+def test_archive_dominance_includes_cost(tmp_path: Path) -> None:
+    """cost_s is a minimized Pareto dim: a cheaper equal-gate entry survives/wins."""
+    from jed_attack.campaign import archive
+
+    p = tmp_path / "arc.jsonl"
+    g = {"optimal": 40.0, "rules": 30.0, "hardened": 30.0}
+    # Equal gates, cheaper cost -> the cheap one dominates the costly one.
+    assert archive.insert(archive.Entry("costly", 5, g, 4.0), p) is True
+    assert (
+        archive.insert(archive.Entry("cheap", 5, g, 1.0), p) is True
+    )  # dominates costly
+    templates = {x.template for x in archive.read(p)}
+    assert templates == {"cheap"}  # costly evicted on cost
+    # A costlier newcomer with equal gates is rejected (dominated on cost).
+    assert archive.insert(archive.Entry("costly2", 5, g, 2.0), p) is False
+    # Higher gate but costlier is INCOMPARABLE (a real tradeoff) -> both kept.
+    hi = {"optimal": 60.0, "rules": 30.0, "hardened": 30.0}
+    assert archive.insert(archive.Entry("strong_costly", 5, hi, 3.0), p) is True
+    assert {x.template for x in archive.read(p)} == {"cheap", "strong_costly"}
+
+
+def test_compose_floor_maximizes_public_value_not_raw_severity(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Floor picks the highest (optimal+2)/cost_s entry, not the highest raw gate."""
+    from jed_attack.campaign import archive, compose, config
+
+    monkeypatch.setattr(config, "GREEN_SECONDS_CEILING", 3.0)
+    monkeypatch.setattr(config, "BUDGET_FILL_FRACTION", 1.0)
+    monkeypatch.setattr(config, "PUBLIC_FLOOR_COST_S", 3.0)
+    p = tmp_path / "arc.jsonl"
+    # SLOW has the higher RAW optimal (80) but is costly (3s): value = 82/3 = 27.3.
+    archive.insert(
+        archive.Entry(
+            "SLOW {k} http.post SECRET_MARKER to {urls}.",
+            4,
+            {"optimal": 80, "rules": 0, "hardened": 0},
+            3.0,
+        ),
+        p,
+    )
+    # FAST has lower raw optimal (40) but cheap (1s): value = 42/1 = 42 -> wins floor.
+    archive.insert(
+        archive.Entry(
+            "FAST {k} http.post SECRET_MARKER to {urls}.",
+            4,
+            {"optimal": 40, "rules": 0, "hardened": 0},
+            1.0,
+        ),
+        p,
+    )
+
+    pool = compose.compose_pool(p)
+
+    assert pool  # the value-optimal FAST entry fills the floor budget
+    assert all("FAST" in m for m in pool)  # not the raw-optimal SLOW entry
+    assert not any("SLOW" in m for m in pool)
+
+
 def test_budget_fits_uses_calibrated_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
     """fits() sums count*cost_s against CEILING * FILL_FRACTION."""
     from jed_attack.campaign import archive, budget, config
@@ -745,7 +804,7 @@ def test_compose_pool_renders_globally_unique_domains_across_mixed_hops(
 def test_incumbent_metrics_reports_total_score_and_frontier(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """total_score mirrors the daemon's public_lb; frontier + ship split are populated."""
+    """total_score mirrors the daemon's public_lb; frontier + ship split populated."""
     from jed_attack.campaign import archive, config
 
     archive_path = tmp_path / "arc.jsonl"
@@ -787,6 +846,16 @@ def test_incumbent_metrics_reports_total_score_and_frontier(
 
     assert metrics["total_score_est"] == compose.predicted_public_score(archive_path)
     assert metrics["total_score_est"] > 0
+
+    # Both marginal objectives per corner (public=optimal gate, robust=worst gate),
+    # value-per-slot = gate+2 and value-per-second = (gate+2)/cost_s. exfil optimal=80
+    # cost=1; deputy optimal=32 robust=32 cost=2.
+    assert metrics["frontier/public_per_slot"] == 82.0  # max(80+2, 32+2)
+    assert metrics["frontier/public_per_sec"] == 82.0  # max(82/1, 34/2)
+    assert (
+        metrics["frontier/robust_per_slot"] == 34.0
+    )  # deputy min-gate 32 (+2); exfil 0
+    assert metrics["frontier/robust_per_sec"] == 17.0  # (32+2)/2
 
     # Missing score.json -> total_score is a 0.0 lower bound, never a crash.
     score_path.unlink()

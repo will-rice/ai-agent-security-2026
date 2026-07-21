@@ -79,6 +79,12 @@ BUDGET_FILL_FRACTION = 0.85
 # more deputy (the private-LB hedge).
 PUBLIC_FLOOR_COST_S = float(os.getenv("JED_PUBLIC_FLOOR_COST_S", "96.0"))
 
+# The competition's per-cell novelty bonus (see score.py: raw += 2 * unique_cells). Each
+# rendered copy carries unique .invalid domains/addresses -> a distinct score cell, so a
+# firing copy is worth (surviving_severity + NOVELTY_PER_CELL). Single source for the
+# marginal-value objective (compose + prompt_opt) and the in-loop score estimate.
+NOVELTY_PER_CELL = 2.0
+
 
 def ensure_dirs() -> None:
     """Create the runtime directories the composer pipeline writes to."""
