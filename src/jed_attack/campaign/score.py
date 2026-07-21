@@ -1,8 +1,8 @@
 """Predict the competition's public LB for the composed ship pool.
 
 Scores the exact single messages :func:`compose.compose_pool` ships, the way the Kaggle
-gateway does it: replay each candidate under ``OptimalGuardrail`` (= the public LB), keep
-every firing finding (no dedup — repetition multiplies raw severity; novelty is only the
+gateway does it: replay each candidate under ``OptimalGuardrail`` (= the public LB),
+keep every firing finding (no dedup — repetition multiplies raw severity; novelty is the
 ``+2×unique_cells`` term). Single-message replays are deterministic under greedy
 decoding, so each ``(message, model)`` result is cached forever and only newly-composed
 messages replay each cycle.

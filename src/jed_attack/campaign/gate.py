@@ -1,8 +1,8 @@
 """Severity weighting shared by the prompt-optimization fitness.
 
-The competition awards points by predicate severity level (1→1 … 5→16). :func:`_severity`
-sums those weights over a list of triggered predicates; :mod:`prompt_opt` uses it to
-score a rendered candidate's surviving severity under each guardrail.
+The competition awards points by predicate severity level (1→1 … 5→16).
+:func:`_severity` sums those weights over a list of triggered predicates;
+:mod:`prompt_opt` uses it to score a candidate's surviving severity per guardrail.
 """
 
 from collections.abc import Sequence

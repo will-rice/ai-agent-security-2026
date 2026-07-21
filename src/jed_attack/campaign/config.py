@@ -56,13 +56,10 @@ PROPOSER_CONFIG_FILE = CAMPAIGN_ROOT / "proposer.json"
 OPTIMIZE_LOG = CAMPAIGN_ROOT / "optimize_prompts.log"
 CODEX_SCRATCH_DIR = CAMPAIGN_ROOT / "codex_scratch"
 
-# Calibrated-score pool size. 80 is the PROVEN T4 ceiling for K=5 multi-post: the
-# 80-candidate pool scored 34.315, everything larger (105/120/230) timed out to ~0.
-SCORE_CAP = int(os.getenv("JED_SCORE_CAP", "80"))
 SCORE_FILE = CAMPAIGN_ROOT / "score.json"  # latest calibrated public-LB prediction
 SCORE_CACHE = CAMPAIGN_ROOT / "score_cache.jsonl"  # per-(message,model) replay cache
 
-# Green-seconds ceiling for the composer's budget check (submission composer). Calibrated
+# Green-seconds ceiling for the composer's budget check. Calibrated
 # from the real T4 pass/fail boundary: the 80-candidate K=5 pool PASSED and scored
 # 34.315, the 105-candidate pool TIMED OUT. So CEILING ≈ 80 × the mean green replay-
 # seconds of one K=5 candidate. PROVISIONAL: this default (2.5s/candidate, i.e.
