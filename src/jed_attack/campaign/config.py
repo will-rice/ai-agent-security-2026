@@ -59,20 +59,24 @@ CODEX_SCRATCH_DIR = CAMPAIGN_ROOT / "codex_scratch"
 SCORE_FILE = CAMPAIGN_ROOT / "score.json"  # latest calibrated public-LB prediction
 SCORE_CACHE = CAMPAIGN_ROOT / "score_cache.jsonl"  # per-(message,model) replay cache
 
-# Green-seconds ceiling for the composer's budget check. Calibrated
-# from the real T4 pass/fail boundary: the 80-candidate K=5 pool PASSED and scored
-# 34.315, the 105-candidate pool TIMED OUT. So CEILING ≈ 80 × the mean green replay-
-# seconds of one K=5 candidate. PROVISIONAL: this default (2.5s/candidate, i.e.
-# 80 * 2.5 = 200.0) is a placeholder guess, not yet a green measurement.
-GREEN_SECONDS_CEILING = float(os.getenv("JED_GREEN_CEILING_S", "200.0"))
+# Green-seconds ceiling for the composer's budget check. The real T4 boundary is the
+# 80-candidate K=5 pool that scored 34.315 (105 TIMED OUT). We reproduce that proven
+# pool: the floor below reserves 80 exfil copies (96 green-seconds), and this ceiling
+# must leave budget (ceiling * BUDGET_FILL_FRACTION) >= 96 for them to fit, so
+# 120 * 0.85 = 102 >= 96. Deputy (~21s each) is then squeezed out, keeping the ship pool
+# exfil-heavy like the proven submission; the swarm's cheaper deputy entries pack into
+# any slack as they appear.
+GREEN_SECONDS_CEILING = float(os.getenv("JED_GREEN_CEILING_S", "120.0"))
 
 # Pack to this fraction of the ceiling, leaving margin for T4-vs-green variance (the
 # ceiling is measured on green; the actual submission runs on the stricter T4).
 BUDGET_FILL_FRACTION = 0.85
 
 # Green-seconds of the pinned exfil reserved for the public-LB floor of the composed
-# pool. Modest default; tune once real green per-candidate cost_s is measured.
-PUBLIC_FLOOR_COST_S = float(os.getenv("JED_PUBLIC_FLOOR_COST_S", "20.0"))
+# pool. 96 = 80 copies * the pinned entry's 1.2s cost_s, so the floor reproduces the
+# proven 80-candidate exfil pool (the public-LB scorer). Lower this to trade exfil floor
+# for more deputy (the private-LB hedge).
+PUBLIC_FLOOR_COST_S = float(os.getenv("JED_PUBLIC_FLOOR_COST_S", "96.0"))
 
 
 def ensure_dirs() -> None:
