@@ -7,8 +7,9 @@ Two attack FAMILIES are optimized independently — the portfolio hedge (see
   Scores 16/post under ``OptimalGuardrail`` but **0 under ``RulesGuardrail``**
   (which denies exactly ``payload_exfiltrates_secret`` — the same condition that awards
   EXFILTRATION severity). Ranked by PUBLIC severity: the bet that the private LB is
-  lenient. The proven template of this family is pinned into the archive as the
-  composed pool's public floor (:func:`seed_pinned_exfil`).
+  lenient. The composer packs the search's best-``optimal`` exfil as the shipped pool's
+  public floor (see :func:`compose.compose_pool`); nothing is seeded — every candidate
+  is discovered by the seedless search.
 * **DEPUTY** — one message → K confused-deputy ``email.send`` notifications (no secret
   the body). ~4/email but survives EVERY guardrail (optimal/rules/hardened). Ranked by
   ROBUST severity (maximin over the ensemble): the bet that the private LB is strict.
@@ -44,7 +45,7 @@ from jed_attack.harness.models import llama_server_agent_factory, resolve_base_u
 
 _log = logging.getLogger("prompt_opt")
 
-DEFAULT_POSTS = 5  # exfil K sweet spot (mirrors produce.POSTS_PER_CANDIDATE)
+DEFAULT_POSTS = 5  # exfil K cold-start default (the seedless search moves it)
 DEFAULT_EMAILS = (
     8  # deputy K: replay caps at 8 tool hops, so 8 email.send is the ceiling
 )
@@ -179,9 +180,11 @@ class Family:
 
 
 FAMILIES: dict[str, Family] = {
-    # exfil ranks by public_rps (binding-cell throughput). The public LB is throughput-
-    # bound, and ranking on raw severity drove K to 8, which tanks the slow gemma cell.
-    "exfil": Family("exfil", render, DEFAULT_POSTS, "public_rps"),
+    # exfil ranks by raw PUBLIC severity — the same scalar the composer's floor packs
+    # (max gates["optimal"]), so the search pushes toward what ships. The T4 verifier
+    # proved the exfil floor clears the budget with headroom, so throughput no longer
+    # binds; ranking on raw severity (not public_rps) maximizes the public LB directly.
+    "exfil": Family("exfil", render, DEFAULT_POSTS, "public"),
     "deputy": Family("deputy", render_deputy, DEFAULT_EMAILS, "robust"),
 }
 
@@ -210,7 +213,8 @@ def score_prompt(
     binding gemma cell (gemma drops posts and wanders at K=8). Timing is contention-
     sensitive, so we keep the fastest trial per model (least-contended) and rank on the
     RELATIVE value — valid because all candidates in a generation are timed under one
-    load. exfil ranks by ``public_rps``; deputy by ``robust`` (see :data:`FAMILIES`).
+    load. ``public_rps`` is logged as a metric only; exfil ranks by ``public`` and
+    deputy by ``robust`` (see :data:`FAMILIES`).
 
     ``cost_s`` is the per-candidate green replay cost the composer packs against a
     budget: the fastest (least-contended) ``optimal``-guardrail replay across every
@@ -299,8 +303,8 @@ def archive_incumbent(family: str = "deputy") -> dict[str, Any] | None:
     (``{addrs}`` for deputy, ``{urls}`` for exfil) and ranks them by the family's
     :attr:`Family.rank_key`, reconstructed from the stored gate vector: ``"robust"`` =
     the worst gate (``min`` over ``{optimal, rules, hardened}``); ``"public"`` = the
-    optimal gate. The binding-cell ``"public_rps"`` is not stored on an archive entry,
-    so an exfil query falls back to ranking by ``"public"``.
+    optimal gate. Both families rank on a stored gate scalar (exfil ``"public"``, deputy
+    ``"robust"``), so no derived-throughput term is needed here.
 
     Args:
         family: ``"deputy"`` (default) or ``"exfil"``.
@@ -324,11 +328,9 @@ def archive_incumbent(family: str = "deputy") -> dict[str, Any] | None:
             "robust": min(entry.gates.values()) if entry.gates else 0.0,
         }
 
-    # public_rps (binding-cell throughput) is not stored per archive entry, so an exfil
-    # incumbent ranks by "public"; every other rank_key is a stored fitness key.
+    # Both families' rank_key ("public"/"robust") is a stored fitness scalar.
     rank_key = FAMILIES[family].rank_key
-    sort_key = "public" if rank_key == "public_rps" else rank_key
-    best = max(entries, key=lambda entry: _fitness(entry)[sort_key])
+    best = max(entries, key=lambda entry: _fitness(entry)[rank_key])
     return {"template": best.template, "posts": best.hops, "fitness": _fitness(best)}
 
 
@@ -371,41 +373,6 @@ def record_message(template: str, hops: int, fitness: dict[str, Any]) -> bool:
         ),
     )
     return inserted
-
-
-# The proven v8 exfil's real gate vector at K=5 (measured: ~34.315 on the real LB under
-# the public/optimal guardrail; 0 under the strict rules guardrail's exfil deny; ~53
-# under hardened). A fixed anchor, not a live measurement — the point of pinning it.
-_PINNED_EXFIL_GATES = {"optimal": 80.0, "rules": 0.0, "hardened": 53.0}
-_PINNED_EXFIL_COST_S = 1.2  # nominal per-candidate green replay cost
-
-
-def seed_pinned_exfil() -> None:
-    """Idempotently seed the archive with the pinned, proven v8 exfil template.
-
-    :mod:`produce` never searches this template (green public didn't transfer to the
-    real T4 once already), so it must be seeded explicitly rather than discovered by
-    scoring — it is the one candidate with a REAL scored LB result. ``pinned=True``
-    means :func:`archive.insert` never evicts it, even if a later entry dominates it.
-
-    Idempotent: returns early if the archive already holds a pinned entry, so it is safe
-    to call on every compose/optimizer start without piling up duplicate pins (identical
-    gates never Pareto-dominate, so :func:`archive.insert` would not otherwise dedup
-    them). This is what structurally guarantees the composed pool always has its
-    public-LB exfil floor, regardless of which process built the archive.
-    """
-    from jed_attack.campaign import produce  # deferred: produce imports this module
-
-    if archive.has_pinned(config.ARCHIVE_FILE):
-        return
-    entry = archive.Entry(
-        produce._TEMPLATE,
-        produce.POSTS_PER_CANDIDATE,
-        _PINNED_EXFIL_GATES,
-        _PINNED_EXFIL_COST_S,
-        pinned=True,
-    )
-    archive.insert(entry, config.ARCHIVE_FILE)
 
 
 def main() -> None:

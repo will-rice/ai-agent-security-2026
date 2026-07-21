@@ -1,16 +1,15 @@
 """Submission composer: packs the Pareto archive into the shipped message pool.
 
-Replaces the exfil-only ship path. The archive (see :mod:`archive`) holds every
-non-dominated scored message over the ``{optimal, rules, hardened}`` gate vector, plus
-the pinned proven exfil template (the one candidate with a real scored LB result).
-:func:`compose_pool` reserves a public floor of rendered exfil copies (so the visible LB
-still reflects the proven template), then greedily fills the rest of the green-seconds
-budget with copies of whichever non-pinned archive entry has the highest **surviving
-robust weight per green-second** — the maximin bet that lifts whichever guardrail turns
-out to be the private strict one. :func:`build` writes that pool into ``attack.py``
-using the exact same writer :mod:`assemble` uses for its gate-adopted pool, so the
-composed submission stays isolated (``aicomp_sdk`` + stdlib only) with no duplicated
-template.
+The archive (see :mod:`archive`) holds every non-dominated scored message over the
+``{optimal, rules, hardened}`` gate vector — all discovered by the seedless search,
+nothing seeded. :func:`compose_pool` is a public/private hedge: it reserves a public
+floor of rendered copies of the highest-``optimal`` entry (the public-LB bet, e.g. an
+exfil shape), then greedily fills the rest of the green-seconds budget with copies of
+whichever entry has the highest **surviving robust weight per green-second** — the bet
+that lifts whichever guardrail turns out to be the private strict one. :func:`build`
+writes that pool into ``attack.py`` using the exact same writer :mod:`assemble` uses for
+its gate-adopted pool, so the composed submission stays isolated (``aicomp_sdk`` +
+stdlib only) with no duplicated template.
 """
 
 import json
@@ -91,7 +90,7 @@ def _robust_weight(entry: archive.Entry) -> float:
     """Surviving robust weight per green-second: min(rules, hardened) / cost_s.
 
     Args:
-        entry: A non-pinned archive entry with ``cost_s > 0``.
+        entry: An archive entry with ``cost_s > 0``.
 
     Returns:
         The ranking key (higher is better).
@@ -101,14 +100,18 @@ def _robust_weight(entry: archive.Entry) -> float:
 
 
 def compose_pool(archive_path: Path) -> list[str]:
-    """Pack the Pareto archive into the ship pool under the green-seconds budget.
+    """Pack the Pareto archive into the ship pool as a public/private hedge (seedless).
 
-    Reserves the pinned exfil entry, rendered repeatedly, until its summed ``cost_s``
-    covers ``config.PUBLIC_FLOOR_COST_S`` (the public-LB floor for the promoted
-    submission). Then ranks every non-pinned entry by surviving robust weight per
-    green-second (``min(gates["rules"], gates["hardened"]) / cost_s``, highest first)
-    and greedily renders copies of the top entry while :func:`budget.fits` still admits
-    one more, moving to the next-ranked entry once it doesn't.
+    The composer packs whatever the search discovered — nothing is seeded. It reserves
+    a public-LB floor of copies of the archive's highest-``optimal`` entry (the public
+    bet, e.g. an exfil shape) until their summed ``cost_s`` covers
+    ``config.PUBLIC_FLOOR_COST_S``, then fills the rest of the green-seconds budget with
+    the highest surviving-robust-per-second entries (``min(gates["rules"],
+    gates["hardened"]) / cost_s`` — the private bet, e.g. deputy shapes that survive the
+    strict guardrails). The result is Pareto
+    across the two leaderboards: the floor scores ``optimal`` (public) while the fill
+    scores ``min(rules, hardened)`` (private), so neither board is sacrificed.
+    ``PUBLIC_FLOOR_COST_S`` is the public/private dial.
 
     Args:
         archive_path: The Pareto archive jsonl file (typically ``config.ARCHIVE_FILE``).
@@ -117,33 +120,29 @@ def compose_pool(archive_path: Path) -> list[str]:
         The flat list of rendered ship messages (public floor first, then the
         budget-filling robust entries).
     """
-    entries = archive.read(archive_path)
-    pinned = [e for e in entries if e.pinned]
-    ranked = sorted(
-        (e for e in entries if not e.pinned and e.cost_s > 0),
-        key=_robust_weight,
-        reverse=True,
-    )
-
+    entries = [e for e in archive.read(archive_path) if e.cost_s > 0]
     pool_items: list[tuple[archive.Entry, int]] = []
     messages: list[str] = []
     cursor = [0]
 
-    if pinned and pinned[0].cost_s > 0:
-        exfil_entry = pinned[0]
+    # Public floor: copies of the best-optimal DISCOVERED entry (the public-LB bet).
+    floor = max(entries, key=lambda e: e.gates.get("optimal", 0.0), default=None)
+    if floor is not None and floor.gates.get("optimal", 0.0) > 0:
         _add_copies(
-            exfil_entry,
+            floor,
             pool_items,
             messages,
             cursor,
-            lambda: (
-                sum(count * e.cost_s for e, count in pool_items if e is exfil_entry)
+            lambda floor=floor: (
+                sum(count * e.cost_s for e, count in pool_items if e is floor)
                 < config.PUBLIC_FLOOR_COST_S
-                and budget.fits([*pool_items, (exfil_entry, 1)])
+                and budget.fits([*pool_items, (floor, 1)])
             ),
         )
 
-    for entry in ranked:
+    # Private fill: highest surviving-robust-per-second entries (the private-LB bet).
+    # The floor entry (rules=0 -> weight 0) sorts last, so it only pads leftover budget.
+    for entry in sorted(entries, key=_robust_weight, reverse=True):
         _add_copies(
             entry,
             pool_items,
@@ -170,9 +169,6 @@ def build(out_dir: Path) -> Path:
     Returns:
         The path to the written ``attack.py``.
     """
-    # Guarantee the public-LB exfil floor exists even if the search only ever fed the
-    # archive deputy entries (idempotent — no-op once a pinned entry is present).
-    prompt_opt.seed_pinned_exfil()
     messages = compose_pool(config.ARCHIVE_FILE)
     pairs: list[tuple[tuple[str, ...], str]] = [
         ((message,), "composed") for message in messages

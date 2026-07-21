@@ -72,10 +72,11 @@ GREEN_SECONDS_CEILING = float(os.getenv("JED_GREEN_CEILING_S", "120.0"))
 # ceiling is measured on green; the actual submission runs on the stricter T4).
 BUDGET_FILL_FRACTION = 0.85
 
-# Green-seconds of the pinned exfil reserved for the public-LB floor of the composed
-# pool. 96 = 80 copies * the pinned entry's 1.2s cost_s, so the floor reproduces the
-# proven 80-candidate exfil pool (the public-LB scorer). Lower this to trade exfil floor
-# for more deputy (the private-LB hedge).
+# Green-seconds reserved for the public-LB floor of the composed pool: copies of the
+# search's best-``optimal`` (exfil) entry until their summed cost_s covers this. 96 =
+# ~80 copies * a ~1.2s exfil cost_s, so the floor reproduces roughly the proven
+# 80-candidate exfil pool (the public-LB scorer). Lower this to trade public floor for
+# more deputy (the private-LB hedge).
 PUBLIC_FLOOR_COST_S = float(os.getenv("JED_PUBLIC_FLOOR_COST_S", "96.0"))
 
 

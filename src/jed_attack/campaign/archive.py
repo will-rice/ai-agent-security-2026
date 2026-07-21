@@ -2,10 +2,9 @@
 
 A persistent, deduplication-free jsonl of :class:`Entry` records, kept non-dominated
 under the ``{optimal, rules, hardened}`` gate vector (guardrails.GATE_GUARDRAILS).
-The composer (a later task) draws its submission pool from this archive instead of a
-single family incumbent, so it can hedge across whichever guardrail turns out to be
-private. A message marked ``pinned`` (the proven exfil template) is never evicted, even
-if a later entry dominates it — it is the one candidate with a real scored LB result.
+The composer draws its submission pool from this archive instead of a single family
+incumbent, so it can hedge across whichever guardrail turns out to be private. Every
+entry is discovered by the seedless search; the archive keeps only non-dominated ones.
 
 Writes are concurrency-safe: an ``fcntl`` exclusive lock on a sibling ``.lock`` file
 guards the read-modify-write, and the rewrite itself is a temp-file + ``os.replace``.
@@ -42,15 +41,12 @@ class Entry:
         gates: Mean severity per guardrail gate, e.g. ``{"optimal": .., "rules": ..,
             "hardened": ..}``.
         cost_s: Wall-clock seconds the scoring took (for cost-aware composing).
-        pinned: If True, this entry is never evicted by :func:`insert`, regardless of
-            domination.
     """
 
     template: str
     hops: int
     gates: dict[str, float] = field(default_factory=dict)
     cost_s: float = 0.0
-    pinned: bool = False
 
     def to_json(self) -> dict[str, Any]:
         """Return a JSON-serializable dict for this entry."""
@@ -71,7 +67,6 @@ class Entry:
             hops=int(data["hops"]),
             gates=dict(data.get("gates", {})),
             cost_s=float(data.get("cost_s", 0.0)),
-            pinned=bool(data.get("pinned", False)),
         )
 
 
@@ -120,10 +115,8 @@ def insert(entry: Entry, path: Path) -> bool:
 
     Locks the archive (a sibling ``<path>.lock`` file, ``fcntl`` exclusive), reads the
     current entries, and either rejects ``entry`` (an existing entry dominates it) or
-    keeps it, dropping every existing NON-pinned entry that ``entry`` dominates. Pinned
-    entries are authoritative: a ``pinned`` candidate is NEVER rejected as dominated (so
-    the composer's public floor always lands), and an existing pinned entry is NEVER
-    evicted. The rewrite is atomic (temp file + ``os.replace``).
+    keeps it, dropping every existing entry that ``entry`` dominates. The rewrite is
+    atomic (temp file + ``os.replace``).
 
     Args:
         entry: The candidate entry to add.
@@ -137,26 +130,12 @@ def insert(entry: Entry, path: Path) -> bool:
     with lock_path.open("a", encoding="utf-8") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)  # released on close (end of the with-block)
         existing = read(path)
-        if not entry.pinned and any(dominates(other, entry) for other in existing):
+        if any(dominates(other, entry) for other in existing):
             return False
-        kept = [
-            other for other in existing if other.pinned or not dominates(entry, other)
-        ]
+        kept = [other for other in existing if not dominates(entry, other)]
         kept.append(entry)
         _write_all(kept, path)
     return True
-
-
-def has_pinned(path: Path) -> bool:
-    """Return whether the archive already holds a pinned entry.
-
-    Args:
-        path: The archive jsonl file.
-
-    Returns:
-        True iff at least one entry has ``pinned=True``.
-    """
-    return any(entry.pinned for entry in read(path))
 
 
 def _write_all(entries: list[Entry], path: Path) -> None:
