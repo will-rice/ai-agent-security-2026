@@ -1,9 +1,10 @@
 """Pareto archive of scored attack messages over the guardrail gate-vector.
 
 A persistent, deduplication-free jsonl of :class:`Entry` records, kept non-dominated
-over the ``{optimal, rules, hardened}`` gate vector (maximized) AND ``cost_s``
-(minimized), so the cheap, throughput-optimal templates the composer needs to maximize
-the total submission survive the frontier.
+over the ``{optimal, rules, hardened}`` gates (maximized) AND ``hops`` (minimized),
+so the hop-efficient templates the composer needs to maximize the total submission
+survive the frontier. (``cost_s`` is stored as a contention-polluted monitoring signal
+only — the hop budget, not wall-time, is what the composer packs against.)
 The composer draws its submission pool from this archive instead of a single family
 incumbent, so it can hedge across whichever guardrail turns out to be private. Every
 entry is discovered by the seedless search; the archive keeps only non-dominated ones.
@@ -73,14 +74,15 @@ class Entry:
 
 
 def dominates(a: Entry, b: Entry) -> bool:
-    """Return True iff ``a`` Pareto-dominates ``b`` over the gate vector AND cost.
+    """Return True iff ``a`` Pareto-dominates ``b`` over the gate vector AND hops.
 
-    ``cost_s`` is a MINIMIZED objective alongside the (maximized) gates: the composer
-    maximizes the total submission by packing marginal value per green-second
-    (``(gate + novelty) / cost_s``), so a cheaper template with equal gates has strictly
-    higher value and MUST survive the frontier. Dropping cost from it would let
-    a costlier, marginally-higher-gate entry evict the throughput-optimal one that
-    actually maximizes the packed total.
+    ``hops`` is a MINIMIZED objective alongside the (maximized) gates: the composer
+    maximizes the total submission by packing marginal value per tool-hop
+    (``(gate + novelty) / hops``), so a lower-hop template with equal gates has strictly
+    higher value and MUST survive the frontier. Dropping hops from it would let a
+    higher-hop, marginally-higher-gate entry evict the hop-efficient one that actually
+    maximizes the packed total. (Hops is deterministic and green==T4, unlike ``cost_s``,
+    which is a contention-polluted monitoring signal only.)
 
     Args:
         a: Candidate dominator.
@@ -88,14 +90,14 @@ def dominates(a: Entry, b: Entry) -> bool:
 
     Returns:
         True iff ``a.gates[g] >= b.gates[g]`` for every gate in ``b.gates`` AND
-        ``a.cost_s <= b.cost_s``, with at least one of those inequalities strict.
+        ``a.hops <= b.hops``, with at least one of those inequalities strict.
     """
     gates_ge = all(a.gates.get(g, 0.0) >= v for g, v in b.gates.items())
-    cost_le = a.cost_s <= b.cost_s
-    if not (gates_ge and cost_le):
+    hops_le = a.hops <= b.hops
+    if not (gates_ge and hops_le):
         return False
     gates_gt = any(a.gates.get(g, 0.0) > v for g, v in b.gates.items())
-    return gates_gt or a.cost_s < b.cost_s
+    return gates_gt or a.hops < b.hops
 
 
 def read(path: Path) -> list[Entry]:

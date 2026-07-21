@@ -1,8 +1,8 @@
 """Assemble daemon: rebuild build_next/attack.py from the composer's ship pool.
 
 Sole owner of ``build_next``. Runs ``compose.build``, which reserves a public floor of
-the search's best-``optimal`` exfil entry and fills the rest of the green-seconds budget
-with the best robust-surviving archive entries (see ``compose.py``).
+the search's best public-value exfil entry and fills the rest of the tool-hop budget
+with the best robust-value archive entries (see ``compose.py``).
 """
 
 import logging

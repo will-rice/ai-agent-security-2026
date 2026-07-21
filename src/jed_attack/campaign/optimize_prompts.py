@@ -303,9 +303,8 @@ def _incumbent_metrics(gen: int, valid: int, scored: int) -> dict[str, Any]:
         (``<family>/public``, ``<family>/robust``, ``<family>/posts``,
         ``<family>_template``); archive frontier (``archive/size``, per-family counts,
         discovered ceilings); the composed ship pool's hedge split (``ship/pool_size``,
-        ``ship/exfil_copies``, ``ship/deputy_copies``); and both marginal objectives per
-        corner (``frontier/{public,robust}_per_{slot,sec}``) for the empirical
-        resource-model resolution.
+        ``ship/exfil_copies``, ``ship/deputy_copies``); and both marginal granularities
+        per corner (``frontier/{public,robust}_per_{slot,hop}``).
     """
     metrics: dict[str, Any] = {
         "generation": gen,
@@ -361,18 +360,16 @@ def _incumbent_metrics(gen: int, valid: int, scored: int) -> dict[str, Any]:
     # archive every generation; total_score (daemon replay) confirms it once warm.
     metrics["total_score_est"] = compose.predicted_public_score(config.ARCHIVE_FILE)
 
-    # Both marginal objectives, per corner, so we can resolve empirically which the T4
-    # rewards. The pool total is a separable sum, so each template's value is its
-    # marginal contribution PER RESOURCE: value-per-SLOT = severity+novelty per
-    # candidate (count/hop-bound view) vs value-per-SECOND = the same per green-second
-    # (time-bound view). "public" reads the optimal gate, "robust" the worst. Whichever
-    # the real LB tracks names the binding resource; logging both lets us watch (and
-    # maximize) both until a T4 A/B resolves it.
+    # Both marginal granularities, per corner. The pool total is a separable sum, each
+    # template's value is its marginal contribution PER RESOURCE: value-per-HOP =
+    # (severity + novelty) / hops — the composer's actual packing key against the
+    # deterministic hop budget — and value-per-SLOT = severity + novelty per candidate
+    # (the raw per-message ceiling). "public" = optimal gate, "robust" = worst gate.
     def _per_slot(gate: float) -> float:
         return gate + config.NOVELTY_PER_CELL if gate > 0 else 0.0
 
-    def _per_sec(gate: float, cost: float) -> float:
-        return (gate + config.NOVELTY_PER_CELL) / cost if gate > 0 and cost > 0 else 0.0
+    def _per_hop(gate: float, hops: int) -> float:
+        return (gate + config.NOVELTY_PER_CELL) / hops if gate > 0 and hops > 0 else 0.0
 
     def _robust_gate(e: archive.Entry) -> float:
         return min(e.gates.values()) if e.gates else 0.0
@@ -380,14 +377,14 @@ def _incumbent_metrics(gen: int, valid: int, scored: int) -> dict[str, Any]:
     metrics["frontier/public_per_slot"] = max(
         (_per_slot(e.gates.get("optimal", 0.0)) for e in entries), default=0.0
     )
-    metrics["frontier/public_per_sec"] = max(
-        (_per_sec(e.gates.get("optimal", 0.0), e.cost_s) for e in entries), default=0.0
+    metrics["frontier/public_per_hop"] = max(
+        (_per_hop(e.gates.get("optimal", 0.0), e.hops) for e in entries), default=0.0
     )
     metrics["frontier/robust_per_slot"] = max(
         (_per_slot(_robust_gate(e)) for e in entries), default=0.0
     )
-    metrics["frontier/robust_per_sec"] = max(
-        (_per_sec(_robust_gate(e), e.cost_s) for e in entries), default=0.0
+    metrics["frontier/robust_per_hop"] = max(
+        (_per_hop(_robust_gate(e), e.hops) for e in entries), default=0.0
     )
     return metrics
 
@@ -407,7 +404,7 @@ def propose(
         template: The current family incumbent template, or ``None`` on a seedless cold
             start (nothing discovered yet).
         posts: The incumbent hop count.
-        best_score: The incumbent's per-second value score (public/robust_value).
+        best_score: The incumbent's per-hop value score (public/robust_value).
         proposals: Number of variants to request from the proposer.
         timeout_s: Codex subprocess timeout (codex backend only).
 
@@ -803,7 +800,7 @@ def _proposer_prompt(
         template: The family incumbent template, or ``None`` on a seedless cold start
             (the proposer then invents fresh candidates from the objective).
         posts: The incumbent hop count.
-        best_score: The incumbent's per-second value score (public/robust_value).
+        best_score: The incumbent's per-hop value score (public/robust_value).
         proposals: Number of variants to request.
 
     Returns:

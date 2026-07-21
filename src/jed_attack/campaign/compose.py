@@ -3,10 +3,10 @@
 The archive (see :mod:`archive`) holds every non-dominated scored message over the
 ``{optimal, rules, hardened}`` gate vector — all discovered by the seedless search,
 nothing seeded. :func:`compose_pool` is a public/private hedge: it reserves a public
-floor of rendered copies of the highest-``optimal`` entry (the public-LB bet, e.g. an
-exfil shape), then greedily fills the rest of the green-seconds budget with copies of
-whichever entry has the highest **surviving robust weight per green-second** — the bet
-that lifts whichever guardrail turns out to be the private strict one. :func:`build`
+floor of rendered copies of the highest public-value entry (the public-LB bet, e.g. an
+exfil shape), then greedily fills the rest of the DETERMINISTIC tool-hop budget with
+copies of whichever entry has the highest **surviving robust value per tool-hop** — the
+bet that lifts whichever guardrail turns out to be the private strict one. :func:`build`
 writes that pool into ``attack.py`` using the exact same writer :mod:`assemble` uses for
 its gate-adopted pool, so the composed submission stays isolated (``aicomp_sdk`` +
 stdlib only) with no duplicated template.
@@ -87,56 +87,58 @@ def _add_copies(
 
 
 def _public_value(entry: archive.Entry) -> float:
-    """Marginal PUBLIC-total contribution per green-second.
+    """Marginal PUBLIC-total contribution per tool-hop.
 
     Each firing copy adds ``optimal + NOVELTY_PER_CELL`` to the public raw score (a
-    unique-domain copy is a distinct cell), and a fixed green-seconds budget fits
-    ``budget / cost_s`` copies — so a template's contribution to the public total per
-    second is ``(optimal + NOVELTY) / cost_s``. Maximizing this maximizes the public
-    total (the OptimalGuardrail LB number). 0 for a template that never fires under
-    ``optimal`` (``optimal == 0``), so it can never be the public floor.
+    unique-domain copy is a distinct cell), and the hop budget fits ``budget / hops``
+    copies — so a template's contribution to the public total per hop is
+    ``(optimal + NOVELTY) / hops``. Maximizing this maximizes the public total (the
+    OptimalGuardrail LB number) under the DETERMINISTIC hop budget (green==T4, no
+    contention pollution). 0 for a template that never fires under ``optimal``
+    (``optimal == 0``), so it can never be the public floor.
 
     Args:
-        entry: An archive entry with ``cost_s > 0``.
+        entry: An archive entry with ``hops > 0``.
 
     Returns:
         The public-corner ranking key (higher is better).
     """
     opt = entry.gates.get("optimal", 0.0)
-    return (opt + config.NOVELTY_PER_CELL) / entry.cost_s if opt > 0 else 0.0
+    return (opt + config.NOVELTY_PER_CELL) / entry.hops if opt > 0 else 0.0
 
 
 def _robust_value(entry: archive.Entry) -> float:
-    """Marginal PRIVATE-PROXY-total contribution per green-second.
+    """Marginal PRIVATE-PROXY-total contribution per tool-hop.
 
     The private analogue of :func:`_public_value`: ``(min(rules, hardened) + NOVELTY) /
-    cost_s``. Maximizing it maximizes the total surviving severity under the strict
+    hops``. Maximizing it maximizes the total surviving severity under the strict
     guardrails (the private-LB proxy). 0 for a template that dies under a strict
     guardrail (``min(rules, hardened) == 0``, e.g. exfil), so exfil never wins the fill.
 
     Args:
-        entry: An archive entry with ``cost_s > 0``.
+        entry: An archive entry with ``hops > 0``.
 
     Returns:
         The private-corner ranking key (higher is better).
     """
     survives = min(entry.gates.get("rules", 0.0), entry.gates.get("hardened", 0.0))
-    return (survives + config.NOVELTY_PER_CELL) / entry.cost_s if survives > 0 else 0.0
+    return (survives + config.NOVELTY_PER_CELL) / entry.hops if survives > 0 else 0.0
 
 
 def compose_pool(archive_path: Path) -> list[str]:
     """Pack the Pareto archive into the ship pool as a public/private hedge (seedless).
 
     The composer packs whatever the search discovered — nothing is seeded — to MAXIMIZE
-    THE HEDGED TOTAL SUBMISSION across both boards. It reserves a public-LB floor of
-    copies of the archive's best :func:`_public_value` entry (highest ``(optimal + 2) /
-    cost_s`` — the copies that add the most PUBLIC total per second) until their summed
-    ``cost_s`` covers ``config.PUBLIC_FLOOR_COST_S``, then fills the rest of the green-
-    seconds budget by :func:`_robust_value` (highest ``(min(rules, hardened) + 2) /
-    cost_s`` — the most PRIVATE-proxy total per second). Both are the marginal
-    contribution to that board's separable total, so the floor maximizes the public
-    total and the fill the private-proxy total; neither board is sacrificed.
-    ``PUBLIC_FLOOR_COST_S`` is the public/private dial.
+    THE HEDGED TOTAL SUBMISSION across both boards, against a DETERMINISTIC tool-hop
+    budget (green==T4, contention-invariant). It reserves a public-LB floor of copies of
+    the archive's best :func:`_public_value` entry (highest ``(optimal + 2) / hops`` —
+    the copies that add the most PUBLIC total per hop) until their summed hops cover
+    ``config.PUBLIC_FLOOR_HOPS``, then fills the rest of the hop budget by
+    :func:`_robust_value` (highest ``(min(rules, hardened) + 2) / hops`` — the most
+    PRIVATE-proxy total per hop). Both are the marginal contribution to that board's
+    separable total, so the floor maximizes the public total and the fill the private-
+    proxy total; neither board is sacrificed. ``PUBLIC_FLOOR_HOPS`` is the public/priv
+    dial.
 
     Args:
         archive_path: The Pareto archive jsonl file (typically ``config.ARCHIVE_FILE``).
@@ -162,13 +164,13 @@ def _compose(archive_path: Path) -> tuple[list[str], list[tuple[archive.Entry, i
         ``(messages, pool_items)`` — the rendered ship messages and the per-copy
         ``(entry, 1)`` placements they were rendered from, in the same order.
     """
-    entries = [e for e in archive.read(archive_path) if e.cost_s > 0]
+    entries = [e for e in archive.read(archive_path) if e.hops > 0]
     pool_items: list[tuple[archive.Entry, int]] = []
     messages: list[str] = []
     cursor = [0]
 
-    # Public floor: copies of the entry that adds the most PUBLIC total per second
-    # (max _public_value), maximizing the public board within the floor's second budget.
+    # Public floor: copies of the entry that adds the most PUBLIC total per hop
+    # (max _public_value), maximizing the public board within the floor's hop budget.
     floor = max(entries, key=_public_value, default=None)
     if floor is not None and _public_value(floor) > 0:
         _add_copies(
@@ -177,13 +179,13 @@ def _compose(archive_path: Path) -> tuple[list[str], list[tuple[archive.Entry, i
             messages,
             cursor,
             lambda floor=floor: (
-                sum(count * e.cost_s for e, count in pool_items if e is floor)
-                < config.PUBLIC_FLOOR_COST_S
+                sum(count * e.hops for e, count in pool_items if e is floor)
+                < config.PUBLIC_FLOOR_HOPS
                 and budget.fits([*pool_items, (floor, 1)])
             ),
         )
 
-    # Private fill: entries that add the most PRIVATE-proxy total per second. The floor
+    # Private fill: entries that add the most PRIVATE-proxy total per hop. The floor
     # entry (min(rules,hardened)=0 -> value 0) sorts last, padding only leftover budget.
     for entry in sorted(entries, key=_robust_value, reverse=True):
         _add_copies(

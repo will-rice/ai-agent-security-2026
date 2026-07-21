@@ -59,25 +59,23 @@ CODEX_SCRATCH_DIR = CAMPAIGN_ROOT / "codex_scratch"
 SCORE_FILE = CAMPAIGN_ROOT / "score.json"  # latest calibrated public-LB prediction
 SCORE_CACHE = CAMPAIGN_ROOT / "score_cache.jsonl"  # per-(message,model) replay cache
 
-# Green-seconds ceiling for the composer's budget check. The real T4 boundary is the
-# 80-candidate K=5 pool that scored 34.315 (105 TIMED OUT). We reproduce that proven
-# pool: the floor below reserves 80 exfil copies (96 green-seconds), and this ceiling
-# must leave budget (ceiling * BUDGET_FILL_FRACTION) >= 96 for them to fit, so
-# 120 * 0.85 = 102 >= 96. Deputy (~21s each) is then squeezed out, keeping the ship pool
-# exfil-heavy like the proven submission; the swarm's cheaper deputy entries pack into
-# any slack as they appear.
-GREEN_SECONDS_CEILING = float(os.getenv("JED_GREEN_CEILING_S", "120.0"))
+# Tool-hop ceiling for the composer's budget check — the binding T4 resource (replay
+# work ∝ tool hops), DETERMINISTIC and identical on green and T4 (unlike measured
+# wall-time, which fleet contention inflates). Calibrated to the empirical boundary:
+# 80×K5 = 400 hops PASSED (scored 34.315); 105×K5 = 525 and 230×K2 = 460 BLANKED. 460 is
+# the observed failure point; BUDGET_FILL_FRACTION keeps us safely under it.
+HOP_CEILING = int(os.getenv("JED_HOP_CEILING", "460"))
 
-# Pack to this fraction of the ceiling, leaving margin for T4-vs-green variance (the
-# ceiling is measured on green; the actual submission runs on the stricter T4).
+# Pack to this fraction of the ceiling, leaving margin below the observed 460-hop fail
+# point (460 * 0.85 = 391 hops ≈ the proven 400-hop pool). Hops are green==T4, so this
+# margin is pure pass/fail safety, not a green-vs-T4 correction.
 BUDGET_FILL_FRACTION = 0.85
 
-# Green-seconds reserved for the public-LB floor of the composed pool: copies of the
-# search's best-``optimal`` (exfil) entry until their summed cost_s covers this. 96 =
-# ~80 copies * a ~1.2s exfil cost_s, so the floor reproduces roughly the proven
-# 80-candidate exfil pool (the public-LB scorer). Lower this to trade public floor for
-# more deputy (the private-LB hedge).
-PUBLIC_FLOOR_COST_S = float(os.getenv("JED_PUBLIC_FLOOR_COST_S", "96.0"))
+# Tool hops reserved for the public-LB floor of the composed pool: copies of the search
+# best public-value (exfil) entry until their summed hops cover this. 240 ≈ 48×K5 exfil,
+# leaving ~151 hops (391 - 240) for the private deputy fill — a public/private hedge.
+# Lower this to trade public floor for more deputy (the private-LB bet).
+PUBLIC_FLOOR_HOPS = int(os.getenv("JED_PUBLIC_FLOOR_HOPS", "240"))
 
 # The competition's per-cell novelty bonus (see score.py: raw += 2 * unique_cells). Each
 # rendered copy carries unique .invalid domains/addresses -> a distinct score cell, so a
