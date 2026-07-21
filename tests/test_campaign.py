@@ -23,20 +23,8 @@ from jed_attack.campaign import (
     produce,
     prompt_opt,
     providers,
-    store,
 )
 from jed_attack.campaign.guardrails import HardenedGuardrail
-
-
-def test_store_roundtrip_dedups(tmp_path: Path) -> None:
-    """Candidates with the same chain collapse to one on read."""
-    store.emit(
-        store.Candidate.make(["a", "b"], "agent-1", predicates=["CONFUSED_DEPUTY"]),
-        tmp_path,
-    )
-    store.emit(store.Candidate.make(["a", "b"], "agent-2"), tmp_path)  # same chain
-    store.emit(store.Candidate.make(["c"], "agent-1"), tmp_path)
-    assert len(store.read_all(tmp_path)) == 2
 
 
 def test_hardened_blocks_taint_flush_that_optimal_allows() -> None:

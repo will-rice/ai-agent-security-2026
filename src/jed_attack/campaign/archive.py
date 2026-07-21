@@ -13,10 +13,24 @@ read-modify-write, and the rewrite itself is a temp-file + ``os.replace``.
 """
 
 import fcntl
+import hashlib
 import json
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+
+
+def chain_id(chain: Sequence[str]) -> str:
+    """Return a stable dedup id for a message chain.
+
+    Args:
+        chain: The user-message sequence.
+
+    Returns:
+        First 16 hex chars of the sha256 of the joined chain.
+    """
+    return hashlib.sha256(" ".join(chain).encode("utf-8")).hexdigest()[:16]
 
 
 @dataclass(frozen=True)

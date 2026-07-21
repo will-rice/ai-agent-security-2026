@@ -27,7 +27,7 @@ from aicomp_sdk.evaluation.ops import resolve_fixtures_dir
 from aicomp_sdk.guardrails.optimal import Guardrail as OptimalGuardrail
 
 from jed_attack.campaign import config
-from jed_attack.campaign.store import chain_id
+from jed_attack.campaign.archive import chain_id
 from jed_attack.harness.models import llama_server_agent_factory, resolve_base_url
 
 _log = logging.getLogger("score")

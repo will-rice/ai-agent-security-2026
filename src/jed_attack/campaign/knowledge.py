@@ -1,8 +1,7 @@
 """Shared cross-agent knowledge log — the fleet's collective memory.
 
-Producers probe many chains; the candidate store (store.py) keeps only the ones that
-FIRE. This log keeps everything else so agents learn from each other instead of
-re-deriving it:
+Agents probe many chains; this log keeps a record of them so agents learn from each
+other instead of re-deriving it:
 
 * **attempts** — every chain anyone probed, fired or not, with its per-model public
   outcome. Lets ``try_emit`` skip re-probing a chain the fleet already tried.
@@ -23,8 +22,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from jed_attack.campaign import config
+from jed_attack.campaign.archive import chain_id
 from jed_attack.campaign.gate import Verdict
-from jed_attack.campaign.store import chain_id
 
 _log = logging.getLogger("knowledge")
 

@@ -107,7 +107,7 @@ def gate_chain(
         The ``Verdict``: per-model/guardrail fires, robust severity,
         adoption flag.
     """
-    from jed_attack.campaign.store import chain_id
+    from jed_attack.campaign.archive import chain_id
 
     fires: dict[str, dict[str, list[str]]] = {}
     robust: dict[str, dict[str, int]] = {g: {} for g in _ADOPT_GUARDRAILS}
