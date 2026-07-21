@@ -298,7 +298,8 @@ def _incumbent_metrics(gen: int, valid: int, scored: int) -> dict[str, Any]:
 
     Returns:
         A flat ``wandb.log``-shaped metrics dict: the headline ``total_score`` (the
-        score daemon's public-LB prediction for the composed pool); per-family incumbent
+        score daemon's replay-based public-LB prediction) and ``total_score_est`` (the
+        same, derived in-loop from the archive without replay); per-family incumbent
         (``<family>/public``, ``<family>/robust``, ``<family>/posts``,
         ``<family>_template``); archive frontier (``archive/size``, per-family counts,
         discovered ceilings); and the composed ship pool's hedge split
@@ -352,6 +353,11 @@ def _incumbent_metrics(gen: int, valid: int, scored: int) -> dict[str, Any]:
         )
     except (OSError, json.JSONDecodeError, ValueError, TypeError):
         metrics["total_score"] = 0.0
+
+    # total_score_est: the same public LB derived in-loop from the packed archive gates
+    # (no replay — see compose.predicted_public_score). Instant + tracks the live
+    # archive every generation; total_score (daemon replay) confirms it once warm.
+    metrics["total_score_est"] = compose.predicted_public_score(config.ARCHIVE_FILE)
     return metrics
 
 
