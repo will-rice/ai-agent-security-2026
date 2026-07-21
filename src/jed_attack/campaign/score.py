@@ -39,7 +39,7 @@ from aicomp_sdk.evaluation.ops import (
 )
 from aicomp_sdk.guardrails.optimal import Guardrail as OptimalGuardrail
 
-from jed_attack.campaign import assemble, config, gate
+from jed_attack.campaign import config, gate
 from jed_attack.campaign.guardrails import HardenedGuardrail
 from jed_attack.campaign.store import chain_id
 from jed_attack.harness.models import llama_server_agent_factory, resolve_base_url
@@ -200,22 +200,21 @@ def score_submission(
 
 
 def predict_public_score(
-    cap: int = config.SCORE_CAP,
     models: tuple[str, ...] = config.MODELS,
     cache_path: Path | None = None,
     max_new_replays: int = 40,
 ) -> dict[str, Any]:
-    """Predict the public LB for the single-message ship pool, using a replay cache.
+    """Predict the public LB for the composed ship pool, using a replay cache.
 
-    Single-message replays are deterministic (greedy decoding), so each
-    ``(message, model)`` result is cached forever. Each call replays at most
-    ``max_new_replays`` uncached candidates (so the daemon writes a fresh, climbing
-    number every cycle instead of blocking on a full warmup); still-uncached
+    Scores the exact messages :func:`compose.compose_pool` ships, so ``score.json``
+    tracks the composed ``attack.py``. Single-message replays are deterministic (greedy
+    decoding), so each ``(message, model)`` result is cached forever. Each call replays
+    at most ``max_new_replays`` uncached candidates (so the daemon writes a fresh,
+    climbing number every cycle instead of blocking on a full warmup); still-uncached
     candidates contribute 0 this call, so the score is a lower bound until warm.
     Validated: matches Kaggle public LB (3.67 vs 3.675).
 
     Args:
-        cap: Ship-pool candidate cap.
         models: Models to score (public guardrail = OptimalGuardrail).
         cache_path: Override for the per-(message,model) cache.
         max_new_replays: Replay budget per call (0 = aggregate from cache only).
@@ -224,7 +223,12 @@ def predict_public_score(
         ``{public_lb, candidates, new_replays, uncached, cells}``.
     """
     cache_path = cache_path or config.SCORE_CACHE
-    chains = assemble.ship_pool_chains(cap)
+    # Score the EXACT pool the composer ships (single owner): the same rendered messages
+    # compose.build writes into attack.py, so score.json tracks the shipped artifact.
+    # Deferred import breaks the score <-> compose <-> prompt_opt import cycle.
+    from jed_attack.campaign import compose
+
+    chains = [(message,) for message in compose.compose_pool(config.ARCHIVE_FILE)]
     cache = _load_cache(cache_path)
     factories = {m: llama_server_agent_factory(m, resolve_base_url(m)) for m in models}
 
