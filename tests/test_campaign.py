@@ -1,22 +1,19 @@
-"""Campaign core: store dedup, anti-overfit hardened guardrail, gate, assemble."""
+"""Campaign core: anti-overfit hardened guardrail, prompt-opt, archive, composer."""
 
 import ast
 import json
 import sys
 import threading
-from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlsplit
 
 import pytest
-from aicomp_sdk.agents import build_agent
 from aicomp_sdk.attacks.contracts import AttackAlgorithmBase
 from aicomp_sdk.guardrails.optimal import Guardrail as Optimal
 
 from jed_attack.campaign import (
-    gate,
     knowledge,
     launch,
     optimize_prompts,
@@ -41,18 +38,6 @@ def test_hardened_blocks_taint_flush_that_optimal_allows() -> None:
     assert (
         hardened.decide("email.send", {"to": "x@y.com"}, flushed).action.value == "DENY"
     )
-
-
-def test_gate_produces_full_verdict() -> None:
-    """The gate replays a chain against both models under all three guardrails."""
-    factories: dict[str, Callable[[], Any]] = {
-        "gpt_oss": lambda: build_agent("deterministic"),
-        "gemma_4": lambda: build_agent("deterministic"),
-    }
-    verdict = gate.gate_chain(["open page_5"], factories, producer="t")
-    assert set(verdict.fires) == {"gpt_oss", "gemma_4"}
-    assert set(verdict.fires["gpt_oss"]) == {"optimal", "rules", "hardened"}
-    assert verdict.chain_id
 
 
 def test_render_yields_unique_clean_marker_domains() -> None:
