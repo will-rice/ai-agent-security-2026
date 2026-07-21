@@ -7,9 +7,8 @@ single family incumbent, so it can hedge across whichever guardrail turns out to
 private. A message marked ``pinned`` (the proven exfil template) is never evicted, even
 if a later entry dominates it — it is the one candidate with a real scored LB result.
 
-Mirrors the locking/atomic-write pattern in ``prompt_opt._write_best`` /
-``record_prompt``: an ``fcntl`` exclusive lock on a sibling ``.lock`` file guards the
-read-modify-write, and the rewrite itself is a temp-file + ``os.replace``.
+Writes are concurrency-safe: an ``fcntl`` exclusive lock on a sibling ``.lock`` file
+guards the read-modify-write, and the rewrite itself is a temp-file + ``os.replace``.
 """
 
 import fcntl

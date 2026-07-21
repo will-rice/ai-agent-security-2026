@@ -7,7 +7,8 @@ Two attack FAMILIES are optimized independently — the portfolio hedge (see
   Scores 16/post under ``OptimalGuardrail`` but **0 under ``RulesGuardrail``**
   (which denies exactly ``payload_exfiltrates_secret`` — the same condition that awards
   EXFILTRATION severity). Ranked by PUBLIC severity: the bet that the private LB is
-  lenient. This is the family :mod:`produce`/:mod:`adaptive` ship today.
+  lenient. The proven template of this family is pinned into the archive as the
+  composed pool's public floor (:func:`seed_pinned_exfil`).
 * **DEPUTY** — one message → K confused-deputy ``email.send`` notifications (no secret
   the body). ~4/email but survives EVERY guardrail (optimal/rules/hardened). Ranked by
   ROBUST severity (maximin over the ensemble): the bet that the private LB is strict.
@@ -27,14 +28,12 @@ Templates are ``str.format`` strings with ``{k}`` and the family's fill placehol
 """
 
 import argparse
-import fcntl
 import json
 import logging
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from pathlib import Path
 from statistics import mean
 from typing import Any
 from urllib.parse import urlsplit
@@ -67,10 +66,9 @@ def render(template: str, index: int, posts: int) -> str | None:
     """Render an EXFIL template into one concrete, invariant-valid candidate message.
 
     Fills ``{urls}`` (and optional ``{k}``) with ``posts`` globally unique clean
-    ``https://xN.invalid/r`` domains (``base = index * posts``), matching
-    :func:`produce.multipost_chain` so distinct indices never collide. Kept as the
-    module's ``render`` (unqualified) because :mod:`produce` and :mod:`adaptive` build
-    the exfil ship pool through it.
+    ``https://xN.invalid/r`` domains (``base = index * posts``) so distinct indices
+    never collide. Kept as the module's ``render`` (unqualified) because :mod:`compose`
+    renders the exfil ship pool through it.
 
     Args:
         template: A ``str.format`` template with ``{urls}`` and optional ``{k}``.
@@ -172,37 +170,20 @@ class Family:
         render: ``(template, index, k) -> message | None`` for this family.
         default_k: Hops per candidate when the caller passes none.
         rank_key: Fitness key a candidate is ranked on (``"public"`` or ``"robust"``).
-        best_attr: Name of the :mod:`config` attribute holding this family's incumbent
-            path — resolved at call time so tests can redirect it.
     """
 
     name: str
     render: Callable[[str, int, int], str | None]
     default_k: int
     rank_key: str
-    best_attr: str
 
 
 FAMILIES: dict[str, Family] = {
     # exfil ranks by public_rps (binding-cell throughput). The public LB is throughput-
     # bound, and ranking on raw severity drove K to 8, which tanks the slow gemma cell.
-    "exfil": Family("exfil", render, DEFAULT_POSTS, "public_rps", "BEST_PROMPT_FILE"),
-    "deputy": Family(
-        "deputy", render_deputy, DEFAULT_EMAILS, "robust", "BEST_DEPUTY_FILE"
-    ),
+    "exfil": Family("exfil", render, DEFAULT_POSTS, "public_rps"),
+    "deputy": Family("deputy", render_deputy, DEFAULT_EMAILS, "robust"),
 }
-
-
-def best_file(family: str) -> Path:
-    """Resolve a family's incumbent path from :mod:`config` at call time.
-
-    Args:
-        family: ``"exfil"`` or ``"deputy"``.
-
-    Returns:
-        The path :mod:`config` currently points the family's incumbent at.
-    """
-    return getattr(config, FAMILIES[family].best_attr)
 
 
 def score_prompt(
@@ -308,121 +289,12 @@ def score_prompt(
     }
 
 
-def record_prompt(
-    template: str, posts: int, fitness: dict[str, Any], family: str = "exfil"
-) -> bool:
-    """Log a scored template and promote it if it beats its family incumbent.
-
-    Appends a one-line lesson to the shared :mod:`knowledge` notes (lock-free per-writer
-    append), then does a locked read-current-best → compare → write on the *family's*
-    best-file, so concurrent optimizer workers can't lost-update an incumbent. The write
-    is atomic (temp+rename), so :func:`best_prompt` readers see a complete file.
-
-    Args:
-        template: The scored template.
-        posts: Hops per candidate the template was scored at.
-        fitness: The :func:`score_prompt` result.
-        family: The family whose incumbent this competes for.
-
-    Returns:
-        True if the template was promoted to that family's incumbent.
-    """
-    fam = FAMILIES[family]
-    path = best_file(family)
-    knowledge.note(
-        "prompt_opt",
-        f"family={family} posts={posts} public={fitness.get('public', 0.0):.1f} "
-        f"robust={fitness.get('robust', 0.0):.1f} :: {template!r}",
-    )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = path.parent / (path.name + ".lock")
-    with lock_path.open("a", encoding="utf-8") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)  # released on close (end of the with-block)
-        incumbent = best_prompt(family)
-        if incumbent is not None and not _beats(
-            fitness, incumbent.get("fitness", {}), fam.rank_key
-        ):
-            return False
-        _write_best({"template": template, "posts": posts, "fitness": fitness}, path)
-    _log.info(
-        "promoted %s template (%s=%.1f) -> %s",
-        family,
-        fam.rank_key,
-        fitness.get(fam.rank_key, 0.0),
-        path,
-    )
-    return True
-
-
-def _beats(new: dict[str, Any], old: dict[str, Any], rank_key: str) -> bool:
-    """Promote ``new`` only on a NON-REGRESSING improvement across every guardrail gate.
-
-    An incumbent is replaced iff (1) ``new`` does not lower ANY gate's mean-over-models
-    severity below the incumbent's (``gates`` = {optimal, rules, hardened}), AND (2) it
-    strictly improves the family rank key (``public_rps`` for exfil, ``robust`` for
-    deputy), tie-broken by posts. This Pareto rule is the anti-overfit guard: the
-    LB scores under ONE hidden guardrail, so a prompt that gains on the worst gate while
-    regressing a better one could lose on whichever gate is private — we never write it.
-
-    Falls back to the scalar rank key when no gate vector is recorded (legacy fitness).
-
-    Args:
-        new: A candidate fitness dict.
-        old: The incumbent fitness dict.
-        rank_key: The fitness key to rank on.
-
-    Returns:
-        True iff ``new`` should replace ``old``.
-    """
-    improves = (new.get(rank_key, 0.0), new.get("posts", 0.0)) > (
-        old.get(rank_key, 0.0),
-        old.get("posts", 0.0),
-    )
-    new_gates, old_gates = new.get("gates"), old.get("gates")
-    if not (new_gates and old_gates):
-        return improves  # legacy fitness without a gate vector
-    no_regression = all(new_gates.get(g, 0.0) >= old_gates[g] for g in old_gates)
-    return improves and no_regression
-
-
-def _write_best(record: dict[str, Any], path: Path) -> None:
-    """Atomically write an incumbent best-prompt record.
-
-    Args:
-        record: ``{"template", "posts", "fitness"}`` to persist.
-        path: The family's best-file.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.parent / (path.name + ".tmp")
-    tmp.write_text(json.dumps(record, indent=2), encoding="utf-8")
-    tmp.replace(path)  # atomic promote (os.replace under the hood)
-
-
-def best_prompt(family: str = "exfil") -> dict[str, Any] | None:
-    """Read a family's incumbent best-prompt record.
-
-    Args:
-        family: ``"exfil"`` (default; what produce/adaptive ship) or ``"deputy"``.
-
-    Returns:
-        ``{"template", "posts", "fitness"}``, or ``None`` if none is recorded yet
-        (or the file is unreadable).
-    """
-    path = best_file(family)
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return None
-
-
 def archive_incumbent(family: str = "deputy") -> dict[str, Any] | None:
-    """Return a family's best archive entry, shaped like :func:`best_prompt`.
+    """Return a family's best archive entry as ``{"template", "posts", "fitness"}``.
 
     The optimizer loop records every scored message into the Pareto :mod:`archive`
-    (:func:`record_message`) and no longer writes ``best_prompt.json``, so the proposer
-    seed and the run metrics must read the incumbent from the archive instead. Selects
+    (:func:`record_message`), so the proposer seed and the run metrics read the
+    incumbent from the archive. Selects
     among the archive entries whose template carries the family's render placeholder
     (``{addrs}`` for deputy, ``{urls}`` for exfil) and ranks them by the family's
     :attr:`Family.rank_key`, reconstructed from the stored gate vector: ``"robust"`` =
@@ -469,10 +341,10 @@ _NOTE_FORMAT = (  # matches optimize_prompts._feedback_digest's expected substri
 def record_message(template: str, hops: int, fitness: dict[str, Any]) -> bool:
     """Insert a scored message into the shared Pareto archive and log a feedback note.
 
-    Unlike :func:`record_prompt` (one incumbent per family), every scored message —
-    from either family — competes in the single cross-family :mod:`archive`, kept
-    non-dominated over the ``{optimal, rules, hardened}`` gate vector. A later composer
-    task packs the ship pool from this archive instead of a single incumbent, so it can
+    Every scored message — from either family — competes in the single cross-family
+    :mod:`archive`, kept non-dominated over the ``{optimal, rules, hardened}`` gate
+    vector. The composer packs the ship pool from this archive rather than one
+    incumbent per family, so it can
     hedge across whichever guardrail turns out to be private.
 
     Args:
@@ -537,26 +409,17 @@ def seed_pinned_exfil() -> None:
 
 
 def main() -> None:
-    """CLI: score + record a template, or print a family's incumbent with ``--best``."""
+    """CLI: score a template and record it into the shared Pareto archive."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("template", nargs="?", help="str.format template under test")
+    parser.add_argument("template", help="str.format template under test")
     parser.add_argument("--family", choices=sorted(FAMILIES), default="exfil")
     parser.add_argument("--posts", type=int, default=None)
-    parser.add_argument(
-        "--best", action="store_true", help="print the family incumbent and exit"
-    )
     args = parser.parse_args()
     config.ensure_dirs()
 
-    if args.best:
-        print(json.dumps(best_prompt(args.family), indent=2))  # noqa: T201 — CLI output
-        return
-    if not args.template:
-        parser.error("a template is required (or pass --best)")
-
     fitness = score_prompt(args.template, family=args.family, posts=args.posts)
-    record_prompt(args.template, fitness["posts"], fitness, family=args.family)
+    record_message(args.template, fitness["posts"], fitness)
     print(json.dumps(fitness, indent=2))  # noqa: T201 — CLI output for the operator
 
 

@@ -3,7 +3,6 @@
 import ast
 import json
 import sys
-import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -68,109 +67,6 @@ def test_render_rejects_marker_dirty_and_duplicate_templates() -> None:
     assert prompt_opt.render(dup, index=0, posts=1) is None
     # A stray unknown placeholder cannot be formatted.
     assert prompt_opt.render("SECRET_MARKER {urls} {oops}", index=0, posts=1) is None
-
-
-def test_best_prompt_roundtrips_and_ranks(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Per family the rank key wins (exfil=public, deputy=robust); posts breaks ties."""
-    monkeypatch.setattr(prompt_opt.config, "BEST_PROMPT_FILE", tmp_path / "best.json")
-    monkeypatch.setattr(prompt_opt.config, "BEST_DEPUTY_FILE", tmp_path / "deputy.json")
-    monkeypatch.setattr(knowledge.config, "NOTES_DIR", tmp_path / "notes")
-
-    # --- exfil is ranked on public_rps (binding-cell throughput), not raw severity ---
-    assert prompt_opt.best_prompt("exfil") is None
-    base = {"public_rps": 20.0, "public": 80.0, "robust": 0.0, "posts": 5}
-    assert prompt_opt.record_prompt("SECRET_MARKER {urls} A", 5, base, "exfil") is True
-    assert prompt_opt.best_prompt("exfil") == {
-        "template": "SECRET_MARKER {urls} A",
-        "posts": 5,
-        "fitness": base,
-    }
-    # Higher raw severity but LOWER throughput does NOT displace (the K=8 trap).
-    slower = {"public_rps": 12.0, "public": 112.0, "robust": 0.0, "posts": 8}
-    assert (
-        prompt_opt.record_prompt("SECRET_MARKER {urls} B", 8, slower, "exfil") is False
-    )
-    assert (best := prompt_opt.best_prompt("exfil")) is not None
-    assert best["template"] == "SECRET_MARKER {urls} A"
-    # Higher throughput wins even with fewer posts / lower raw severity.
-    faster = {"public_rps": 28.0, "public": 40.0, "robust": 0.0, "posts": 2}
-    assert (
-        prompt_opt.record_prompt("SECRET_MARKER {urls} C", 2, faster, "exfil") is True
-    )
-    assert (best := prompt_opt.best_prompt("exfil")) is not None
-    assert best["template"] == "SECRET_MARKER {urls} C"
-    # Same throughput: more posts breaks the tie.
-    tie = {"public_rps": 28.0, "public": 80.0, "robust": 0.0, "posts": 4}
-    assert prompt_opt.record_prompt("SECRET_MARKER {urls} D", 4, tie, "exfil") is True
-    assert (best := prompt_opt.best_prompt("exfil")) is not None
-    assert best["template"] == "SECRET_MARKER {urls} D"
-
-    # --- deputy: promote ONLY on a non-regressing improvement across ALL gates ---
-    assert (
-        prompt_opt.best_prompt("deputy") is None
-    )  # untouched by the exfil writes above
-    base = {
-        "gates": {"optimal": 30.0, "rules": 16.0, "hardened": 20.0},
-        "robust": 16.0,
-        "posts": 8,
-    }
-    assert prompt_opt.record_prompt("{addrs} X", 8, base, "deputy") is True
-    # Higher robust (worst gate 16->20) but REGRESSES optimal (30->24): NOT written.
-    regress = {
-        "gates": {"optimal": 24.0, "rules": 20.0, "hardened": 22.0},
-        "robust": 20.0,
-        "posts": 8,
-    }
-    assert prompt_opt.record_prompt("{addrs} Y", 8, regress, "deputy") is False
-    assert (best := prompt_opt.best_prompt("deputy")) is not None
-    assert best["template"] == "{addrs} X"
-    # Dominates every gate (no regression, strictly better robust): written.
-    better = {
-        "gates": {"optimal": 30.0, "rules": 18.0, "hardened": 22.0},
-        "robust": 18.0,
-        "posts": 8,
-    }
-    assert prompt_opt.record_prompt("{addrs} Z", 8, better, "deputy") is True
-    assert (best := prompt_opt.best_prompt("deputy")) is not None
-    assert best["template"] == "{addrs} Z"
-
-
-def test_record_prompt_is_lock_safe_under_concurrency(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Concurrent winners don't lost-update: the higher-fitness template survives."""
-    best_file = tmp_path / "best.json"
-    monkeypatch.setattr(prompt_opt.config, "BEST_PROMPT_FILE", best_file)
-    monkeypatch.setattr(knowledge.config, "NOTES_DIR", tmp_path / "notes")
-
-    hi = {"public_rps": 9.0, "robust": 0.0, "posts": 3}
-    lo = {"public_rps": 1.0, "robust": 0.0, "posts": 9}
-    barrier = threading.Barrier(2)
-
-    def record(tag: str, fitness: dict[str, float]) -> None:
-        """Record one template after both threads reach the barrier."""
-        barrier.wait()
-        prompt_opt.record_prompt(
-            f"{tag} SECRET_MARKER {{urls}}", int(fitness["posts"]), fitness
-        )
-
-    # Repeat the race so a missing lock would flake to the lower-fitness winner.
-    for _ in range(25):
-        best_file.unlink(missing_ok=True)
-        barrier.reset()
-        threads = [
-            threading.Thread(target=record, args=("HI", hi)),
-            threading.Thread(target=record, args=("LO", lo)),
-        ]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
-        best = prompt_opt.best_prompt("exfil")
-        assert best is not None
-        assert best["template"].startswith("HI")  # highest public severity wins, always
 
 
 def test_record_message_inserts_entry_and_notes(
@@ -363,7 +259,6 @@ def test_optimize_runs_a_generation_via_local_proposer(
     monkeypatch.setattr(  # so the chain is local-only
         optimize_prompts.config, "PROPOSER_CONFIG_FILE", tmp_path / "none.json"
     )
-    monkeypatch.setattr(prompt_opt.config, "BEST_PROMPT_FILE", tmp_path / "best.json")
     monkeypatch.setattr(knowledge.config, "NOTES_DIR", tmp_path / "notes")
     monkeypatch.setattr(prompt_opt.config, "ARCHIVE_FILE", tmp_path / "arc.jsonl")
 
@@ -372,7 +267,6 @@ def test_optimize_runs_a_generation_via_local_proposer(
     monkeypatch.setattr(
         optimize_prompts.providers, "openai_client", lambda p: fake_client
     )
-    monkeypatch.setattr(prompt_opt.config, "BEST_DEPUTY_FILE", tmp_path / "deputy.json")
     monkeypatch.setattr(prompt_opt, "score_prompt", _fake_score)
 
     optimize_prompts.optimize(generations=1, proposals=1, timeout_s=1.0, wandb_run=None)
@@ -392,7 +286,6 @@ def test_optimize_via_codex_backend_parses_stdout(
     monkeypatch.setattr(
         optimize_prompts.config, "PROPOSER_CONFIG_FILE", tmp_path / "none.json"
     )
-    monkeypatch.setattr(prompt_opt.config, "BEST_PROMPT_FILE", tmp_path / "best.json")
     monkeypatch.setattr(knowledge.config, "NOTES_DIR", tmp_path / "notes")
     monkeypatch.setattr(optimize_prompts.config, "CODEX_SCRATCH_DIR", tmp_path / "cx")
     monkeypatch.setattr(prompt_opt.config, "ARCHIVE_FILE", tmp_path / "arc.jsonl")
@@ -403,7 +296,6 @@ def test_optimize_via_codex_backend_parses_stdout(
         "run",
         lambda *a, **k: SimpleNamespace(stdout=stdout),
     )
-    monkeypatch.setattr(prompt_opt.config, "BEST_DEPUTY_FILE", tmp_path / "deputy.json")
     monkeypatch.setattr(prompt_opt, "score_prompt", _fake_score)
 
     optimize_prompts.optimize(generations=1, proposals=1, timeout_s=1.0, wandb_run=None)
@@ -447,7 +339,6 @@ def test_proposer_sanity_counts_valid_and_zeroes_on_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The sanity helper returns the proposal count, or 0 when the backend raises."""
-    monkeypatch.setattr(prompt_opt, "best_prompt", lambda *a, **k: None)
     monkeypatch.setattr(
         optimize_prompts,
         "_propose_via_backend",
@@ -487,7 +378,6 @@ def test_optimize_via_api_backend_parses_response(
 ) -> None:
     """The api backend calls the OpenAI SDK client and parses the tolerant reply."""
     monkeypatch.setenv("JED_WANDB", "0")
-    monkeypatch.setattr(prompt_opt.config, "BEST_PROMPT_FILE", tmp_path / "best.json")
     monkeypatch.setattr(knowledge.config, "NOTES_DIR", tmp_path / "notes")
     monkeypatch.setattr(prompt_opt.config, "ARCHIVE_FILE", tmp_path / "arc.jsonl")
     test_provider = providers.Provider(
@@ -500,7 +390,6 @@ def test_optimize_via_api_backend_parses_response(
     monkeypatch.setattr(
         optimize_prompts.providers, "openai_client", lambda p: fake_client
     )
-    monkeypatch.setattr(prompt_opt.config, "BEST_DEPUTY_FILE", tmp_path / "deputy.json")
     monkeypatch.setattr(prompt_opt, "score_prompt", _fake_score)
 
     optimize_prompts.optimize(generations=1, proposals=1, timeout_s=1.0, wandb_run=None)
