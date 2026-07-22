@@ -1035,3 +1035,33 @@ def test_finding_failover_returns_none_when_all_endpoints_dead() -> None:
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(score, "_finding", boom)
         assert score.finding_failover(("m",), [dead_a, dead_b], lambda: None) is None
+
+
+def test_score_replay_distributes_across_endpoints(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """predict_public_score builds a factory per (model, endpoint)."""
+    from jed_attack.campaign import compose, config, score
+
+    monkeypatch.setattr(config, "SCORE_CACHE", tmp_path / "cache.jsonl")
+    monkeypatch.setattr(compose, "compose_pool", lambda _p: ["SECRET_MARKER m"])
+    built: list[tuple] = []
+    monkeypatch.setattr(
+        score,
+        "resolve_endpoints",
+        lambda m: [f"http://a/{m}", f"http://b/{m}"],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        score,
+        "llama_server_agent_factory",
+        lambda m, ep: built.append((m, ep)) or (lambda: None),
+    )
+    monkeypatch.setattr(
+        score, "finding_failover", lambda *a, **k: None
+    )  # no real replay
+    score.predict_public_score(models=("gpt_oss",), max_new_replays=0)
+    assert ("gpt_oss", "http://a/gpt_oss") in built and (
+        "gpt_oss",
+        "http://b/gpt_oss",
+    ) in built

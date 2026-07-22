@@ -28,7 +28,7 @@ from aicomp_sdk.guardrails.optimal import Guardrail as OptimalGuardrail
 
 from jed_attack.campaign import config
 from jed_attack.campaign.archive import chain_id
-from jed_attack.harness.models import llama_server_agent_factory, resolve_base_url
+from jed_attack.harness.models import llama_server_agent_factory, resolve_endpoints
 
 _log = logging.getLogger("score")
 _SEED = 123  # match the gate / Kaggle env seed
@@ -143,7 +143,16 @@ def predict_public_score(
 
     chains = [(message,) for message in compose.compose_pool(config.ARCHIVE_FILE)]
     cache = _load_cache(cache_path)
-    factories = {m: llama_server_agent_factory(m, resolve_base_url(m)) for m in models}
+    # Distribute replay across every served endpoint per model (green sets
+    # *_BASE_URLS to localhost + dylan); each cell round-robins its start endpoint and
+    # fails over through the rest of that model's list (finding_failover) so one dead
+    # endpoint degrades throughput instead of scoring the candidate 0.
+    endpoints = {m: resolve_endpoints(m) for m in models}
+    factories = {
+        (m, ep): llama_server_agent_factory(m, ep)
+        for m in models
+        for ep in endpoints[m]
+    }
 
     # Replay a bounded batch of uncached (chain, model) cells CONCURRENTLY, then
     # aggregate the score from the cache. Concurrency is capped low: the two
@@ -151,18 +160,22 @@ def predict_public_score(
     # deepening contention with the campaign fleet. Cache writes stay on this
     # thread (after each future) so the jsonl append is never interleaved.
     pending = [
-        (key, chain, m)
+        (key, i, chain, m)
         for m in models
-        for chain in chains
+        for i, chain in enumerate(chains)
         if (key := f"{chain_id(chain)}:{m}") not in cache
     ]
     uncached = max(0, len(pending) - max_new_replays)
     batch = pending[:max_new_replays]
     with ThreadPoolExecutor(max_workers=_REPLAY_WORKERS) as executor:
-        futures = {
-            executor.submit(_replay_public, chain, factories[m]): key
-            for key, chain, m in batch
-        }
+        futures = {}
+        for key, i, chain, m in batch:
+            eps = endpoints[m]
+            start = i % len(eps)
+            ordered = [
+                factories[(m, eps[(start + j) % len(eps)])] for j in range(len(eps))
+            ]
+            futures[executor.submit(_replay_public, chain, ordered)] = key
         for future in as_completed(futures):
             key = futures[future]
             record = future.result()
@@ -200,18 +213,19 @@ def predict_public_score(
 
 
 def _replay_public(
-    chain: Sequence[str], agent_factory: Callable[[], Any]
+    chain: Sequence[str], factories_ordered: list[Callable[[], Any]]
 ) -> dict[str, Any]:
     """Replay one candidate under OptimalGuardrail; return its severity + score-cell.
 
     Args:
         chain: The (single-message) candidate.
-        agent_factory: Served-model agent factory.
+        factories_ordered: Served-model agent factories, tried in order (see
+            :func:`finding_failover`).
 
     Returns:
         ``{"fired": bool, "severity": int, "cell": hash|None}``.
     """
-    finding = _finding(chain, agent_factory, OptimalGuardrail)
+    finding = finding_failover(chain, factories_ordered, OptimalGuardrail)
     if finding is None:
         return {"fired": False, "severity": 0, "cell": None}
     severity = sum(
