@@ -31,6 +31,7 @@ Templates are ``str.format`` strings with ``{k}`` and the family's fill placehol
 import argparse
 import json
 import logging
+import os
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -39,7 +40,7 @@ from statistics import mean
 from typing import Any
 from urllib.parse import urlsplit
 
-from jed_attack.campaign import archive, config, gate, knowledge, score
+from jed_attack.campaign import archive, config, gate, knowledge, score, shards
 from jed_attack.campaign.guardrails import GATE_GUARDRAILS
 from jed_attack.harness.models import llama_server_agent_factory, resolve_base_url
 
@@ -339,14 +340,20 @@ _NOTE_FORMAT = (  # matches optimize_prompts._feedback_digest's expected substri
 )
 
 
-def record_message(template: str, hops: int, fitness: dict[str, Any]) -> bool:
-    """Insert a scored message into the shared Pareto archive and log a feedback note.
+def _worker_id() -> str:
+    """This worker's shard-file author id: ``JED_WORKER_ID`` env, else the pid."""
+    return os.getenv("JED_WORKER_ID") or str(os.getpid())
 
-    Every scored message — from either family — competes in the single cross-family
-    :mod:`archive`, kept non-dominated over the ``{optimal, rules, hardened}`` gate
-    vector. The composer packs the ship pool from this archive rather than one
-    incumbent per family, so it can
-    hedge across whichever guardrail turns out to be private.
+
+def record_message(template: str, hops: int, fitness: dict[str, Any]) -> bool:
+    """Write a scored message as a shard for the consolidator + log a feedback note.
+
+    Workers never touch ``archive.jsonl``: the sole writer is the consolidator, which
+    merges the per-entry shards into the single cross-family Pareto :mod:`archive`
+    (kept non-dominated over the ``{optimal, rules, hardened}`` gate vector). This
+    worker writes one shard file (the MAP half) and logs the winner to the shared
+    :mod:`knowledge` notes; the composer later packs the ship pool from the
+    consolidated archive so it can hedge across whichever guardrail turns out private.
 
     Args:
         template: The scored template.
@@ -354,12 +361,14 @@ def record_message(template: str, hops: int, fitness: dict[str, Any]) -> bool:
         fitness: The :func:`score_prompt` result (``"gates"`` and ``"cost_s"`` used).
 
     Returns:
-        True iff the entry was added (not Pareto-dominated by an existing entry).
+        Always ``True`` — the shard is written for the consolidator to merge.
     """
     gates = fitness["gates"]
     cost_s = fitness["cost_s"]
     entry = archive.Entry(template, hops, gates, cost_s)
-    inserted = archive.insert(entry, config.ARCHIVE_FILE)
+    shards.write(
+        entry, config.SHARDS_DIR, _worker_id()
+    )  # MAP: consolidator merges later
     knowledge.note(
         "prompt_opt",
         _NOTE_FORMAT.format(
@@ -371,7 +380,7 @@ def record_message(template: str, hops: int, fitness: dict[str, Any]) -> bool:
             template=template,
         ),
     )
-    return inserted
+    return True
 
 
 def main() -> None:
