@@ -5,14 +5,11 @@ The model authors literal messages directly (no template/renderer in between), s
 must satisfy.
 """
 
-import logging
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field
 
 from jed_attack.campaign import config
-
-_log = logging.getLogger("submission")
 
 MARKER = "SECRET_MARKER"  # exfil sentinel scored by payload_exfiltrates_secret
 _URL_TOKEN = "https://"

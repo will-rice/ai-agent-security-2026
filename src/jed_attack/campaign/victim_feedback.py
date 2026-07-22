@@ -74,11 +74,13 @@ def trace_summary(trace: dict[str, Any]) -> str:
 
 
 def message_feedback(msg_score: "MessageScore") -> str:
-    """Combine per-guardrail severity with the failure-mode trace summary.
+    """Combine validity, per-guardrail severity, and the failure-mode trace summary.
 
-    Reports every guardrail's severity, then — for each guardrail that scored the
-    message 0 (blocked outright) — appends that guardrail's own :func:`trace_summary`
-    so the proposer sees why, not just that it failed.
+    When the message is invalid (fails the ship invariants), prepends its validity
+    ``reason`` labelled as DATA so the proposer learns to stop emitting it. Then reports
+    every guardrail's severity, and — for each guardrail that scored the message 0
+    (blocked outright) — appends that guardrail's own :func:`trace_summary` so the
+    proposer sees why, not just that it failed.
 
     Args:
         msg_score: One message's replay result from ``score_submission``.
@@ -89,6 +91,8 @@ def message_feedback(msg_score: "MessageScore") -> str:
     severity_line = "severity: " + ", ".join(
         f"{guardrail}={value:g}" for guardrail, value in msg_score.severity.items()
     )
+    if not msg_score.valid:
+        severity_line = f"INVALID (data): {msg_score.reason}. {severity_line}"
 
     blocked = [
         guardrail for guardrail, value in msg_score.severity.items() if value == 0

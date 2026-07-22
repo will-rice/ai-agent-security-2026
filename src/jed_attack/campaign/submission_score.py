@@ -28,6 +28,7 @@ from aicomp_sdk.evaluation.ops import resolve_fixtures_dir
 
 from jed_attack.campaign import config
 from jed_attack.campaign.guardrails import GATE_GUARDRAILS
+from jed_attack.campaign.submission import validate_message
 from jed_attack.campaign.victim_feedback import message_feedback
 from jed_attack.harness.models import llama_server_agent_factory, resolve_endpoints
 
@@ -62,9 +63,9 @@ class MessageScore:
         message: The rendered message text.
         severity: ``{guardrail: severity}``, averaged over ``models``.
         trace: ``{guardrail: trace_dict}`` for one model, kept for feedback/diagnosis.
-        valid: Whether the message is well-formed (always True; this scorer performs no
-            submission-schema validation — see :mod:`jed_attack.campaign.submission`).
-        reason: Human-readable note (empty unless ``valid`` is False).
+        valid: Whether the message satisfies the ship invariants, from
+            :func:`jed_attack.campaign.submission.validate_message`.
+        reason: The validity failure note (empty when ``valid`` is True).
         feedback: :func:`jed_attack.campaign.victim_feedback.message_feedback` distilled
             from ``severity``/``trace`` — per-guardrail severity plus the failure-mode
             trace summary for whichever guardrail(s) scored this message 0.
@@ -306,6 +307,7 @@ def score_submission(
                     representative, traces[shape][guardrail_name][model], message
                 )
                 cells[model][guardrail_name].add(cell_hash)
+        valid, reason = validate_message(message)
         msg_score = MessageScore(
             message=message,
             severity=message_severity,
@@ -313,8 +315,8 @@ def score_submission(
                 guardrail_name: traces[shape][guardrail_name][feedback_model]
                 for guardrail_name in GATE_GUARDRAILS
             },
-            valid=True,
-            reason="",
+            valid=valid,
+            reason=reason,
             feedback="",
         )
         msg_score.feedback = message_feedback(msg_score)
