@@ -8,15 +8,11 @@ writes); readers glob and merge. All state lives under ``run/knowledge/``.
 """
 
 import json
-import logging
 import time
-from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from jed_attack.campaign import config
-
-_log = logging.getLogger("knowledge")
 
 INSIGHT = "insight"  # default note kind
 
@@ -60,26 +56,3 @@ def _append(record: dict, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, sort_keys=True) + "\n")
-
-
-def _read_dir(directory: Path) -> Iterable[dict]:
-    """Yield parsed json objects from every ``*.jsonl`` in a dir, skipping bad lines.
-
-    Args:
-        directory: The notes dir.
-
-    Yields:
-        Parsed dicts, oldest file first.
-    """
-    if not directory.exists():
-        return
-    for path in sorted(directory.glob("*.jsonl")):
-        with path.open(encoding="utf-8") as handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    yield json.loads(line)
-                except json.JSONDecodeError:
-                    continue
