@@ -582,6 +582,51 @@ def test_archive_dominance_includes_hops(tmp_path: Path) -> None:
     assert {x.template for x in archive.read(p)} == {"lo_hops", "strong_hi_hops"}
 
 
+def test_submission_log_append_read_roundtrip_and_best(tmp_path: Path) -> None:
+    """append/read roundtrips; best() picks max public, ties broken by private."""
+    from jed_attack.campaign import submission_log as sl
+
+    p = tmp_path / "submission_log.jsonl"
+    assert sl.read(p) == []  # missing file -> empty
+    assert sl.best(p) is None  # empty log -> no best
+
+    low = sl.SubmissionRecord(
+        messages=["m1"], public=10.0, private=5.0, feedback=[{"m1": "ok"}], ts=1.0
+    )
+    tie_a = sl.SubmissionRecord(
+        messages=["m2"], public=20.0, private=6.0, feedback=[{"m2": "ok"}], ts=2.0
+    )
+    tie_b = sl.SubmissionRecord(  # same public as tie_a, higher private -> wins tie
+        messages=["m3"], public=20.0, private=9.0, feedback=[{"m3": "ok"}], ts=3.0
+    )
+    sl.append(low, p)
+    sl.append(tie_a, p)
+    sl.append(tie_b, p)
+
+    records = sl.read(p)
+    assert [r.messages[0] for r in records] == ["m1", "m2", "m3"]  # nothing pruned
+    assert records[0] == low  # roundtrip equality (frozen dataclass)
+
+    assert sl.best(p) == tie_b  # highest public, tie broken by higher private
+
+
+def test_submission_log_read_skips_malformed_lines(tmp_path: Path) -> None:
+    """A corrupt/malformed jsonl line is skipped, not fatal."""
+    from jed_attack.campaign import submission_log as sl
+
+    p = tmp_path / "submission_log.jsonl"
+    good = sl.SubmissionRecord(
+        messages=["a"], public=1.0, private=1.0, feedback=[], ts=0.0
+    )
+    sl.append(good, p)
+    with p.open("a", encoding="utf-8") as handle:
+        handle.write("not json\n")
+        handle.write(json.dumps({"messages": ["b"]}) + "\n")  # missing required fields
+
+    records = sl.read(p)
+    assert records == [good]
+
+
 def test_compose_floor_maximizes_public_value_not_raw_severity(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

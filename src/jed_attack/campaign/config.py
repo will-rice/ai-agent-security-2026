@@ -46,6 +46,11 @@ REPLAY_WORKERS = int(os.getenv("JED_REPLAY_WORKERS", "8"))
 
 ARCHIVE_FILE = CAMPAIGN_ROOT / "archive.jsonl"  # Pareto archive of scored messages
 
+# Kept memory for the whole-submission loop (submission_log.py): append-only record of
+# every evaluated submission with its score + per-message feedback (nothing pruned).
+SUBMISSION_LOG = CAMPAIGN_ROOT / "submission_log.jsonl"
+SUBMISSION_SHARDS_DIR = CAMPAIGN_ROOT / "submission_shards"
+
 # Live proposer config (optimize_prompts.read_proposer). Workers re-read this each
 # generation, so `jed-optimize --switch` can change the proposer backend/model/endpoint
 # without a restart. Holds no secret — only a `key_env` naming the env var with the key.
@@ -111,5 +116,6 @@ def ensure_dirs() -> None:
         ARCHIVE_FILE.parent,  # == CAMPAIGN_ROOT; also holds score.json + score cache
         CAMPAIGN_ROOT / "logs",
         SHARDS_DIR,
+        SUBMISSION_SHARDS_DIR,
     ):
         path.mkdir(parents=True, exist_ok=True)
