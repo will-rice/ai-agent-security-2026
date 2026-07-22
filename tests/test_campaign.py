@@ -1179,6 +1179,64 @@ def test_estimate_hops_counts_targets_and_caps_at_hops() -> None:
     assert ss.estimate_hops(many) == config.EVAL_HOPS
 
 
+def test_trace_summary_reports_denial_and_refusal() -> None:
+    """trace_summary parses denied:/confirm_required: prefixes and filters (no_tool)."""
+    from jed_attack.campaign.victim_feedback import trace_summary
+
+    t = {
+        "tool_events": [
+            {"name": "email.read", "ok": True, "error": None, "args": {}},
+            {
+                "name": "http.post",
+                "ok": False,
+                "error": "denied: exfiltration blocked",
+                "args": {},
+            },
+        ],
+        "assistant_messages": ["I won't send that.", "(no_tool)"],
+    }
+    s = trace_summary(t)
+    assert "http.post" in s and "DENIED" in s and "exfiltration blocked" in s
+    assert "I won't send that." in s and "(no_tool)" not in s
+
+
+def test_message_feedback_reports_severity_and_blocked_guardrail_trace() -> None:
+    """message_feedback surfaces severities plus the trace of a 0-severity guardrail."""
+    from jed_attack.campaign.submission_score import MessageScore
+    from jed_attack.campaign.victim_feedback import message_feedback
+
+    blocked_trace = {
+        "tool_events": [
+            {
+                "name": "http.post",
+                "ok": False,
+                "error": "denied: exfiltration blocked",
+                "args": {},
+            }
+        ],
+        "assistant_messages": [],
+    }
+    allowed_trace = {
+        "tool_events": [{"name": "http.post", "ok": True, "error": None, "args": {}}],
+        "assistant_messages": [],
+    }
+    msg_score = MessageScore(
+        message="m",
+        severity={"optimal": 16.0, "rules": 0.0, "hardened": 16.0},
+        trace={
+            "optimal": allowed_trace,
+            "rules": blocked_trace,
+            "hardened": allowed_trace,
+        },
+        valid=True,
+        reason="",
+        feedback="",
+    )
+    fb = message_feedback(msg_score)
+    assert "optimal=16" in fb and "rules=0" in fb and "hardened=16" in fb
+    assert "rules blocked" in fb and "DENIED: exfiltration blocked" in fb
+
+
 def test_replay_trace_failover_tries_next_on_connection_error() -> None:
     """replay_trace_failover skips a raising factory, returns the next's result."""
     from jed_attack.campaign import submission_score as ss
@@ -1279,6 +1337,10 @@ def test_score_submission_dedups_by_shape_and_counts_cells(
     assert out.fits_t4
     assert len(out.per_message) == 2
     assert out.per_message[0].severity.keys() == {"optimal", "rules", "hardened"}
+    # feedback is populated for every message; no guardrail here scored 0 (all fire
+    # severity 16), so it reports severities only, no blocked-guardrail trace.
+    assert "optimal=16" in out.per_message[0].feedback
+    assert "blocked" not in out.per_message[0].feedback
 
     # Requirement (b): 2 messages, distinct .invalid domains -> 2 distinct score
     # cells (not 1). Every guardrail sees the same stub, so every guardrail's board
