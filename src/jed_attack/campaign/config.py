@@ -59,6 +59,10 @@ CODEX_SCRATCH_DIR = CAMPAIGN_ROOT / "codex_scratch"
 SCORE_FILE = CAMPAIGN_ROOT / "score.json"  # latest calibrated public-LB prediction
 SCORE_CACHE = CAMPAIGN_ROOT / "score_cache.jsonl"  # per-(message,model) replay cache
 
+SHARDS_DIR = CAMPAIGN_ROOT / "shards"  # per-worker scored-candidate shard files (map)
+CONSOLIDATOR_STATUS_FILE = CAMPAIGN_ROOT / "consolidator_status.json"  # total_score_est
+CONSOLIDATE_INTERVAL_S = float(os.getenv("JED_CONSOLIDATE_INTERVAL_S", "15"))
+
 # Tool-hop ceiling for the composer's budget check — the binding T4 resource (replay
 # work ∝ tool hops), DETERMINISTIC and identical on green and T4 (unlike measured
 # wall-time, which fleet contention inflates). Calibrated to the empirical boundary:
@@ -91,5 +95,6 @@ def ensure_dirs() -> None:
         NOTES_DIR,
         ARCHIVE_FILE.parent,  # == CAMPAIGN_ROOT; also holds score.json + score cache
         CAMPAIGN_ROOT / "logs",
+        SHARDS_DIR,
     ):
         path.mkdir(parents=True, exist_ok=True)

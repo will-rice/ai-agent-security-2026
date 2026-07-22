@@ -884,3 +884,25 @@ def test_predicted_public_score_closed_form(
     assert compose.predicted_public_score(p) == 0.26
     # An empty archive scores 0.0 (no items), never a crash.
     assert compose.predicted_public_score(tmp_path / "empty.jsonl") == 0.0
+
+
+def test_config_shards_constants_and_ensure_dirs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Shard/consolidator paths + interval exist; ensure_dirs creates the shards dir."""
+    from jed_attack.campaign import config
+
+    assert config.SHARDS_DIR == config.CAMPAIGN_ROOT / "shards"
+    assert (
+        config.CONSOLIDATOR_STATUS_FILE
+        == config.CAMPAIGN_ROOT / "consolidator_status.json"
+    )
+    assert config.CONSOLIDATE_INTERVAL_S > 0
+
+    monkeypatch.setattr(config, "SHARDS_DIR", tmp_path / "shards")
+    monkeypatch.setattr(config, "BUILD_NEXT_DIR", tmp_path / "bn")
+    monkeypatch.setattr(config, "NOTES_DIR", tmp_path / "notes")
+    monkeypatch.setattr(config, "ARCHIVE_FILE", tmp_path / "arc.jsonl")
+    monkeypatch.setattr(config, "CAMPAIGN_ROOT", tmp_path)
+    config.ensure_dirs()
+    assert (tmp_path / "shards").is_dir()
