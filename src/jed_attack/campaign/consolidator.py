@@ -4,6 +4,11 @@ Every CONSOLIDATE_INTERVAL_S it claims the workers' shard files (:mod:`shards`),
 proposer refusals / non-rendering templates, dedups by template, Pareto-merges each
 survivor into ``archive.jsonl`` (:func:`archive.insert`), writes ``total_score_est`` to
 its own status file (never ``score.json``), and deletes the consumed shards.
+
+Alongside that Entry->Pareto-archive path (unchanged, kept for the running pipeline),
+:func:`consolidate_submissions_once` claims ``SubmissionRecord`` shards and appends
+every one of them to the submission log (:mod:`submission_log`) — no filtering, no
+dedup, no Pareto merge: decision C keeps every scored submission.
 """
 
 import argparse
@@ -12,7 +17,14 @@ import logging
 import time
 from pathlib import Path
 
-from jed_attack.campaign import archive, compose, config, prompt_opt, shards
+from jed_attack.campaign import (
+    archive,
+    compose,
+    config,
+    prompt_opt,
+    shards,
+    submission_log,
+)
 
 _log = logging.getLogger("consolidator")
 
@@ -72,6 +84,48 @@ def consolidate_once(shards_dir: Path, archive_path: Path, status_path: Path) ->
     )
     _log.info("consolidated %d shard(s), inserted %d", len(claimed), inserted)
     return inserted
+
+
+def consolidate_submissions_once(
+    shards_dir: Path, log_path: Path, status_path: Path
+) -> int:
+    """Claim SubmissionRecord shards, append every one to the log, report the best.
+
+    No ``_renderable`` filter, no template dedup, no Pareto merge: decision C keeps
+    every scored submission in the log.
+
+    Args:
+        shards_dir: Where workers drop per-submission shard files.
+        log_path: The append-only submission log (:mod:`submission_log`).
+        status_path: Where to write ``best_public``/``best_private`` + counters.
+
+    Returns:
+        The number of records newly appended to the log this cycle.
+    """
+    claimed = shards.claim(
+        shards_dir, from_json=submission_log.SubmissionRecord.from_json
+    )
+    for _, record in claimed:
+        submission_log.append(record, log_path)
+    for path, _ in claimed:
+        path.unlink(missing_ok=True)
+
+    incumbent = submission_log.best(log_path)
+    status_path.write_text(
+        json.dumps(
+            {
+                "ts": time.time(),
+                "best_public": incumbent.public if incumbent else None,
+                "best_private": incumbent.private if incumbent else None,
+                "log_size": len(submission_log.read(log_path)),
+                "shards_consumed": len(claimed),
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    _log.info("consolidated %d submission shard(s)", len(claimed))
+    return len(claimed)
 
 
 def main() -> None:

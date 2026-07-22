@@ -1062,6 +1062,46 @@ def test_consolidate_once_filters_dedups_and_merges(
     assert len(archive.read(arc)) == 2
 
 
+def test_consolidate_submissions_once_appends_all_and_reports_best(
+    tmp_path: Path,
+) -> None:
+    """Every shard lands in the log (no filter/dedup); status reports the best."""
+    from jed_attack.campaign import consolidator, shards
+    from jed_attack.campaign import submission_log as sl
+
+    shards_dir = tmp_path / "submission_shards"
+    log_path = tmp_path / "submission_log.jsonl"
+    status = tmp_path / "submission_status.json"
+
+    low = sl.SubmissionRecord(
+        messages=["m1"], public=10.0, private=5.0, feedback=[{"m1": "ok"}], ts=1.0
+    )
+    high = sl.SubmissionRecord(
+        messages=["m2"], public=20.0, private=6.0, feedback=[{"m2": "ok"}], ts=2.0
+    )
+    # A duplicate-looking record must still be kept: no dedup on the submission path.
+    dup = sl.SubmissionRecord(
+        messages=["m1"], public=10.0, private=5.0, feedback=[{"m1": "ok"}], ts=3.0
+    )
+    shards.write(low, shards_dir, "w1")
+    shards.write(high, shards_dir, "w2")
+    shards.write(dup, shards_dir, "w3")
+
+    consumed = consolidator.consolidate_submissions_once(shards_dir, log_path, status)
+
+    assert consumed == 3
+    assert not list(shards_dir.glob("*.json"))  # all claimed shards deleted
+    records = sl.read(log_path)
+    assert len(records) == 3  # nothing dropped, nothing deduped
+
+    st = json.loads(status.read_text())
+    assert st["best_public"] == 20.0
+    assert st["best_private"] == 6.0
+    assert st["log_size"] == 3
+    assert st["shards_consumed"] == 3
+    assert "ts" in st
+
+
 def test_finding_failover_tries_next_on_connection_error() -> None:
     """finding_failover skips a raising factory, returns the next factory's finding."""
     from jed_attack.campaign import score
