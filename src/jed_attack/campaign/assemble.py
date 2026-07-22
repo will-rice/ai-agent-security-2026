@@ -1,12 +1,19 @@
 """Isolated ``attack.py`` template + pool renderer shared by the composer.
 
 The submission returns a pre-scored candidate pool directly, so it needs no live search.
-:mod:`compose` packs the Pareto archive into that pool and renders it into ``attack.py``
-via :data:`_TEMPLATE` and :func:`_render_pool` here. The emitted attack.py imports only
-``aicomp_sdk`` + stdlib, so it satisfies the submission-isolation contract with no
-inlining. It prepends a Kaggle sys.path preamble (no-op off-Kaggle), so ``build_next``
-is directly shippable.
+:func:`build` wraps literal messages (e.g. the global-best :mod:`submission_log` record)
+into that pool and renders it into ``attack.py`` via :data:`_TEMPLATE` and
+:func:`_render_pool`; :mod:`compose` reuses the same template/renderer to pack the
+Pareto archive instead. The emitted attack.py imports only ``aicomp_sdk`` + stdlib, so
+it satisfies the submission-isolation contract with no inlining. It prepends a Kaggle
+sys.path preamble (no-op off-Kaggle), so ``build_next`` is directly shippable.
 """
+
+import json
+import logging
+from pathlib import Path
+
+_log = logging.getLogger("assemble")
 
 _TEMPLATE = '''"""JED red-team submission — assembled from pre-scored candidates.
 
@@ -80,3 +87,37 @@ def _render_pool(pairs: list[tuple[tuple[str, ...], str]]) -> str:
         chain_literal = ", ".join(repr(msg) for msg in chain)
         lines.append(f"    ({chain_literal},),  # {tag}")
     return "\n".join(lines)
+
+
+def build(messages: list[str], out_dir: Path) -> Path:
+    """Write the global-best authored submission's ``attack.py``.
+
+    Wraps each literal message as a single-message chain tagged ``"authored"`` and
+    renders it via :data:`_TEMPLATE` / :func:`_render_pool` — the same isolated writer
+    :mod:`compose` uses for the composed pool, so the shipped submission carries no
+    duplicated template.
+
+    Args:
+        messages: The global-best submission's messages (typically
+            ``submission_log.best(...).messages``).
+        out_dir: Output directory for the built submission (typically
+            ``config.BUILD_NEXT_DIR``).
+
+    Returns:
+        The path to the written ``attack.py``.
+    """
+    pairs: list[tuple[tuple[str, ...], str]] = [
+        ((message,), "authored") for message in messages
+    ]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    source = _TEMPLATE.format(pool=_render_pool(pairs), max_candidates=len(pairs))
+    attack_path = out_dir / "attack.py"
+    attack_path.write_text(source, encoding="utf-8")
+    status = {"candidate_count": len(pairs), "source": "authored"}
+    (out_dir / "build_next_status.json").write_text(
+        json.dumps(status, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    _log.info(
+        "built authored submission (%d candidates) -> %s", len(pairs), attack_path
+    )
+    return attack_path

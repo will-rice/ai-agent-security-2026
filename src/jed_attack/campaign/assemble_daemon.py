@@ -1,22 +1,26 @@
-"""Assemble daemon: rebuild build_next/attack.py from the composer's ship pool.
+"""Assemble daemon: rebuild build_next/attack.py from the global-best submission.
 
-Sole owner of ``build_next``. Runs ``compose.build``, which reserves a public floor of
-the search's best public-value exfil entry and fills the rest of the tool-hop budget
-with the best robust-value archive entries (see ``compose.py``).
+Sole owner of ``build_next``. Runs ``assemble.build`` on the messages of
+``submission_log.best`` — the highest-scoring whole-submission the incumbent loop has
+evaluated so far (see ``submission_log.py``).
 """
 
 import logging
 
-from jed_attack.campaign import compose, config
+from jed_attack.campaign import assemble, config, submission_log
 from jed_attack.campaign.daemon import run_daemon
 
 _log = logging.getLogger("assemble")
 
 
 def assemble_once() -> None:
-    """Rebuild the shippable attack.py from the composer's archive-packed pool."""
-    path = compose.build(config.BUILD_NEXT_DIR)
-    _log.info("assembled composed submission -> %s", path)
+    """Rebuild the shippable attack.py from the global-best logged submission."""
+    rec = submission_log.best(config.SUBMISSION_LOG)
+    if rec is None:
+        _log.info("submission log is empty; nothing to assemble yet")
+        return
+    path = assemble.build(rec.messages, config.BUILD_NEXT_DIR)
+    _log.info("assembled authored submission -> %s", path)
 
 
 def main() -> None:
