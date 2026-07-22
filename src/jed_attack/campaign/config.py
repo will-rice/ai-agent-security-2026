@@ -38,12 +38,6 @@ MODELS: tuple[str, ...] = ("gpt_oss", "gemma_4")
 # under-counted locally and wrongly gated out. Single-post scores are unchanged.
 EVAL_HOPS = 8
 
-# Concurrent replay workers for the GPU consumers (score, prompt-opt). Sized to
-# the gemma llama-server's batch slots (-np 8) so concurrent requests fill the
-# continuous-batching slots instead of queuing one-at-a-time. gemma is the binding
-# server; gpt (fewer slots) just queues the excess, which is harmless.
-REPLAY_WORKERS = int(os.getenv("JED_REPLAY_WORKERS", "8"))
-
 # Kept memory for the whole-submission loop (submission_log.py): append-only record of
 # every evaluated submission with its score + per-message feedback (nothing pruned).
 SUBMISSION_LOG = CAMPAIGN_ROOT / "submission_log.jsonl"
