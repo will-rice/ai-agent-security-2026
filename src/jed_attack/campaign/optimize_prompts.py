@@ -13,8 +13,9 @@ only as the creative *proposer*. Each generation:
    shells out to the CLI. Every path yields ``{"template", "tool_call_hops",
    "rationale"}`` candidates;
 3. scores each proposal on the live served models (:func:`prompt_opt.score_prompt`) and
-   records it (:func:`prompt_opt.record_message`) into the shared Pareto :mod:`archive`
-   of non-dominated messages, keyed on the ``{optimal, rules, hardened}`` gate vector;
+   writes it (:func:`prompt_opt.record_message`) as a per-worker shard file that the
+   consolidator later Pareto-merges into the shared :mod:`archive` of non-dominated
+   messages, keyed on the ``{optimal, rules, hardened}`` gate vector;
 4. logs a one-line generation summary to the logfile and the knowledge log.
 
 Every proposer call and every score is wrapped so one bad generation never kills the

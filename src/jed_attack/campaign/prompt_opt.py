@@ -251,7 +251,14 @@ def score_prompt(
             factories[(model, eps[(start + i) % len(eps)])] for i in range(len(eps))
         ]
         started = time.monotonic()
-        finding = score.finding_failover((message,), ordered, GATE_GUARDRAILS[gname])
+        try:
+            finding = score.finding_failover(
+                (message,), ordered, GATE_GUARDRAILS[gname]
+            )
+        except score.EndpointsExhausted:
+            # Transient all-endpoints-down: the search never caches, so a swallowed
+            # 0-severity trial is harmless — never let it raise out of the search loop.
+            return (gname, model, 0.0, time.monotonic() - started)
         elapsed = time.monotonic() - started
         sev = gate._severity(finding["predicates"]) if finding else 0
         return (gname, model, float(sev), elapsed)
@@ -398,7 +405,10 @@ def record_message(template: str, hops: int, fitness: dict[str, Any]) -> bool:
 
 
 def main() -> None:
-    """CLI: score a template and record it into the shared Pareto archive."""
+    """CLI: score a template and write it as a per-worker shard.
+
+    The shard is later Pareto-merged into the shared archive by the consolidator.
+    """
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("template", help="str.format template under test")

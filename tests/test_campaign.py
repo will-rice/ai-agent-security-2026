@@ -1015,8 +1015,12 @@ def test_finding_failover_tries_next_on_connection_error() -> None:
     assert out is sentinel and calls == [dead, live]
 
 
-def test_finding_failover_returns_none_when_all_endpoints_dead() -> None:
-    """All factories raising -> None (scored 0 that trial), never propagates."""
+def test_finding_failover_raises_when_all_endpoints_dead() -> None:
+    """Every factory raising -> EndpointsExhausted.
+
+    So the ground-truth scorer aborts loudly instead of caching a spurious 0 (a
+    transient outage must not poison the cache).
+    """
     from jed_attack.campaign import score
 
     def boom(
@@ -1034,7 +1038,62 @@ def test_finding_failover_returns_none_when_all_endpoints_dead() -> None:
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(score, "_finding", boom)
-        assert score.finding_failover(("m",), [dead_a, dead_b], lambda: None) is None
+        with pytest.raises(score.EndpointsExhausted):
+            score.finding_failover(("m",), [dead_a, dead_b], lambda: None)
+
+
+def test_finding_failover_returns_none_on_legitimate_no_fire() -> None:
+    """A real no-fire is returned as None, not raised.
+
+    One factory whose _finding returns None yields None; only all-endpoints-down raises
+    EndpointsExhausted.
+    """
+    from jed_attack.campaign import score
+
+    def no_fire(
+        chain: Sequence[str],
+        factory: Callable[[], object],
+        guardrail: Callable[[], object],
+    ) -> dict[str, Any] | None:
+        return None
+
+    def live() -> object:
+        return object()
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(score, "_finding", no_fire)
+        assert score.finding_failover(("m",), [live], lambda: None) is None
+
+
+def test_score_prompt_cell_treats_exhausted_endpoints_as_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """score_prompt swallows EndpointsExhausted as a 0-severity trial.
+
+    The search never caches, so a transient outage never propagates out of the search
+    loop.
+    """
+    from jed_attack.campaign import prompt_opt, score
+
+    def exhausted(*_a: object, **_k: object) -> dict[str, Any]:
+        raise score.EndpointsExhausted("every scoring endpoint raised")
+
+    monkeypatch.setattr(
+        prompt_opt,
+        "resolve_endpoints",
+        lambda m: [f"http://a/{m}"],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        prompt_opt,
+        "llama_server_agent_factory",
+        lambda m, ep: lambda: None,
+    )
+    monkeypatch.setattr(score, "finding_failover", exhausted)
+    result = prompt_opt.score_prompt(
+        "SECRET_MARKER {urls}", family="exfil", models=("gpt_oss",), trials=1
+    )
+    assert result["public"] == 0.0 and result["robust"] == 0.0
 
 
 def test_score_replay_distributes_across_endpoints(

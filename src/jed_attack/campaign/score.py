@@ -40,6 +40,10 @@ _REPLAY_WORKERS = config.REPLAY_WORKERS  # fill the server's batch slots (see co
 _SEVERITY_W = {1: 1, 2: 2, 3: 4, 4: 8, 5: 16}
 
 
+class EndpointsExhausted(Exception):  # noqa: N818 — not an error state; a control signal
+    """Raised when every endpoint factory tried by ``finding_failover`` raised."""
+
+
 def _finding(
     chain: Sequence[str],
     agent_factory: Callable[[], Any],
@@ -91,9 +95,10 @@ def finding_failover(
     """Replay a chain, failing over across an ordered list of endpoint factories.
 
     Replays are greedy-deterministic, so retrying on another endpoint is safe. Returns
-    the first factory's finding (a legitimate ``None`` no-fire counts as success);
-    returns ``None`` only if EVERY factory raised (all endpoints down -> scored 0 this
-    trial).
+    the first factory's finding (a legitimate ``None`` no-fire counts as success).
+    Raises :class:`EndpointsExhausted` only if the list was NON-EMPTY and EVERY factory
+    raised (all endpoints down) — distinguishable from a real no-fire so the
+    ground-truth scorer can abort loudly instead of caching a spurious 0.
 
     Args:
         chain: The candidate message chain.
@@ -101,14 +106,21 @@ def finding_failover(
         guardrail_factory: The guardrail to replay under.
 
     Returns:
-        The finding dict, or None.
+        The finding dict, or ``None`` for a legitimate no-fire.
+
+    Raises:
+        EndpointsExhausted: Every factory in a non-empty list raised.
     """
+    tried = False
     for factory in factories_ordered:
+        tried = True
         try:
             return _finding(chain, factory, guardrail_factory)
         except Exception:  # endpoint unreachable — fail over to the next
             _log.warning("scoring endpoint failed; failing over", exc_info=True)
             continue
+    if tried:
+        raise EndpointsExhausted("every scoring endpoint raised")
     return None
 
 
