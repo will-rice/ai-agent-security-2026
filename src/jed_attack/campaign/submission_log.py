@@ -21,9 +21,12 @@ class SubmissionRecord:
 
     Attributes:
         messages: The submitted message sequence.
-        public: Public-LB score for this submission.
-        private: Private-LB score for this submission.
+        public: Public-LB score for this submission (0 when over the T4 hop budget).
+        private: Private-LB score for this submission (0 when over the T4 hop budget).
         feedback: Per-message feedback dicts from the scoring loop (opaque here).
+        total_hops: Estimated total tool hops this submission costs on the T4 gateway.
+        fits_t4: Whether ``total_hops`` fits the T4 budget; a False record is zeroed on
+            both boards, so it can never win :func:`best`.
         ts: Caller-supplied timestamp (epoch seconds) this record was logged at.
     """
 
@@ -31,6 +34,8 @@ class SubmissionRecord:
     public: float
     private: float
     feedback: list[dict]
+    total_hops: int
+    fits_t4: bool
     ts: float
 
     def to_json(self) -> dict[str, Any]:
@@ -52,6 +57,8 @@ class SubmissionRecord:
             public=float(data["public"]),
             private=float(data["private"]),
             feedback=list(data["feedback"]),
+            total_hops=int(data["total_hops"]),
+            fits_t4=bool(data["fits_t4"]),
             ts=float(data["ts"]),
         )
 

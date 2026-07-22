@@ -341,6 +341,13 @@ def score_submission(
 
     total_hops = sum(estimate_hops(message) for message in messages)
     fits_t4 = total_hops <= config.HOP_CEILING * config.BUDGET_FILL_FRACTION
+    if not fits_t4:
+        # Over budget: the real T4 gateway raises INVALID_SUBMISSION (time budget
+        # exceeded) and blanks the WHOLE submission on BOTH boards. Model that exactly
+        # so an over-budget run can never win best() and ship. total_hops/fits_t4 stay
+        # on the score so the proposer sees why it was zeroed.
+        public = 0.0
+        private = 0.0
 
     return SubmissionScore(
         public=round(public, 3),
