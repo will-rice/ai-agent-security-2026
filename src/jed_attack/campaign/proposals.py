@@ -2,6 +2,8 @@
 
 from pydantic import BaseModel, Field
 
+from jed_attack.campaign.submission import Submission  # noqa: F401 — re-export
+
 MAX_PROPOSALS = 24  # distinct messages per generation (generation cap, not ship size)
 
 
