@@ -7,11 +7,10 @@ Concurrency is lock-free: each writer appends to its own ``<producer>.jsonl`` (n
 writes); readers glob and merge. All state lives under ``run/knowledge/``.
 """
 
-import hashlib
 import json
 import logging
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -22,18 +21,6 @@ _log = logging.getLogger("knowledge")
 INSIGHT = "insight"  # default note kind
 
 
-def chain_id(chain: Sequence[str]) -> str:
-    """Return a stable dedup id for a message chain.
-
-    Args:
-        chain: The user-message sequence.
-
-    Returns:
-        First 16 hex chars of the sha256 of the joined chain.
-    """
-    return hashlib.sha256(" ".join(chain).encode("utf-8")).hexdigest()[:16]
-
-
 @dataclass(frozen=True)
 class Note:
     """A free-form knowledge note (agent insight)."""
@@ -41,7 +28,6 @@ class Note:
     producer: str
     kind: str
     text: str
-    chain_id: str = ""
     ts: float = 0.0
 
 
@@ -50,7 +36,6 @@ def note(
     text: str,
     *,
     kind: str = INSIGHT,
-    chain: Sequence[str] = (),
     notes_dir: Path | None = None,
 ) -> None:
     """Append a free-form knowledge note for the rest of the fleet.
@@ -59,40 +44,10 @@ def note(
         producer: Author id (e.g. ``agent-2`` or ``prompt_opt``).
         text: The lesson, in one or two sentences.
         kind: The note kind (defaults to ``INSIGHT``).
-        chain: Optional related chain (records its id for reference).
         notes_dir: Override for the notes dir (defaults to config).
     """
-    entry = Note(
-        producer=producer,
-        kind=kind,
-        text=text,
-        chain_id=chain_id(chain) if chain else "",
-        ts=time.time(),
-    )
+    entry = Note(producer=producer, kind=kind, text=text, ts=time.time())
     _append(asdict(entry), (notes_dir or config.NOTES_DIR) / f"{producer}.jsonl")
-
-
-def read_notes(notes_dir: Path | None = None) -> list[Note]:
-    """Read every note, newest first.
-
-    Args:
-        notes_dir: Override for the notes dir (defaults to config).
-
-    Returns:
-        All notes sorted by timestamp, newest first.
-    """
-    notes = [
-        Note(
-            producer=str(line.get("producer", "")),
-            kind=str(line.get("kind", INSIGHT)),
-            text=str(line.get("text", "")),
-            chain_id=str(line.get("chain_id", "")),
-            ts=float(line.get("ts", 0.0)),
-        )
-        for line in _read_dir(notes_dir or config.NOTES_DIR)
-    ]
-    notes.sort(key=lambda n: n.ts, reverse=True)
-    return notes
 
 
 def _append(record: dict, path: Path) -> None:

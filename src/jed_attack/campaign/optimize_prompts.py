@@ -44,25 +44,16 @@ from jed_attack.campaign import (
     submission_score,
     victim_feedback,
 )
-from jed_attack.campaign.proposals import Submission
+from jed_attack.campaign.submission import Submission
 from jed_attack.campaign.submission_log import SubmissionRecord
 
 
-class _SummaryLike(Protocol):
-    """The write-only slice of ``wandb.Run.summary`` this loop uses."""
-
-    def __setitem__(self, key: str, value: object, /) -> None: ...
-
-
 class _WandbRun(Protocol):
-    """The subset of the W&B run handle this loop uses (log, summary, close).
+    """The subset of the W&B run handle this loop uses (log, close).
 
     Typed as a protocol so the ``import wandb`` stays lazy in :func:`_init_wandb`
-    (the module still imports offline) while ``ty`` still checks the three uses.
+    (the module still imports offline) while ``ty`` still checks the two uses.
     """
-
-    @property
-    def summary(self) -> _SummaryLike: ...
 
     def log(self, data: dict[str, Any]) -> object: ...
 
@@ -555,15 +546,7 @@ def _log_wandb(run: _WandbRun | None, metrics: dict[str, Any]) -> None:
     if run is None:
         return
     try:
-        payload = {
-            key: value
-            for key, value in metrics.items()
-            if not key.endswith("_template")
-        }
-        run.log(payload)
-        for key, value in metrics.items():
-            if key.endswith("_template"):  # per-family incumbent text -> run summary
-                run.summary[key] = value
+        run.log(metrics)
     except Exception:  # wandb offline / backend hiccup — keep optimizing
         _log.warning("wandb logging failed; continuing without it", exc_info=True)
 
