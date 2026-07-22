@@ -88,7 +88,7 @@ def message_feedback(msg_score: "MessageScore") -> str:
     Returns:
         A plain descriptive feedback string; never a directive.
     """
-    severity_line = "severity: " + ", ".join(
+    severity_line = f"[{msg_score.type.value}] severity: " + ", ".join(
         f"{guardrail}={value:g}" for guardrail, value in msg_score.severity.items()
     )
     if not msg_score.valid:

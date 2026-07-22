@@ -19,7 +19,8 @@ def assemble_once() -> None:
     if rec is None:
         _log.info("submission log is empty; nothing to assemble yet")
         return
-    path = assemble.build(rec.messages, config.BUILD_NEXT_DIR)
+    texts = [message["text"] for message in rec.messages]
+    path = assemble.build(texts, config.BUILD_NEXT_DIR)
     _log.info("assembled authored submission -> %s", path)
 
 
