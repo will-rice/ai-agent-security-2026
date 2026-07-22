@@ -3,8 +3,8 @@
 Scores an entire model-authored submission (its typed :class:`~jed_attack.campaign.
 submission.Message` list) the way the Kaggle gateway does — one ``SandboxEnv`` replay
 per message, under every guardrail in
-:data:`jed_attack.campaign.guardrails.GATE_GUARDRAILS` — and aggregates public/private
-board numbers with the competition LB normalization.
+:data:`jed_attack.campaign.guardrails.GATE_GUARDRAILS` — and aggregates the public
+board number with the competition LB normalization.
 
 This module OWNS its replay primitives: it imports ``SandboxEnv``/``eval_predicates``
 straight from ``aicomp_sdk``. Replays are deduped by :func:`shape_key` — two messages
@@ -78,16 +78,13 @@ class SubmissionScore:
     """A whole submission's predicted public/private boards.
 
     Attributes:
-        public: ``mean_models(optimal board)``.
-        private: Dormant (``0.0``) — no private guardrail is configured right now; a
-            private proxy can be re-added to ``guardrails.GATE_GUARDRAILS`` later.
+        public: ``mean_models(optimal board)`` — the only board scored right now.
         per_message: One :class:`MessageScore` per input message, in order.
         total_hops: Summed ``Message.hops`` over every message (the T4 tool-hop cost;
             the schema guarantees it fits the budget). Kept for proposer feedback.
     """
 
     public: float
-    private: float
     per_message: list[MessageScore]
     total_hops: int
 
@@ -319,14 +316,10 @@ def score_submission(
         for model in models
     }
     public = mean(boards[model]["optimal"] for model in models)
-    private = (
-        0.0  # dormant: no private guardrail configured (see guardrails.GATE_GUARDRAILS)
-    )
 
     total_hops = sum(message.hops for message in messages)
     return SubmissionScore(
         public=round(public, 3),
-        private=round(private, 3),
         per_message=per_message,
         total_hops=total_hops,
     )

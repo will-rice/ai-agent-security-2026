@@ -51,7 +51,7 @@ PROPOSER_CONFIG_FILE = CAMPAIGN_ROOT / "proposer.json"
 # Prompt-optimization orchestrator (optimize_prompts.py): its generation logfile.
 OPTIMIZE_LOG = CAMPAIGN_ROOT / "optimize_prompts.log"
 
-# The consolidator's status file (best public/private of the submission log) + its cycle
+# The consolidator's status file (best public of the submission log) + its cycle
 # interval. The consolidator claims submission shards and appends them to the log.
 CONSOLIDATOR_STATUS_FILE = CAMPAIGN_ROOT / "consolidator_status.json"
 CONSOLIDATE_INTERVAL_S = float(os.getenv("JED_CONSOLIDATE_INTERVAL_S", "15"))

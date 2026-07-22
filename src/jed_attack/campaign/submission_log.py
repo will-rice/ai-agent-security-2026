@@ -23,7 +23,6 @@ class SubmissionRecord:
         messages: The submitted typed messages, each a ``Message`` dict
             (``{"type", "text", "hops"}``) as serialized by ``Message.model_dump``.
         public: Public-LB score for this submission.
-        private: Private-LB score for this submission.
         feedback: Per-message feedback dicts from the scoring loop (opaque here).
         total_hops: Total tool hops this submission costs on the T4 gateway (the schema
             guarantees it fits the budget); kept for proposer feedback.
@@ -32,7 +31,6 @@ class SubmissionRecord:
 
     messages: list[dict]
     public: float
-    private: float
     feedback: list[dict]
     total_hops: int
     ts: float
@@ -54,7 +52,6 @@ class SubmissionRecord:
         return cls(
             messages=list(data["messages"]),
             public=float(data["public"]),
-            private=float(data["private"]),
             feedback=list(data["feedback"]),
             total_hops=int(data["total_hops"]),
             ts=float(data["ts"]),
@@ -112,13 +109,12 @@ def best(path: Path) -> SubmissionRecord | None:
         path: The submission log jsonl file.
 
     Returns:
-        The best record, ties broken by higher ``private``, or None if the log is
-        empty or absent.
+        The record with the highest ``public``, or None if the log is empty or absent.
     """
     records = read(path)
     if not records:
         return None
-    return max(records, key=lambda r: (r.public, r.private))
+    return max(records, key=lambda r: r.public)
 
 
 def _write_all(records: list[SubmissionRecord], path: Path) -> None:

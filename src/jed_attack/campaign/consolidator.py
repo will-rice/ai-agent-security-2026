@@ -3,7 +3,7 @@
 Every CONSOLIDATE_INTERVAL_S it claims the workers' ``SubmissionRecord`` shard files
 (:mod:`shards`) and appends every one of them to the submission log
 (:mod:`submission_log`) — no filtering, no dedup, no Pareto merge: decision C keeps
-every scored submission. It writes the best public/private totals to its status file
+every scored submission. It writes the best public total to its status file
 and deletes the consumed shards.
 """
 
@@ -29,7 +29,7 @@ def consolidate_submissions_once(
     Args:
         shards_dir: Where workers drop per-submission shard files.
         log_path: The append-only submission log (:mod:`submission_log`).
-        status_path: Where to write ``best_public``/``best_private`` + counters.
+        status_path: Where to write ``best_public`` + counters.
 
     Returns:
         The number of records newly appended to the log this cycle.
@@ -48,7 +48,6 @@ def consolidate_submissions_once(
             {
                 "ts": time.time(),
                 "best_public": incumbent.public if incumbent else None,
-                "best_private": incumbent.private if incumbent else None,
                 "log_size": len(submission_log.read(log_path)),
                 "shards_consumed": len(claimed),
             },
