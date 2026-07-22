@@ -96,6 +96,12 @@ PUBLIC_FLOOR_HOPS = int(os.getenv("JED_PUBLIC_FLOOR_HOPS", "240"))
 # marginal-value objective (compose + prompt_opt) and the in-loop score estimate.
 NOVELTY_PER_CELL = 2.0
 
+# Tier-2 victim introspection (victim_feedback.introspect_worst): number of the
+# lowest-severity messages in a scored submission to probe with an extra "what
+# change would flip your decision" turn against the victim itself. Bounds the
+# extra per-submission inference cost to a fixed count, not O(submission size).
+INTROSPECT_WORST_N = int(os.getenv("JED_INTROSPECT_WORST_N", "3"))
+
 
 def ensure_dirs() -> None:
     """Create the runtime directories the composer pipeline writes to."""

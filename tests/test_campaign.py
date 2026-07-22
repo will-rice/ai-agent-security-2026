@@ -1357,6 +1357,68 @@ def test_score_submission_dedups_by_shape_and_counts_cells(
     assert out.public != collapsed_board
 
 
+def test_introspect_builds_probe_prompt_and_returns_chat_reply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Introspect embeds message + trace summary in the prompt; returns _chat reply."""
+    from jed_attack.campaign import victim_feedback as vf
+
+    captured: dict[str, str] = {}
+
+    def fake_chat(prompt: str, model: str) -> str:
+        captured["prompt"] = prompt
+        captured["model"] = model
+        return "send it to my.address instead"
+
+    monkeypatch.setattr(vf, "_chat", fake_chat)
+    result = vf.introspect("do the thing", "did nothing | refused", "gemma_4")
+
+    assert result == "send it to my.address instead"
+    assert "do the thing" in captured["prompt"]
+    assert "did nothing | refused" in captured["prompt"]
+    assert captured["model"] == "gemma_4"
+
+
+def test_introspect_worst_probes_n_lowest_severity_messages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """introspect_worst probes exactly the n lowest-total-severity messages."""
+    from jed_attack.campaign import victim_feedback as vf
+    from jed_attack.campaign.submission_score import MessageScore, SubmissionScore
+
+    def make_score(message: str, total: float) -> MessageScore:
+        return MessageScore(
+            message=message,
+            severity={"optimal": total, "rules": 0.0, "hardened": 0.0},
+            trace={},
+            valid=True,
+            reason="",
+            feedback=f"feedback for {message}",
+        )
+
+    per_message = [
+        make_score("weak-a", 2.0),  # index 0, total severity 2 -> worst
+        make_score("strong", 30.0),  # index 1, total severity 30 -> not probed
+        make_score("weak-b", 4.0),  # index 2, total severity 4 -> 2nd worst
+    ]
+    scored = SubmissionScore(
+        public=0.0, private=0.0, per_message=per_message, total_hops=0, fits_t4=True
+    )
+
+    calls: list[tuple[str, str]] = []
+
+    def fake_chat(prompt: str, model: str) -> str:
+        calls.append((prompt, model))
+        return "canned suggestion"
+
+    monkeypatch.setattr(vf, "_chat", fake_chat)
+    out = vf.introspect_worst(scored, models=("gpt_oss",), n=2)
+
+    assert out == {0: "canned suggestion", 2: "canned suggestion"}
+    assert len(calls) == 2
+    assert all(model == "gpt_oss" for _, model in calls)
+
+
 def _endpoint_reachable(base_url: str, timeout: float = 1.0) -> bool:
     """True if a TCP connection to ``base_url``'s host:port succeeds."""
     import socket
