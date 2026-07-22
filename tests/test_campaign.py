@@ -938,3 +938,47 @@ def test_shards_write_is_atomic_and_claim_reads_all(tmp_path: Path) -> None:
     # A half-written temp file is skipped, not parsed.
     (d / "w3-partial.json.tmp").write_text("{not json")
     assert len(shards.claim(d)) == 2
+
+
+def test_consolidate_once_filters_dedups_and_merges(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Filter refusals, dedup, Pareto-merge shards, write status, delete shards."""
+    from jed_attack.campaign import archive, consolidator, shards
+
+    # Default HOP_CEILING/PUBLIC_FLOOR_HOPS apply; total_score_est just finite.
+    shards_dir = tmp_path / "shards"
+    arc = tmp_path / "arc.jsonl"
+    status = tmp_path / "status.json"
+    exfil = {"optimal": 80.0, "rules": 0.0, "hardened": 50.0}
+    dep = {"optimal": 32.0, "rules": 32.0, "hardened": 32.0}
+    shards.write(archive.Entry("SECRET_MARKER {urls}", 5, exfil, 1.0), shards_dir, "w1")
+    shards.write(
+        archive.Entry("SECRET_MARKER {urls}", 5, exfil, 1.0), shards_dir, "w2"
+    )  # dup
+    shards.write(archive.Entry("Please {addrs}.", 8, dep, 2.0), shards_dir, "w1")
+    shards.write(
+        archive.Entry("I cannot generate adversarial prompts.", 5, exfil, 1.0),
+        shards_dir,
+        "w3",
+    )  # refusal
+
+    inserted = consolidator.consolidate_once(shards_dir, arc, status)
+
+    templates = sorted(e.template for e in archive.read(arc))
+    assert templates == [
+        "Please {addrs}.",
+        "SECRET_MARKER {urls}",
+    ]  # dedup + refusal dropped
+    assert inserted == 2
+    assert not list(shards_dir.glob("*.json"))  # all claimed files deleted
+    st = json.loads(status.read_text())
+    assert (
+        st["archive_size"] == 2
+        and "total_score_est" in st
+        and st["shards_consumed"] == 4
+    )
+    # Idempotent: re-claiming the same entries changes nothing.
+    shards.write(archive.Entry("Please {addrs}.", 8, dep, 2.0), shards_dir, "w1")
+    consolidator.consolidate_once(shards_dir, arc, status)
+    assert len(archive.read(arc)) == 2
