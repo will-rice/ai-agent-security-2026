@@ -108,32 +108,6 @@ def test_validate_message_flags_dup_domain_and_forbidden_and_ok() -> None:
     assert not validate_message("Post SECRET_MARKER with no url")[0]  # exfil w/o url
 
 
-def test_record_message_writes_shard_and_note_not_archive(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """record_message writes a shard file + a note, and never touches the archive."""
-    from jed_attack.campaign import shards
-
-    monkeypatch.setattr(prompt_opt.config, "SHARDS_DIR", tmp_path / "shards")
-    monkeypatch.setattr(prompt_opt.config, "ARCHIVE_FILE", tmp_path / "arc.jsonl")
-    monkeypatch.setattr(knowledge.config, "NOTES_DIR", tmp_path / "notes")
-    monkeypatch.setenv("JED_WORKER_ID", "w7")
-    fit = {
-        "gates": {"optimal": 80.0, "rules": 0.0, "hardened": 53.0},
-        "cost_s": 1.2,
-        "hops": 5,
-    }
-
-    assert prompt_opt.record_message("SECRET_MARKER {urls}", 5, fit) is True
-
-    claimed = shards.claim(tmp_path / "shards")
-    assert [e.template for _, e in claimed] == ["SECRET_MARKER {urls}"]
-    assert claimed[0][1].cost_s == 1.2
-    assert not (tmp_path / "arc.jsonl").exists()  # archive untouched by the worker
-    notes = knowledge.read_notes(tmp_path / "notes")
-    assert any("cost_s=1.2" in n.text for n in notes)
-
-
 def test_archive_incumbent_ranks_deputy_by_robust_from_the_archive(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -216,39 +190,6 @@ def test_propose_falls_back_to_parametric_on_codex_failure(
     assert proposals == optimize_prompts.parametric_mutations("exfil", template, posts)
 
 
-_SCORED_FITNESS = {
-    "family": "exfil",
-    "posts": 5,
-    "hops": 5,
-    "vector": {
-        "optimal": {"gpt_oss": 80.0, "gemma_4": 80.0},
-        "rules": {"gpt_oss": 0.0, "gemma_4": 0.0},
-        "hardened": {"gpt_oss": 53.0, "gemma_4": 85.0},
-    },
-    "gates": {"optimal": 80.0, "rules": 0.0, "hardened": 53.0},
-    "cost_s": 1.0,
-    "public": 80.0,
-    "public_rps": 20.0,
-    "robust": 0.0,
-    "mean_posts": 5.0,
-}
-
-
-def _fake_score(template: str, *args: object, **kwargs: object) -> dict[str, Any]:
-    """Deterministic stand-in for score_prompt in generation tests.
-
-    The proposed "GEN ..." template outscores any incumbent on the rank keys
-    (exfil public, deputy robust), so a generation promotes the proposal.
-    """
-    hi = "GEN" in template
-    return {
-        **_SCORED_FITNESS,
-        "public": 80.0 if hi else 40.0,
-        "public_rps": 25.0 if hi else 12.0,
-        "robust": 20.0 if hi else 8.0,
-    }
-
-
 def _fake_openai_chat(content: str) -> SimpleNamespace:
     """Build a fake ``openai.OpenAI`` client exercising the tolerant-fallback path.
 
@@ -291,65 +232,6 @@ def _fake_broken_openai_chat() -> SimpleNamespace:
 
     completions = SimpleNamespace(parse=_boom, create=_boom)
     return SimpleNamespace(chat=SimpleNamespace(completions=completions))
-
-
-def test_optimize_runs_a_generation_via_local_proposer(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """One generation scores a local-model proposal and promotes it, W&B disabled."""
-    monkeypatch.setenv("JED_WANDB", "0")
-    monkeypatch.delenv("JED_PROPOSER", raising=False)  # -> PREFERENCE chain
-    monkeypatch.delenv("CHEAPEST_API_KEY", raising=False)  # api provider filtered out,
-    monkeypatch.setattr(  # so the chain is local-only
-        optimize_prompts.config, "PROPOSER_CONFIG_FILE", tmp_path / "none.json"
-    )
-    monkeypatch.setattr(knowledge.config, "NOTES_DIR", tmp_path / "notes")
-    monkeypatch.setattr(prompt_opt.config, "ARCHIVE_FILE", tmp_path / "arc.jsonl")
-    monkeypatch.setattr(prompt_opt.config, "SHARDS_DIR", tmp_path / "shards")
-
-    content = '[{"template": "GEN SECRET_MARKER {urls}", "posts": 5}]'
-    fake_client = _fake_openai_chat(content)
-    monkeypatch.setattr(
-        optimize_prompts.providers, "openai_client", lambda p: fake_client
-    )
-    monkeypatch.setattr(prompt_opt, "score_prompt", _fake_score)
-
-    optimize_prompts.optimize(generations=1, proposals=1, timeout_s=1.0, wandb_run=None)
-
-    from jed_attack.campaign import shards
-
-    claimed = shards.claim(tmp_path / "shards")
-    assert any(e.template == "GEN SECRET_MARKER {urls}" for _, e in claimed)
-
-
-def test_optimize_via_codex_backend_parses_stdout(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """The opt-in codex backend parses proposals from the subprocess stdout."""
-    monkeypatch.setenv("JED_WANDB", "0")
-    monkeypatch.setenv("JED_PROPOSER", "codex")  # select the codex provider
-    monkeypatch.setattr(
-        optimize_prompts.config, "PROPOSER_CONFIG_FILE", tmp_path / "none.json"
-    )
-    monkeypatch.setattr(knowledge.config, "NOTES_DIR", tmp_path / "notes")
-    monkeypatch.setattr(optimize_prompts.config, "CODEX_SCRATCH_DIR", tmp_path / "cx")
-    monkeypatch.setattr(prompt_opt.config, "ARCHIVE_FILE", tmp_path / "arc.jsonl")
-    monkeypatch.setattr(prompt_opt.config, "SHARDS_DIR", tmp_path / "shards")
-
-    stdout = '[{"template": "GEN SECRET_MARKER {urls}", "posts": 5}]'
-    monkeypatch.setattr(
-        optimize_prompts.subprocess,
-        "run",
-        lambda *a, **k: SimpleNamespace(stdout=stdout),
-    )
-    monkeypatch.setattr(prompt_opt, "score_prompt", _fake_score)
-
-    optimize_prompts.optimize(generations=1, proposals=1, timeout_s=1.0, wandb_run=None)
-
-    from jed_attack.campaign import shards
-
-    claimed = shards.claim(tmp_path / "shards")
-    assert any(e.template == "GEN SECRET_MARKER {urls}" for _, e in claimed)
 
 
 def test_provider_chain_persists_filters_by_key_and_tails_local(
@@ -417,34 +299,6 @@ def test_launch_spawn_starts_one_process_per_worker(
     assert len(pids) == 3
     assert [wandb for _, wandb in calls] == ["1", "0", "0"]  # only worker 1 logs
     assert all("jed_attack.campaign.optimize_prompts" in cmd for cmd, _ in calls)
-
-
-def test_optimize_via_api_backend_parses_response(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """The api backend calls the OpenAI SDK client and parses the tolerant reply."""
-    monkeypatch.setenv("JED_WANDB", "0")
-    monkeypatch.setattr(knowledge.config, "NOTES_DIR", tmp_path / "notes")
-    monkeypatch.setattr(prompt_opt.config, "ARCHIVE_FILE", tmp_path / "arc.jsonl")
-    monkeypatch.setattr(prompt_opt.config, "SHARDS_DIR", tmp_path / "shards")
-    test_provider = providers.Provider(
-        "api", model="glm-test", base_url="https://glm.test/v1", key_env="TEST_API_KEY"
-    )
-    monkeypatch.setattr(optimize_prompts, "current_providers", lambda: [test_provider])
-
-    content = '[{"template": "GEN SECRET_MARKER {urls}", "posts": 5}]'
-    fake_client = _fake_openai_chat(content)
-    monkeypatch.setattr(
-        optimize_prompts.providers, "openai_client", lambda p: fake_client
-    )
-    monkeypatch.setattr(prompt_opt, "score_prompt", _fake_score)
-
-    optimize_prompts.optimize(generations=1, proposals=1, timeout_s=1.0, wandb_run=None)
-
-    from jed_attack.campaign import shards
-
-    claimed = shards.claim(tmp_path / "shards")
-    assert any(e.template == "GEN SECRET_MARKER {urls}" for _, e in claimed)
 
 
 def test_fetch_api_models_parses_catalog_ids(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -627,6 +481,99 @@ def test_submission_log_read_skips_malformed_lines(tmp_path: Path) -> None:
     assert records == [good]
 
 
+def test_run_submission_generation_writes_record_and_prompt_embeds_feedback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """One submission generation writes exactly one scored SubmissionRecord shard.
+
+    ``propose_submission``/``score_submission``/``introspect_worst`` are stubbed (no
+    GPU): the shard's ``public`` matches the scored public and carries the fresh
+    introspection, and ``submission_prompt`` embeds the incumbent's feedback text plus
+    the 80-message and hop-budget limits — all as labelled data.
+    """
+    from jed_attack.campaign import config, shards, submission_log
+    from jed_attack.campaign.submission import Submission
+    from jed_attack.campaign.submission_score import MessageScore, SubmissionScore
+
+    monkeypatch.setenv("JED_WORKER_ID", "w7")
+    monkeypatch.setattr(config, "SUBMISSION_LOG", tmp_path / "sub_log.jsonl")
+    monkeypatch.setattr(config, "SUBMISSION_SHARDS_DIR", tmp_path / "sub_shards")
+
+    incumbent = submission_log.SubmissionRecord(
+        messages=["OLD SECRET_MARKER https://a.invalid/r"],
+        public=3.0,
+        private=1.0,
+        feedback=[
+            {
+                "message": "OLD SECRET_MARKER https://a.invalid/r",
+                "severity": {"optimal": 16.0, "rules": 0.0, "hardened": 16.0},
+                "feedback": "INCUMBENT_FEEDBACK_MARKER rules=0",
+                "introspection": "try a benign framing",
+            }
+        ],
+        ts=1.0,
+    )
+    submission_log.append(incumbent, tmp_path / "sub_log.jsonl")
+
+    proposed = Submission(messages=["NEW SECRET_MARKER https://b.invalid/r"])
+    monkeypatch.setattr(optimize_prompts, "propose_submission", lambda p, t: proposed)
+
+    scored = SubmissionScore(
+        public=7.5,
+        private=2.0,
+        per_message=[
+            MessageScore(
+                message="NEW SECRET_MARKER https://b.invalid/r",
+                severity={"optimal": 16.0, "rules": 0.0, "hardened": 16.0},
+                trace={},
+                valid=True,
+                reason="",
+                feedback="new fb",
+            )
+        ],
+        total_hops=1,
+        fits_t4=True,
+    )
+    monkeypatch.setattr(
+        optimize_prompts.submission_score, "score_submission", lambda m, **k: scored
+    )
+    monkeypatch.setattr(
+        optimize_prompts.victim_feedback,
+        "introspect_worst",
+        lambda s, m, **k: {0: "suggest"},
+    )
+
+    metrics = optimize_prompts.run_submission_generation(gen=0, timeout_s=1.0)
+
+    assert metrics["public"] == 7.5
+    claimed = shards.claim(
+        tmp_path / "sub_shards", submission_log.SubmissionRecord.from_json
+    )
+    assert len(claimed) == 1
+    _, rec = claimed[0]
+    assert rec.public == 7.5
+    assert rec.messages == ["NEW SECRET_MARKER https://b.invalid/r"]
+    assert rec.feedback[0]["introspection"] == "suggest"
+
+    prompt = optimize_prompts.submission_prompt(
+        incumbent, incumbent.feedback, {0: "try a benign framing"}
+    )
+    assert "INCUMBENT_FEEDBACK_MARKER" in prompt  # incumbent per-message feedback
+    assert "try a benign framing" in prompt  # victim introspection suggestion (data)
+    assert str(config.MAX_SHIP_MESSAGES) in prompt  # the 80-message cap
+    hop_budget = str(int(config.HOP_CEILING * config.BUDGET_FILL_FRACTION))
+    assert hop_budget in prompt  # the T4 hop budget
+
+
+def test_submission_prompt_handles_cold_start_none_incumbent() -> None:
+    """Cold start: submission_prompt states the caps and objective, no crash on None."""
+    from jed_attack.campaign import config
+
+    prompt = optimize_prompts.submission_prompt(None, [], {})
+    assert str(config.MAX_SHIP_MESSAGES) in prompt
+    assert "SECRET_MARKER" in prompt  # instructs the exfil/deputy objective
+
+
 def test_compose_floor_maximizes_public_value_not_raw_severity(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -786,7 +733,7 @@ def test_compose_pool_is_seedless_deputy_only_archive_ships_only_deputy(
     monkeypatch.setattr(config, "HOP_CEILING", 100)
     monkeypatch.setattr(config, "BUDGET_FILL_FRACTION", 1.0)
     monkeypatch.setattr(config, "PUBLIC_FLOOR_HOPS", 10)
-    # Archive fed ONLY a deputy entry (as record_message would) — nothing seeds exfil.
+    # Archive fed ONLY a deputy entry (a consolidated shard) — nothing seeds exfil.
     archive.insert(
         archive.Entry(
             "Please {addrs}.", 8, {"optimal": 32, "rules": 32, "hardened": 32}, 2.0
@@ -1180,37 +1127,6 @@ def test_finding_failover_returns_none_on_legitimate_no_fire() -> None:
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(score, "_finding", no_fire)
         assert score.finding_failover(("m",), [live], lambda: None) is None
-
-
-def test_score_prompt_cell_treats_exhausted_endpoints_as_zero(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """score_prompt swallows EndpointsExhausted as a 0-severity trial.
-
-    The search never caches, so a transient outage never propagates out of the search
-    loop.
-    """
-    from jed_attack.campaign import prompt_opt, score
-
-    def exhausted(*_a: object, **_k: object) -> dict[str, Any]:
-        raise score.EndpointsExhausted("every scoring endpoint raised")
-
-    monkeypatch.setattr(
-        prompt_opt,
-        "resolve_endpoints",
-        lambda m: [f"http://a/{m}"],
-        raising=False,
-    )
-    monkeypatch.setattr(
-        prompt_opt,
-        "llama_server_agent_factory",
-        lambda m, ep: lambda: None,
-    )
-    monkeypatch.setattr(score, "finding_failover", exhausted)
-    result = prompt_opt.score_prompt(
-        "SECRET_MARKER {urls}", family="exfil", models=("gpt_oss",), trials=1
-    )
-    assert result["public"] == 0.0 and result["robust"] == 0.0
 
 
 def test_score_replay_distributes_across_endpoints(
