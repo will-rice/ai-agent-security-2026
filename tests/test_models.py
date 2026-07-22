@@ -9,6 +9,7 @@ from jed_attack.harness.models import (
     _LlamaServerClient,
     gguf_target_path,
     resolve_base_url,
+    resolve_endpoints,
 )
 
 
@@ -44,3 +45,18 @@ def test_llama_server_client_builds_endpoint() -> None:
     client = _LlamaServerClient("http://localhost:8080/v1/", model="gpt-oss")
     assert client._url == "http://localhost:8080/v1/chat/completions"
     assert client._model == "gpt-oss"
+
+
+def test_resolve_endpoints_splits_env_else_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """resolve_endpoints reads *_BASE_URLS (comma list), else the single default."""
+    monkeypatch.delenv("GPT_OSS_BASE_URLS", raising=False)
+    assert resolve_endpoints("gpt_oss") == [resolve_base_url("gpt_oss")]
+    monkeypatch.setenv(
+        "GPT_OSS_BASE_URLS", "http://localhost:8080/v1, http://192.168.1.220:8080/v1"
+    )
+    assert resolve_endpoints("gpt_oss") == [
+        "http://localhost:8080/v1",
+        "http://192.168.1.220:8080/v1",
+    ]

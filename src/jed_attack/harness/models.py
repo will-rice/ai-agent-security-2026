@@ -327,3 +327,23 @@ def resolve_base_url(model_key: str, override: str | None = None) -> str:
     env_var = "GPT_OSS_BASE_URL" if model_key == "gpt_oss" else "GEMMA_BASE_URL"
     default_port = "8080" if model_key == "gpt_oss" else "8081"
     return os.environ.get(env_var, f"http://localhost:{default_port}/v1")
+
+
+def resolve_endpoints(model_key: str) -> list[str]:
+    """All served base URLs for a model: the ``*_BASE_URLS`` list, else default.
+
+    green sets ``GPT_OSS_BASE_URLS`` / ``GEMMA_BASE_URLS`` to a comma-separated
+    list (localhost first, then dylan) so scoring fans out across hosts; unset
+    falls back to the one :func:`resolve_base_url` default, so single-host runs
+    are unchanged.
+
+    Args:
+        model_key: ``"gpt_oss"`` or ``"gemma_4"``.
+
+    Returns:
+        Ordered, non-empty list of base URLs (localhost/default is failover).
+    """
+    env_var = "GPT_OSS_BASE_URLS" if model_key == "gpt_oss" else "GEMMA_BASE_URLS"
+    raw = os.environ.get(env_var, "")
+    endpoints = [u.strip() for u in raw.split(",") if u.strip()]
+    return endpoints or [resolve_base_url(model_key)]

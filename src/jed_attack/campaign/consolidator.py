@@ -26,9 +26,7 @@ def _renderable(entry: archive.Entry) -> bool:
     return False
 
 
-def consolidate_once(
-    shards_dir: Path, archive_path: Path, status_path: Path
-) -> int:
+def consolidate_once(shards_dir: Path, archive_path: Path, status_path: Path) -> int:
     """Claim shards → filter → dedup → Pareto-merge → write status → delete shards.
 
     Args:
