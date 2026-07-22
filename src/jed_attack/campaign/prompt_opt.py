@@ -42,7 +42,7 @@ from urllib.parse import urlsplit
 
 from jed_attack.campaign import archive, config, gate, knowledge, score, shards
 from jed_attack.campaign.guardrails import GATE_GUARDRAILS
-from jed_attack.harness.models import llama_server_agent_factory, resolve_base_url
+from jed_attack.harness.models import llama_server_agent_factory, resolve_endpoints
 
 _log = logging.getLogger("prompt_opt")
 
@@ -230,14 +230,28 @@ def score_prompt(
     """
     fam = FAMILIES[family]
     k = fam.default_k if posts is None else posts
-    factories = {m: llama_server_agent_factory(m, resolve_base_url(m)) for m in models}
+    # Distribute scoring across every served endpoint per model (green sets
+    # *_BASE_URLS to localhost + dylan); each cell round-robins its start endpoint and
+    # fails over through the rest of that model's list (score.finding_failover) so one
+    # dead endpoint degrades throughput instead of raising out of the search loop.
+    endpoints = {m: resolve_endpoints(m) for m in models}
+    factories = {
+        (m, ep): llama_server_agent_factory(m, ep)
+        for m in models
+        for ep in endpoints[m]
+    }
 
     def cell(model_offset: int, model: str, trial: int, gname: str) -> tuple:
         message = fam.render(template, model_offset * trials + trial, k)
         if message is None:
             return (gname, model, 0.0, 0.0)
+        eps = endpoints[model]
+        start = (model_offset * trials + trial) % len(eps)
+        ordered = [
+            factories[(model, eps[(start + i) % len(eps)])] for i in range(len(eps))
+        ]
         started = time.monotonic()
-        finding = score._finding((message,), factories[model], GATE_GUARDRAILS[gname])
+        finding = score.finding_failover((message,), ordered, GATE_GUARDRAILS[gname])
         elapsed = time.monotonic() - started
         sev = gate._severity(finding["predicates"]) if finding else 0
         return (gname, model, float(sev), elapsed)

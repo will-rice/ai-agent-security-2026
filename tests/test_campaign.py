@@ -3,6 +3,7 @@
 import ast
 import json
 import sys
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -982,3 +983,55 @@ def test_consolidate_once_filters_dedups_and_merges(
     shards.write(archive.Entry("Please {addrs}.", 8, dep, 2.0), shards_dir, "w1")
     consolidator.consolidate_once(shards_dir, arc, status)
     assert len(archive.read(arc)) == 2
+
+
+def test_finding_failover_tries_next_on_connection_error() -> None:
+    """finding_failover skips a raising factory, returns the next factory's finding."""
+    from jed_attack.campaign import score
+
+    sentinel = {"predicates": [{"severity": 5}]}
+
+    def dead() -> object:
+        raise ConnectionError("refused")
+
+    def live() -> object:
+        return object()
+
+    calls: list[Callable[[], object]] = []
+
+    def fake_finding(
+        chain: Sequence[str],
+        factory: Callable[[], object],
+        guardrail: Callable[[], object],
+    ) -> dict[str, Any]:
+        calls.append(factory)
+        if factory is dead:
+            raise ConnectionError("refused")
+        return sentinel
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(score, "_finding", fake_finding)
+        out = score.finding_failover(("m",), [dead, live], lambda: None)
+    assert out is sentinel and calls == [dead, live]
+
+
+def test_finding_failover_returns_none_when_all_endpoints_dead() -> None:
+    """All factories raising -> None (scored 0 that trial), never propagates."""
+    from jed_attack.campaign import score
+
+    def boom(
+        chain: Sequence[str],
+        factory: Callable[[], object],
+        guardrail: Callable[[], object],
+    ) -> dict[str, Any] | None:
+        raise ConnectionError("refused")
+
+    def dead_a() -> object:
+        raise ConnectionError("refused")
+
+    def dead_b() -> object:
+        raise ConnectionError("refused")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(score, "_finding", boom)
+        assert score.finding_failover(("m",), [dead_a, dead_b], lambda: None) is None

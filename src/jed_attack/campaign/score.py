@@ -83,6 +83,35 @@ def _finding(
     }
 
 
+def finding_failover(
+    chain: Sequence[str],
+    factories_ordered: list[Callable[[], Any]],
+    guardrail_factory: Callable[[], Any],
+) -> dict[str, Any] | None:
+    """Replay a chain, failing over across an ordered list of endpoint factories.
+
+    Replays are greedy-deterministic, so retrying on another endpoint is safe. Returns
+    the first factory's finding (a legitimate ``None`` no-fire counts as success);
+    returns ``None`` only if EVERY factory raised (all endpoints down -> scored 0 this
+    trial).
+
+    Args:
+        chain: The candidate message chain.
+        factories_ordered: Agent factories to try in order (round-robin start + tail).
+        guardrail_factory: The guardrail to replay under.
+
+    Returns:
+        The finding dict, or None.
+    """
+    for factory in factories_ordered:
+        try:
+            return _finding(chain, factory, guardrail_factory)
+        except Exception:  # endpoint unreachable — fail over to the next
+            _log.warning("scoring endpoint failed; failing over", exc_info=True)
+            continue
+    return None
+
+
 def predict_public_score(
     models: tuple[str, ...] = config.MODELS,
     cache_path: Path | None = None,

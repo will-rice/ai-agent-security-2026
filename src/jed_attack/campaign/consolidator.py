@@ -1,9 +1,9 @@
-"""Consolidator: the REDUCE half of the write path — sole writer of the canonical archive.
+"""Consolidator: the REDUCE half of the write path, sole writer of the archive.
 
 Every CONSOLIDATE_INTERVAL_S it claims the workers' shard files (:mod:`shards`), drops
 proposer refusals / non-rendering templates, dedups by template, Pareto-merges each
-survivor into ``archive.jsonl`` (:func:`archive.insert`), writes ``total_score_est`` to its
-own status file (never ``score.json``), and deletes the consumed shards.
+survivor into ``archive.jsonl`` (:func:`archive.insert`), writes ``total_score_est`` to
+its own status file (never ``score.json``), and deletes the consumed shards.
 """
 
 import argparse
