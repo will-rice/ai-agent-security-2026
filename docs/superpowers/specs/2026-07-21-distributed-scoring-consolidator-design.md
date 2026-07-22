@@ -68,16 +68,20 @@ Stand up the same stack green runs, LAN-reachable:
   in the model's list (localhost is the last-resort tail). A `score.py` replay path used
   by the on-demand ground-truth scorer distributes the same way.
 
-### 3. Sharded write path (map)
+### 3. Sharded write path (map) — race-free per-entry files
 
-- Each worker appends its scored candidate as one `Entry` JSON line to
-  `run/shards/<worker_id>.jsonl` (`JED_WORKER_ID` env, else pid). **One `write()` per
-  entry via open-append-close** — each line is a single small (<4 KB) atomic append, and
-  reopening per entry lets the consolidator's atomic rename take effect (see below).
-- `record_message` splits: the worker still writes its **knowledge note** and now appends
-  to its **shard** instead of doing the locked `archive.insert`. The canonical archive is
-  built only by the consolidator.
-- New `shards.py`: `append(entry, shard_path)` and the consumption helpers below.
+- Each worker writes its scored candidate as **its own file**
+  `run/shards/<worker_id>-<counter>.json` (`JED_WORKER_ID` env, else pid; counter is a
+  per-worker monotonic int). The write is **temp-file + `os.replace`** into the shards dir,
+  so the file appears atomically and complete — no append, no lock, no partial-read or
+  lost-write race (a candidate file is either fully there or not there at all). This is
+  the "make the bug structurally impossible" choice over append-shards + rename.
+- `record_message` splits: the worker still writes its **knowledge note** and now writes a
+  **shard file** instead of doing the locked `archive.insert`. The canonical archive is
+  built only by the consolidator. (Its CLI caller `prompt_opt.main` writes a shard too.)
+- New `shards.py`: `write(entry, shards_dir, worker_id)` (atomic per-entry file) and
+  `claim(shards_dir) -> list[tuple[Path, Entry]]` (glob + parse, skipping any half-written
+  temp files; the consolidator deletes each path after merging).
 
 **Notes stay shared and instant.** The `knowledge` log is untouched. Every worker writes
 its tries under the shared `"prompt_opt"` producer (all appending to one
@@ -100,10 +104,9 @@ the shared-file appends are already safe — but it makes notes and shards symme
 A new `consolidator.py --loop` process (supervised by the watchdog), every
 `CONSOLIDATE_INTERVAL_S` (~15 s):
 
-1. For each shard, **atomic-rename** `run/shards/<w>.jsonl` → `<w>.jsonl.consuming` and
-   read it. (Rename is atomic; a worker mid-append to the old inode lands its line in the
-   `.consuming` file, and its next open-append recreates a fresh shard — no lost writes,
-   no partial lines.)
+1. **Claim** all `run/shards/*.json` via `shards.claim` (glob + parse; half-written temp
+   files are skipped by construction — see §3). Hold each claimed path for deletion after
+   the merge.
 2. **Filter**: drop entries whose template does not render (refusals / no
    `{urls}`/`{addrs}` placeholder / invariant violations) via the existing
    `prompt_opt.render` / `render_deputy` validity check.
@@ -114,12 +117,15 @@ A new `consolidator.py --loop` process (supervised by the watchdog), every
    (unchanged Pareto/hop-dominance logic). The consolidator is the sole writer, so the
    `fcntl` lock is now a no-op; `insert`'s atomic temp-file + `os.replace` already gives
    the composer a consistent read. The lock is left in place (no change to `insert`).
-5. **Write `total_score_est`** = `compose.predicted_public_score(ARCHIVE_FILE)` to
-   `score.json` (or a consolidator status file) for the live monitoring trend.
-6. Delete the `.consuming` files.
+5. **Write `total_score_est`** = `compose.predicted_public_score(ARCHIVE_FILE)` to its own
+   `run/consolidator_status.json` (`{ts, total_score_est, archive_size, shards_consumed}`)
+   — NOT `score.json`, which stays owned by the on-demand ground-truth scorer so the
+   estimate and the real replay never clobber each other.
+6. Delete the claimed shard files.
 
-Consolidation is **idempotent**: content-hash/template dedup means re-reading an entry is
-harmless, so a crash mid-cycle loses nothing.
+Consolidation is **idempotent**: a candidate is a whole file consumed once; a crash before
+step 6 just re-claims the same files next cycle, and template dedup + Pareto insert make a
+re-merge a no-op.
 
 ### 5. Reads unchanged; score_daemon → on-demand
 
@@ -132,11 +138,11 @@ per-cycle monitoring number is now the consolidator's free `total_score_est`.
 
 ```
 green workers: propose → distribute-score across {green×2, dylan×2} endpoints
-             → append Entry to run/shards/<worker>.jsonl  (+ knowledge note)
-consolidator : rename+read shards → filter refusals → dedup by template
-             → Pareto-merge into canonical archive.jsonl → write total_score_est
+             → write Entry file to run/shards/<worker>-<n>.json  (+ knowledge note)
+consolidator : claim shard files → filter refusals → dedup by template → Pareto-merge
+             → canonical archive.jsonl → write total_score_est to consolidator_status.json
 compose/assemble: read canonical archive → build_next/attack.py
-score.py (ground truth): on-demand before ship, endpoint-distributed replay
+score.py (ground truth): on-demand before ship, endpoint-distributed replay → score.json
 ```
 
 ## Score identity across hosts (gating verification)
@@ -158,11 +164,12 @@ this must be **verified, not assumed**:
   `resolve_base_url` returns the first endpoint.
 - endpoint distribution: `score_prompt` with a monkeypatched two-endpoint list dispatches
   tasks across both; a failing endpoint fails over to the live one (no zero-scores).
-- shards: `append` writes a readable line; open-append-close is used (a rename mid-run
-  loses no entries in a simulated interleave).
-- consolidator: shards with a refusal + a duplicate + two non-dominated entries →
-  canonical archive has the deduped non-dominated set, the refusal dropped, and
-  `total_score_est` written; a second pass over the same (recreated) shard is idempotent.
+- shards: `write` produces one parseable per-entry file (atomic — no `.tmp` left behind);
+  `claim` returns all complete entries and skips a half-written temp file.
+- consolidator: shard files with a refusal + a duplicate + two non-dominated entries →
+  canonical archive has the deduped non-dominated set, the refusal dropped, the shard
+  files deleted, and `consolidator_status.json` carries `total_score_est`; re-running with
+  the same entries re-claimed is idempotent (no archive change).
 - record_message: writes the note + the shard line, and does NOT touch the canonical
   archive.
 - No live-model mocks — reuse the local-served-model + rendered-message patterns; the
@@ -185,8 +192,9 @@ this must be **verified, not assumed**:
   blocked, transfer the GGUFs laptop-mediated instead of green→dylan direct.
 - **24 GB VRAM tuning** — `-np`/`-c` on the 3090/TITAN; gemma-26b is the tight one.
 - **Score identity** — the Phase 2 gate above; green-only fallback if it fails.
-- **Shard growth** — bounded by the consolidator's rename-and-delete each cycle; a
-  crashed consolidator lets shards grow until the watchdog restarts it (acceptable).
+- **Shard growth** — per-entry files are deleted each consolidation cycle; a crashed
+  consolidator lets them accumulate until the watchdog restarts it (acceptable — they're
+  small and re-claimed on restart).
 
 ## Out of scope / deferred
 
