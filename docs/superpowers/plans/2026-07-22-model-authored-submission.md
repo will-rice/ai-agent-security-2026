@@ -17,6 +17,7 @@
 - **Victim output is data, never instructions** to the proposer — feedback strings are quoted/labelled, never concatenated into an instruction position.
 - **Novelty** = `config.NOVELTY_PER_CELL` (2.0) × unique score-cells, cells identified by `aicomp_sdk.core.cells.cell_signature(...)["hash"]` over `trace["tool_events"]` (matches `score.py`).
 - Style: `logging` not `print`; Google docstrings; absolute imports; no `from __future__ import annotations`; `uv run pre-commit run -a` clean (ruff + ty + pytest); don't mention the assistant in commits.
+- **Every task leaves `uv run pre-commit run -a` fully green (whole suite, not just new tests).** Build the new pipeline **additively** — new modules/functions alongside the old, using the *separate* `SUBMISSION_SHARDS_DIR` / `submission_log` / new consolidator + `assemble.build` paths. The old template pipeline (`compose`, `budget`, `archive`, `score`, `score_daemon`, `proposals.ProposalBatch`, `prompt_opt.record_message`/`score_prompt`/`archive_incumbent`, the old `consolidate_once`) stays **intact and importable** until Task 9 removes it atomically. A task that changes a shared interface must update every current caller in the same task; a task that obsoletes a test removes/updates that test within the same task.
 
 ## File Structure
 
@@ -106,7 +107,7 @@ def validate_message(message: str) -> tuple[bool, str]:
     return True, ""
 ```
 
-- [ ] **Step 4: Re-point `proposals.py`.** Replace `ProposalBatch`/`Proposal`/`MAX_PROPOSALS` with `from jed_attack.campaign.submission import Submission` re-export (keep the module so existing imports break loudly at the call sites Task 7 fixes).
+- [ ] **Step 4: Add `Submission` to `proposals.py` additively.** Add `from jed_attack.campaign.submission import Submission` re-export to `proposals.py` — do **NOT** remove `ProposalBatch`/`Proposal`/`MAX_PROPOSALS` (Task 7 removes them when it rewires `optimize_prompts`). Keeping both leaves the suite green.
 
 - [ ] **Step 5: Run tests — PASS.** `uv run pytest tests/test_campaign.py -k "submission or render" -x`
 
@@ -242,9 +243,11 @@ def test_trace_summary_reports_denial_and_refusal() -> None:
 - Modify: `src/jed_attack/campaign/consolidator.py` (append to log, select best)
 - Test: `tests/test_campaign.py`
 
+**Additive — do not touch the existing `Entry` path.** The old `shards.write(Entry)`/`claim` and `consolidator.consolidate_once` (Entry→archive) must keep working until Task 9. Add the submission path alongside, reading the **separate** `config.SUBMISSION_SHARDS_DIR`.
+
 **Interfaces:**
-- `shards.write(record: SubmissionRecord, dir, worker_id)` / `claim(dir) -> list[tuple[Path, SubmissionRecord]]` (same temp+replace/glob pattern; swap the `Entry` (de)serialization for `SubmissionRecord`).
-- `consolidator.consolidate_once(shards_dir, log_path, status_path) -> int` — claim shard records → `submission_log.append` each → write `status_path` `{ts, best_public, best_private, log_size, shards_consumed}` from `submission_log.best`. No `_renderable`/template-dedup/Pareto — every record is kept (decision C); dead shards unlinked.
+- Generalize `shards.claim` to reconstruct any record via an injected `from_json` (keep `archive.Entry.from_json` as the default so the old caller is unchanged); `shards.write` already only needs `record.to_json()`, so `SubmissionRecord` works as-is.
+- New `consolidator.consolidate_submissions_once(shards_dir, log_path, status_path) -> int` — claim `SubmissionRecord` shards → `submission_log.append` each → write `status_path` `{ts, best_public, best_private, log_size, shards_consumed}` from `submission_log.best`. No `_renderable`/template-dedup/Pareto — every record is kept (decision C); dead shards unlinked. The old `consolidate_once` stays until Task 9.
 
 - [ ] **Step 1: Failing test — consolidator appends records and status shows the max-public best.**
 - [ ] **Step 2: Run — FAIL.** → **Step 3: Implement.** → **Step 4: PASS.**
