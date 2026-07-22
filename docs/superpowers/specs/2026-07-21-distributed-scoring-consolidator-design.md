@@ -74,11 +74,26 @@ Stand up the same stack green runs, LAN-reachable:
   `run/shards/<worker_id>.jsonl` (`JED_WORKER_ID` env, else pid). **One `write()` per
   entry via open-append-close** — each line is a single small (<4 KB) atomic append, and
   reopening per entry lets the consolidator's atomic rename take effect (see below).
-- `record_message` splits: the worker still writes its **knowledge note** (proposer
-  feedback is per-worker and append-only) and now appends to its **shard** instead of
-  doing the locked `archive.insert`. The canonical archive is built only by the
-  consolidator.
+- `record_message` splits: the worker still writes its **knowledge note** and now appends
+  to its **shard** instead of doing the locked `archive.insert`. The canonical archive is
+  built only by the consolidator.
 - New `shards.py`: `append(entry, shard_path)` and the consumption helpers below.
+
+**Notes stay shared and instant.** The `knowledge` log is untouched. Every worker writes
+its tries under the shared `"prompt_opt"` producer (all appending to one
+`prompt_opt.jsonl` — small, atomic per-line appends, lock-free), and each worker's
+`_feedback_digest` reads that file (`read_notes` globs + merges every `*.jsonl`,
+filtering `producer == "prompt_opt"`). So all workers still see *all* workers' recent
+tries in real time — the cross-worker learning that keeps them from re-proposing the same
+template is fully preserved (and complements the consolidator's template dedup). The only
+thing that gains a small lag is the **archive incumbent** shown to the proposer
+(`archive_incumbent` reads the canonical archive, now refreshed on the consolidation cycle
+rather than instantly) — harmless, since a propose+score generation takes far longer than
+`CONSOLIDATE_INTERVAL_S`.
+
+(Optional, plan-level: give each worker its own note producer id and widen the digest
+filter to the `prompt_opt` prefix, mirroring the per-worker shard keying. Not required —
+the shared-file appends are already safe — but it makes notes and shards symmetric.)
 
 ### 4. Consolidator (reduce) — sole canonical-archive writer
 
