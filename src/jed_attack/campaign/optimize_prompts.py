@@ -384,7 +384,7 @@ def _salvage_submission(content: str) -> Submission:
     for obj in _parse_message_objects(content):
         try:
             message = Message(**obj)
-        except (pydantic.ValidationError, TypeError):
+        except pydantic.ValidationError:
             dropped += 1
             continue
         if len(kept) >= config.MAX_SHIP_MESSAGES or used_hops + message.hops > budget:

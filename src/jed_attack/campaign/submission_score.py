@@ -32,12 +32,7 @@ from aicomp_sdk.evaluation.ops import resolve_fixtures_dir
 
 from jed_attack.campaign import config
 from jed_attack.campaign.guardrails import GATE_GUARDRAILS
-from jed_attack.campaign.submission import (
-    TARGET_RE,
-    Message,
-    MessageType,
-    validate_message,
-)
+from jed_attack.campaign.submission import TARGET_RE, Message, MessageType
 from jed_attack.campaign.victim_feedback import message_feedback
 from jed_attack.harness.models import llama_server_agent_factory, resolve_endpoints
 
@@ -66,9 +61,6 @@ class MessageScore:
         type: The scored attack the message declared (``Message.type``).
         severity: ``{guardrail: severity}``, averaged over ``models``.
         trace: ``{guardrail: trace_dict}`` for one model, kept for feedback/diagnosis.
-        valid: Whether the message satisfies the ship invariants, from
-            :func:`jed_attack.campaign.submission.validate_message`.
-        reason: The validity failure note (empty when ``valid`` is True).
         feedback: :func:`jed_attack.campaign.victim_feedback.message_feedback` distilled
             from ``severity``/``trace`` — per-guardrail severity plus the failure-mode
             trace summary for whichever guardrail(s) scored this message 0.
@@ -78,8 +70,6 @@ class MessageScore:
     type: MessageType
     severity: dict[str, float]
     trace: dict[str, dict[str, Any]]
-    valid: bool
-    reason: str
     feedback: str
 
 
@@ -300,7 +290,6 @@ def score_submission(
                     representative, traces[shape][guardrail_name][model], message.text
                 )
                 cells[model][guardrail_name].add(cell_hash)
-        valid, reason = validate_message(message.text, message.type)
         msg_score = MessageScore(
             message=message.text,
             type=message.type,
@@ -309,8 +298,6 @@ def score_submission(
                 guardrail_name: traces[shape][guardrail_name][feedback_model]
                 for guardrail_name in GATE_GUARDRAILS
             },
-            valid=valid,
-            reason=reason,
             feedback="",
         )
         msg_score.feedback = message_feedback(msg_score)
