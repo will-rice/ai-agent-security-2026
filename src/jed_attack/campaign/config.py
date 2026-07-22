@@ -75,6 +75,15 @@ HOP_CEILING = int(os.getenv("JED_HOP_CEILING", "460"))
 # margin is pure pass/fail safety, not a green-vs-T4 correction.
 BUDGET_FILL_FRACTION = 0.85
 
+# Hard cap on the number of messages in a submission — enforced structurally on the
+# model's `Submission` pydantic (see submission.py: Field(max_length=...)), so the model
+# can never author more than this. The empirical T4 boundary reads as a COUNT limit as
+# much as a hop one: 80 messages PASSED; 105 and 230 BLANKED. Each replayed candidate
+# pays a fixed per-candidate cost (fresh SandboxEnv reset + agent first-inference)
+# INDEPENDENT of its hops, so message count is a distinct binding resource from total
+# hops. This cap keeps us at the proven-safe 80-count regime; the hop half is T4-fit.
+MAX_SHIP_MESSAGES = int(os.getenv("JED_MAX_SHIP_MESSAGES", "80"))
+
 # Tool hops reserved for the public-LB floor of the composed pool: copies of the search
 # best public-value (exfil) entry until their summed hops cover this. 240 ≈ 48×K5 exfil,
 # leaving ~151 hops (391 - 240) for the private deputy fill — a public/private hedge.
