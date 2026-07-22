@@ -906,3 +906,27 @@ def test_config_shards_constants_and_ensure_dirs(
     monkeypatch.setattr(config, "CAMPAIGN_ROOT", tmp_path)
     config.ensure_dirs()
     assert (tmp_path / "shards").is_dir()
+
+
+def test_shards_write_is_atomic_and_claim_reads_all(tmp_path: Path) -> None:
+    """Write produces a parseable *.json (no stray .tmp); claim returns every entry."""
+    from jed_attack.campaign import archive, shards
+
+    d = tmp_path / "shards"
+    e1 = archive.Entry(
+        "A {urls}", 5, {"optimal": 80.0, "rules": 0.0, "hardened": 50.0}, 1.0
+    )
+    e2 = archive.Entry(
+        "B {addrs}", 8, {"optimal": 32.0, "rules": 32.0, "hardened": 32.0}, 2.0
+    )
+    p1 = shards.write(e1, d, "w1")
+    p2 = shards.write(e2, d, "w2")
+    assert p1.suffix == ".json" and p1.exists()
+    assert not list(d.glob("*.tmp"))  # temp cleaned by the atomic replace
+    claimed = shards.claim(d)
+    templates = {entry.template for _, entry in claimed}
+    assert templates == {"A {urls}", "B {addrs}"}
+    assert {p for p, _ in claimed} == {p1, p2}
+    # A half-written temp file is skipped, not parsed.
+    (d / "w3-partial.json.tmp").write_text("{not json")
+    assert len(shards.claim(d)) == 2
