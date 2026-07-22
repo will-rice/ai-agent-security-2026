@@ -24,7 +24,7 @@ class SubmissionRecord:
         messages: The submitted message sequence.
         public: Public-LB score for this submission.
         private: Private-LB score for this submission.
-        feedback: Per-message feedback dicts assembled by the scoring loop (opaque here).
+        feedback: Per-message feedback dicts from the scoring loop (opaque here).
         ts: Caller-supplied timestamp (epoch seconds) this record was logged at.
     """
 
