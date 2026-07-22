@@ -574,6 +574,35 @@ def test_submission_prompt_handles_cold_start_none_incumbent() -> None:
     assert "SECRET_MARKER" in prompt  # instructs the exfil/deputy objective
 
 
+def test_optimize_survives_a_failing_generation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A generation that raises is caught + backed off; the worker loop continues.
+
+    ``optimize(generations=None)`` runs forever per worker with no respawn supervisor,
+    so a transient failure (proposer blip, refusal yielding no JSON, score outage) must
+    not permanently terminate the worker.
+    """
+    seen: list[int] = []
+    slept: list[float] = []
+
+    def flaky(gen: int, timeout_s: float) -> dict[str, Any]:
+        seen.append(gen)
+        if gen == 0:
+            raise RuntimeError("proposer network blip")
+        return {"generation": gen, "public": 1.0}
+
+    monkeypatch.setattr(optimize_prompts, "run_submission_generation", flaky)
+    monkeypatch.setattr(optimize_prompts.time, "sleep", lambda s: slept.append(s))
+
+    optimize_prompts.optimize(generations=3, timeout_s=1.0, wandb_run=None)
+
+    assert seen == [0, 1, 2]  # the raising gen 0 did not stop gens 1 and 2
+    assert slept == [
+        optimize_prompts._GENERATION_RETRY_S
+    ]  # backed off once, on failure
+
+
 def test_compose_floor_maximizes_public_value_not_raw_severity(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -102,6 +102,9 @@ _PROPOSER_MAX_TOKENS = 8192
 _API_RETRIES = 3  # attempts for an api call before giving up (backs off on 429)
 _MAX_BACKOFF_S = 8.0  # a 429 with a longer Retry-After is sustained throttling: fall
 # through to the next provider (local) rather than stall the whole generation waiting.
+# Backoff after a whole generation raises, so a persistently-failing worker (a refusal
+# yielding no JSON, a proposer/score outage) retries without busy-spinning the daemon.
+_GENERATION_RETRY_S = float(os.getenv("JED_GENERATION_RETRY_S", "10"))
 
 # Codex binary + per-call timeout, both env-overridable (defaults match green). The
 # timeout bounds a single proposer subprocess so a stuck codex can't hang the loop.
@@ -210,8 +213,12 @@ def optimize(
     """
     gen = 0
     while generations is None or gen < generations:
-        metrics = run_submission_generation(gen, timeout_s)
-        _log_wandb(wandb_run, metrics)
+        try:
+            metrics = run_submission_generation(gen, timeout_s)
+            _log_wandb(wandb_run, metrics)
+        except Exception:  # one bad generation (proposer/score/no-JSON) must not kill
+            _log.exception("generation %d failed; retrying next generation", gen)
+            time.sleep(_GENERATION_RETRY_S)  # don't busy-spin on a persistent failure
         gen += 1
 
 
