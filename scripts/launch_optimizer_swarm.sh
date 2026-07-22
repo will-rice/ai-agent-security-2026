@@ -51,7 +51,7 @@ echo "==> launching $N worker(s), proposer model = $MODEL"
 for i in $(seq 1 "$N"); do
   wb=0
   [ "$i" -eq 1 ] && wb=1  # worker 1 owns the single wandb run; the rest run wandb-off
-  (cd "$REPO" && JED_PROPOSER_MODEL="$MODEL" JED_WANDB="$wb" setsid nohup \
+  (cd "$REPO" && JED_PROPOSER_MODEL="$MODEL" JED_WANDB="$wb" JED_WORKER_ID="$i" setsid nohup \
     uv run python -m jed_attack.campaign.optimize_prompts >"$LOGD/optimizer-$i.log" 2>&1 &)
   echo "    worker $i launched (wandb=$wb) -> $LOGD/optimizer-$i.log"
 done

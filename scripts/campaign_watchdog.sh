@@ -22,6 +22,6 @@ start_daemon() { # name module
 
 while true; do
   start_daemon assemble assemble_daemon
-  start_daemon scoredaemon score_daemon
+  start_daemon consolidator consolidator
   sleep 60
 done
