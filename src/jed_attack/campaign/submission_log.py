@@ -1,12 +1,11 @@
 """Append-only log of every evaluated whole-submission with its score and feedback.
 
-Kept memory (decision C): nothing is ever pruned, unlike the Pareto ``archive`` this
-replaces for the whole-submission loop. The global best is simply the max-scoring
-record over the log, so the loop never needs to re-derive it from shard state.
+Kept memory (decision C): nothing is ever pruned. The global best is simply the
+max-scoring record over the log, so the loop never needs to re-derive it from shard
+state.
 
 Writes are concurrency-safe: an ``fcntl`` exclusive lock on a sibling ``.lock`` file
-guards the read-modify-write, and the rewrite itself is a temp-file + ``os.replace``
-(mirrors ``archive.insert``'s safe-append pattern).
+guards the read-modify-write, and the rewrite itself is a temp-file + ``os.replace``.
 """
 
 import fcntl
@@ -86,7 +85,7 @@ def append(record: SubmissionRecord, path: Path) -> None:
 
     Locks the log (a sibling ``<path>.lock`` file, ``fcntl`` exclusive), reads the
     current records, appends ``record``, and rewrites atomically (temp file +
-    ``os.replace``) — the same safe-append pattern as ``archive.insert``.
+    ``os.replace``).
 
     Args:
         record: The submission record to append.

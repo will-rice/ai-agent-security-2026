@@ -1,14 +1,13 @@
 """Shared cross-agent knowledge log — free-form notes the fleet writes for itself.
 
-Agents (and the prompt optimizer) append free-form insights and dead ends here so each
-learns from the others instead of re-deriving them. The proposer feedback digest
-(``optimize_prompts._feedback_digest``) reads the ``prompt_opt`` notes back into the
-next generation's prompt.
+Agents (and the submission optimizer) append free-form insights and dead ends here so
+each learns from the others instead of re-deriving them.
 
 Concurrency is lock-free: each writer appends to its own ``<producer>.jsonl`` (no torn
 writes); readers glob and merge. All state lives under ``run/knowledge/``.
 """
 
+import hashlib
 import json
 import logging
 import time
@@ -17,11 +16,22 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from jed_attack.campaign import config
-from jed_attack.campaign.archive import chain_id
 
 _log = logging.getLogger("knowledge")
 
 INSIGHT = "insight"  # default note kind
+
+
+def chain_id(chain: Sequence[str]) -> str:
+    """Return a stable dedup id for a message chain.
+
+    Args:
+        chain: The user-message sequence.
+
+    Returns:
+        First 16 hex chars of the sha256 of the joined chain.
+    """
+    return hashlib.sha256(" ".join(chain).encode("utf-8")).hexdigest()[:16]
 
 
 @dataclass(frozen=True)

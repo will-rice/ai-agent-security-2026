@@ -1,9 +1,9 @@
 #!/bin/bash
-# Campaign watchdog: supervise the composer daemons (assemble + scoredaemon); restart any
-# that die (60s loop). Host config via env (green defaults shown):
+# Campaign watchdog: supervise the submission daemons (assemble + consolidator); restart
+# any that die (60s loop). Host config via env (green defaults shown):
 #   CAMPAIGN_REPO=$HOME/projects/ai-agent-security-2026   JED_CAMPAIGN_ROOT=$REPO/run
-# Deliberately dumb + self-contained. The optimizer swarm that feeds the archive is
-# launched separately (scripts/launch_optimizer_swarm.sh / `uv run jed-optimize`).
+# Deliberately dumb + self-contained. The optimizer swarm that feeds the submission log
+# is launched separately (scripts/launch_optimizer_swarm.sh / `uv run jed-optimize`).
 set -u
 export PATH="$HOME/.local/bin:$PATH"
 export LD_LIBRARY_PATH="/usr/local/cuda-12.8/lib64:${LD_LIBRARY_PATH:-}"

@@ -1,12 +1,12 @@
 #!/bin/bash
 # Launch the prompt-optimizer swarm: N workers running jed_attack.campaign.optimize_prompts.
-# Each worker asks the local served model (JED_PROPOSER=local) for multi-post template
-# variants, scores them on both models, and records non-dominated winners into the shared,
-# fcntl-locked Pareto archive.jsonl. Run ON green (or `ssh green bash scripts/launch_optimizer_swarm.sh`).
-# Sanity-checks one generation first and refuses to launch a parametric-only loop (i.e. if
-# the proposer model can't produce parseable JSON). Host config via env (green defaults):
+# Each worker asks the configured proposer to author a whole submission, scores it on both
+# served models, and writes the scored SubmissionRecord as a shard for the consolidator to
+# append to the submission log. Run ON green (or `ssh green bash scripts/launch_optimizer_swarm.sh`).
+# Sanity-checks one generation first and refuses to launch if no proposer completes a
+# generation. Host config via env (green defaults):
 #   CAMPAIGN_REPO=$HOME/projects/ai-agent-security-2026   JED_CAMPAIGN_ROOT=$REPO/run
-#   JED_PROPOSER_MODEL=gpt_oss   N_WORKERS=3
+#   JED_PROPOSER=gpt_oss   N_WORKERS=3
 set -u
 export PATH="$HOME/.local/bin:$PATH"
 export LD_LIBRARY_PATH="/usr/local/cuda-12.8/lib64:${LD_LIBRARY_PATH:-}"
@@ -24,34 +24,34 @@ if pgrep -f 'campaign.optimize_prompts' >/dev/null; then
   exit 1
 fi
 
-# One generation with proposer model $1; succeed (return 0) only if the model actually
-# produced parseable proposals (no "returned no valid proposals" parametric fallback).
+# One generation with proposer $1; succeed (return 0) only if a generation actually
+# completed (a "public=" summary line means the proposer answered, scored, and recorded).
 sanity() {
-  echo "--- sanity generation: proposer model = $1 ---"
-  JED_PROPOSER_MODEL="$1" timeout 400 \
-    uv run python -m jed_attack.campaign.optimize_prompts --generations 1 --proposals 3 \
+  echo "--- sanity generation: proposer = $1 ---"
+  JED_PROPOSER="$1" timeout 400 \
+    uv run python -m jed_attack.campaign.optimize_prompts --generations 1 \
     >"$LOGD/optimizer-sanity.log" 2>&1
   grep -vE '^wandb:' "$LOGD/optimizer-sanity.log" | tail -12
-  ! grep -q 'returned no valid proposals' "$LOGD/optimizer-sanity.log"
+  grep -q 'public=' "$LOGD/optimizer-sanity.log"
 }
 
-MODEL="${JED_PROPOSER_MODEL:-gpt_oss}"
-if ! sanity "$MODEL"; then
-  echo "    $MODEL produced no parseable JSON; retrying with gemma_4"
+PROPOSER="${JED_PROPOSER:-gpt_oss}"
+if ! sanity "$PROPOSER"; then
+  echo "    $PROPOSER completed no generation; retrying with gemma_4"
   if sanity gemma_4; then
-    MODEL=gemma_4
+    PROPOSER=gemma_4
   else
-    echo "!! no model produced parseable proposals; loop would be parametric-only. NOT launching."
+    echo "!! no proposer completed a generation. NOT launching."
     echo "   see $LOGD/optimizer-sanity.log"
     exit 2
   fi
 fi
 
-echo "==> launching $N worker(s), proposer model = $MODEL"
+echo "==> launching $N worker(s), proposer = $PROPOSER"
 for i in $(seq 1 "$N"); do
   wb=0
   [ "$i" -eq 1 ] && wb=1  # worker 1 owns the single wandb run; the rest run wandb-off
-  (cd "$REPO" && JED_PROPOSER_MODEL="$MODEL" JED_WANDB="$wb" JED_WORKER_ID="$i" setsid nohup \
+  (cd "$REPO" && JED_PROPOSER="$PROPOSER" JED_WANDB="$wb" JED_WORKER_ID="$i" setsid nohup \
     uv run python -m jed_attack.campaign.optimize_prompts >"$LOGD/optimizer-$i.log" 2>&1 &)
   echo "    worker $i launched (wandb=$wb) -> $LOGD/optimizer-$i.log"
 done

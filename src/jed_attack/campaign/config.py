@@ -1,7 +1,7 @@
 """Campaign paths, models, and knobs — env-overridable.
 
-Runtime state lives under ``run/`` (git-ignored). The optimizer swarm, the composer, and
-the score/assemble daemons all read these so paths stay consistent across the fleet.
+Runtime state lives under ``run/`` (git-ignored). The optimizer swarm, the consolidator,
+and the assemble daemon all read these so paths stay consistent across the fleet.
 """
 
 import os
@@ -22,7 +22,7 @@ ENV_FILE = _REPO_ROOT / ".env"
 
 BUILD_NEXT_DIR = (
     CAMPAIGN_ROOT / "build_next"
-)  # composed attack.py + build_next_status.json
+)  # assembled attack.py + build_next_status.json
 
 # Shared cross-agent knowledge log (see knowledge.py). Each writer appends its own
 # <producer>.jsonl so the fleet learns from every agent's tries without locks.
@@ -44,31 +44,25 @@ EVAL_HOPS = 8
 # server; gpt (fewer slots) just queues the excess, which is harmless.
 REPLAY_WORKERS = int(os.getenv("JED_REPLAY_WORKERS", "8"))
 
-ARCHIVE_FILE = CAMPAIGN_ROOT / "archive.jsonl"  # Pareto archive of scored messages
-
 # Kept memory for the whole-submission loop (submission_log.py): append-only record of
 # every evaluated submission with its score + per-message feedback (nothing pruned).
 SUBMISSION_LOG = CAMPAIGN_ROOT / "submission_log.jsonl"
 SUBMISSION_SHARDS_DIR = CAMPAIGN_ROOT / "submission_shards"
 
-# Live proposer config (optimize_prompts.read_proposer). Workers re-read this each
+# Live proposer config (optimize_prompts._configured_chain). Workers re-read this each
 # generation, so `jed-optimize --switch` can change the proposer backend/model/endpoint
 # without a restart. Holds no secret — only a `key_env` naming the env var with the key.
 PROPOSER_CONFIG_FILE = CAMPAIGN_ROOT / "proposer.json"
 
-# Prompt-optimization orchestrator (optimize_prompts.py): its generation logfile and the
-# scratch cwd handed to the bounded codex proposer subprocess (kept away from src/).
+# Prompt-optimization orchestrator (optimize_prompts.py): its generation logfile.
 OPTIMIZE_LOG = CAMPAIGN_ROOT / "optimize_prompts.log"
-CODEX_SCRATCH_DIR = CAMPAIGN_ROOT / "codex_scratch"
 
-SCORE_FILE = CAMPAIGN_ROOT / "score.json"  # latest calibrated public-LB prediction
-SCORE_CACHE = CAMPAIGN_ROOT / "score_cache.jsonl"  # per-(message,model) replay cache
-
-SHARDS_DIR = CAMPAIGN_ROOT / "shards"  # per-worker scored-candidate shard files (map)
-CONSOLIDATOR_STATUS_FILE = CAMPAIGN_ROOT / "consolidator_status.json"  # total_score_est
+# The consolidator's status file (best public/private of the submission log) + its cycle
+# interval. The consolidator claims submission shards and appends them to the log.
+CONSOLIDATOR_STATUS_FILE = CAMPAIGN_ROOT / "consolidator_status.json"
 CONSOLIDATE_INTERVAL_S = float(os.getenv("JED_CONSOLIDATE_INTERVAL_S", "15"))
 
-# Tool-hop ceiling for the composer's budget check — the binding T4 resource (replay
+# Tool-hop ceiling for the submission budget check — the binding T4 resource (replay
 # work ∝ tool hops), DETERMINISTIC and identical on green and T4 (unlike measured
 # wall-time, which fleet contention inflates). Calibrated to the empirical boundary:
 # 80×K5 = 400 hops PASSED (scored 34.315); 105×K5 = 525 and 230×K2 = 460 BLANKED. 460 is
@@ -89,16 +83,10 @@ BUDGET_FILL_FRACTION = 0.85
 # hops. This cap keeps us at the proven-safe 80-count regime; the hop half is T4-fit.
 MAX_SHIP_MESSAGES = int(os.getenv("JED_MAX_SHIP_MESSAGES", "80"))
 
-# Tool hops reserved for the public-LB floor of the composed pool: copies of the search
-# best public-value (exfil) entry until their summed hops cover this. 240 ≈ 48×K5 exfil,
-# leaving ~151 hops (391 - 240) for the private deputy fill — a public/private hedge.
-# Lower this to trade public floor for more deputy (the private-LB bet).
-PUBLIC_FLOOR_HOPS = int(os.getenv("JED_PUBLIC_FLOOR_HOPS", "240"))
-
-# The competition's per-cell novelty bonus (see score.py: raw += 2 * unique_cells). Each
-# rendered copy carries unique .invalid domains/addresses -> a distinct score cell, so a
-# firing copy is worth (surviving_severity + NOVELTY_PER_CELL). Single source for the
-# marginal-value objective (compose + prompt_opt) and the in-loop score estimate.
+# The competition's per-cell novelty bonus (raw += 2 * unique_cells). Each rendered copy
+# carries unique .invalid domains/addresses -> a distinct score cell, so a firing copy
+# is worth (surviving_severity + NOVELTY_PER_CELL). Single source for the scorer's cell
+# bonus (submission_score.py).
 NOVELTY_PER_CELL = 2.0
 
 # Tier-2 victim introspection (victim_feedback.introspect_worst): number of the
@@ -109,13 +97,11 @@ INTROSPECT_WORST_N = int(os.getenv("JED_INTROSPECT_WORST_N", "3"))
 
 
 def ensure_dirs() -> None:
-    """Create the runtime directories the composer pipeline writes to."""
+    """Create the runtime directories the submission pipeline writes to."""
     for path in (
         BUILD_NEXT_DIR,
         NOTES_DIR,
-        ARCHIVE_FILE.parent,  # == CAMPAIGN_ROOT; also holds score.json + score cache
         CAMPAIGN_ROOT / "logs",
-        SHARDS_DIR,
         SUBMISSION_SHARDS_DIR,
     ):
         path.mkdir(parents=True, exist_ok=True)

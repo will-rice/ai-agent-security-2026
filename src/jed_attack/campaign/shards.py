@@ -1,9 +1,9 @@
 """Per-entry shard files: the lock-free MAP half of the consolidator write path.
 
-Each worker writes one scored record (:class:`archive.Entry` or
-:class:`submission_log.SubmissionRecord`) per file via temp-file + ``os.replace``, so a
-shard file is either fully present or absent — no partial reads, no lost writes, no
-lock. The consolidator (:mod:`consolidator`) claims and deletes them.
+Each worker writes one scored :class:`submission_log.SubmissionRecord` per file via
+temp-file + ``os.replace``, so a shard file is either fully present or absent — no
+partial reads, no lost writes, no lock. The consolidator (:mod:`consolidator`) claims
+and deletes them.
 """
 
 import json
@@ -12,7 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
-from jed_attack.campaign import archive
+from jed_attack.campaign import submission_log
 
 
 class _JsonRecord(Protocol):
@@ -25,7 +25,7 @@ def write(entry: _JsonRecord, shards_dir: Path, worker_id: str) -> Path:
     """Atomically write one scored record to its own shard file.
 
     Args:
-        entry: The scored candidate (an ``archive.Entry`` or a ``SubmissionRecord``).
+        entry: The scored candidate (a ``SubmissionRecord``).
         shards_dir: The shards directory (created if missing).
         worker_id: Author id, only for readability of the filename.
 
@@ -44,15 +44,16 @@ def write(entry: _JsonRecord, shards_dir: Path, worker_id: str) -> Path:
 
 def claim(
     shards_dir: Path,
-    from_json: Callable[[dict[str, Any]], Any] = archive.Entry.from_json,
+    from_json: Callable[
+        [dict[str, Any]], Any
+    ] = submission_log.SubmissionRecord.from_json,
 ) -> list[tuple[Path, Any]]:
     """Read every complete shard file; skip malformed/half-written ones.
 
     Args:
         shards_dir: The shards directory.
         from_json: Reconstructs a record from its parsed JSON dict. Defaults to
-            ``archive.Entry.from_json``; pass
-            ``submission_log.SubmissionRecord.from_json`` to claim submission shards.
+            ``submission_log.SubmissionRecord.from_json``.
 
     Returns:
         ``(path, record)`` for each parseable shard, in sorted path order. The caller

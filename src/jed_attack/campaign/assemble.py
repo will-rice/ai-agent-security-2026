@@ -1,10 +1,9 @@
-"""Isolated ``attack.py`` template + pool renderer shared by the composer.
+"""Isolated ``attack.py`` template + pool renderer for the shipped submission.
 
 The submission returns a pre-scored candidate pool directly, so it needs no live search.
 :func:`build` wraps literal messages (e.g. the global-best :mod:`submission_log` record)
 into that pool and renders it into ``attack.py`` via :data:`_TEMPLATE` and
-:func:`_render_pool`; :mod:`compose` reuses the same template/renderer to pack the
-Pareto archive instead. The emitted attack.py imports only ``aicomp_sdk`` + stdlib, so
+:func:`_render_pool`. The emitted attack.py imports only ``aicomp_sdk`` + stdlib, so
 it satisfies the submission-isolation contract with no inlining. It prepends a Kaggle
 sys.path preamble (no-op off-Kaggle), so ``build_next`` is directly shippable.
 """
@@ -93,9 +92,8 @@ def build(messages: list[str], out_dir: Path) -> Path:
     """Write the global-best authored submission's ``attack.py``.
 
     Wraps each literal message as a single-message chain tagged ``"authored"`` and
-    renders it via :data:`_TEMPLATE` / :func:`_render_pool` — the same isolated writer
-    :mod:`compose` uses for the composed pool, so the shipped submission carries no
-    duplicated template.
+    renders it via :data:`_TEMPLATE` / :func:`_render_pool`, so the shipped submission
+    carries no duplicated template.
 
     Args:
         messages: The global-best submission's messages (typically

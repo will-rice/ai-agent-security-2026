@@ -1,8 +1,9 @@
 """One-command launcher for the prompt-optimizer swarm.
 
-Sanity-checks the selected proposer, then spawns N detached worker processes each
-running the optimizer loop forever. Replaces the bash launch script with a single ``uv
-run jed-optimize`` entry point. The proposer is chosen by NAME from the registry
+Spawns N detached worker processes each running the whole-submission optimizer loop
+(:func:`optimize_prompts.optimize`) forever. Replaces the bash launch script with a
+single ``uv run jed-optimize`` entry point. The proposer is chosen by NAME from the
+registry
 (:mod:`providers`) — all endpoint/model config lives there in code; only the API token
 comes from the environment (each provider names its own ``key_env``). Run on the host
 that serves the target models (green)::
@@ -150,10 +151,10 @@ def _preflight_api_model(provider: providers.Provider) -> None:
 
 
 def _launch_swarm(args: argparse.Namespace) -> None:
-    """Stop-if-restart, sanity-check the proposer, and spawn the worker swarm.
+    """Stop-if-restart and spawn the worker swarm.
 
     Args:
-        args: Parsed CLI args (restart, skip_sanity, proposals, workers).
+        args: Parsed CLI args (no_restart, workers).
 
     Raises:
         SystemExit: If workers are already running and ``--no-restart`` was passed.
@@ -168,19 +169,6 @@ def _launch_swarm(args: argparse.Namespace) -> None:
     if existing:
         _log.info("replacing %d running worker(s): %s", len(existing), existing)
         stop_workers(existing)
-
-    if not args.skip_sanity:
-        produced = optimize_prompts.proposer_sanity(args.proposals)
-        if produced:
-            _log.info("sanity ok: proposer produced %d proposals", produced)
-        else:
-            # Non-blocking: a one-shot 0 is usually transient (api rate-limited or a
-            # busy single-request server). The workers retry the whole chain (and fall
-            # to parametric) every generation, so launch anyway rather than abort.
-            _log.warning(
-                "sanity: proposer produced nothing right now (api 429 or server busy); "
-                "launching anyway — workers retry the chain + parametric each gen"
-            )
 
     pids = spawn(args.workers, config.CAMPAIGN_ROOT / "logs")
     chain = " -> ".join(p.model or p.kind for p in optimize_prompts.current_providers())
@@ -257,9 +245,6 @@ def main() -> None:
         "persisted to proposer.json for live switching",
     )
     parser.add_argument(
-        "--proposals", type=int, default=optimize_prompts.DEFAULT_PROPOSALS
-    )
-    parser.add_argument(
         "--restart",
         action="store_true",
         help="(default, now implied) replace a running swarm; kept for compatibility",
@@ -275,7 +260,9 @@ def main() -> None:
         help="only update the live proposer (needs --proposer); do not launch",
     )
     parser.add_argument(
-        "--skip-sanity", action="store_true", help="launch without the proposer check"
+        "--skip-sanity",
+        action="store_true",
+        help="launch without the api model-catalog pre-flight",
     )
     parser.add_argument(
         "--list", action="store_true", help="list proposer providers and exit"
