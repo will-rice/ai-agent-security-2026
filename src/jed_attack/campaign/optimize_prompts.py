@@ -77,10 +77,11 @@ _PROPOSER_MAX_TOKENS = int(os.getenv("JED_PROPOSER_MAX_TOKENS", "32768"))
 # Backoff after a whole generation raises, so a persistently-failing lane (a refusal
 # yielding no JSON, a proposer/score outage) retries without busy-spinning the process.
 _GENERATION_RETRY_S = float(os.getenv("JED_GENERATION_RETRY_S", "10"))
-# Per-generation proposer timeout (the OpenAI request budget), env-overridable. Generous
-# because thinking models on the 32768 budget still take minutes; a call exceeding this
-# is treated as a failure and the lane rotates to its next model.
-PROPOSER_TIMEOUT_S = float(os.getenv("JED_PROPOSER_TIMEOUT_S", "600"))
+# Per-generation proposer timeout (the OpenAI request budget), env-overridable. LARGE by
+# design: the glm-5 thinking family authoring an 80-message submission takes 10-20 min
+# per call (>600s wasn't enough — every call timed out). We accept the slow cadence to
+# keep the thinking models; a call exceeding even this rotates the lane to its next.
+PROPOSER_TIMEOUT_S = float(os.getenv("JED_PROPOSER_TIMEOUT_S", "1200"))
 
 _TEAM_TOP_K = 8  # teammate best-messages per shape shown in each proposer prompt
 _TEAM_REASONING_K = (
