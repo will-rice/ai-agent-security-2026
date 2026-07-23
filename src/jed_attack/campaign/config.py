@@ -57,12 +57,6 @@ OPTIMIZE_LOG = CAMPAIGN_ROOT / "optimize_prompts.log"
 # submission_log.
 BLACKBOARD_LOG = CAMPAIGN_ROOT / "blackboard.jsonl"
 
-# A thinking proposer (kimi) returns its chain-of-thought in a non-standard
-# ``reasoning_content`` field, separate from the answer JSON. It is billed and otherwise
-# discarded, so persist the full text here (one JSON line per proposer call) for
-# inspection — the reasoning is where the diversity/private-board decisions are made.
-REASONING_LOG = CAMPAIGN_ROOT / "proposer_reasoning.jsonl"
-
 # The consolidator's status file (best public of the submission log) + its cycle
 # interval. The consolidator claims submission shards and appends them to the log.
 CONSOLIDATOR_STATUS_FILE = CAMPAIGN_ROOT / "consolidator_status.json"
