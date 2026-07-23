@@ -1,7 +1,7 @@
 """Campaign paths, models, and knobs — env-overridable.
 
-Runtime state lives under ``run/`` (git-ignored). All daemons and the producers read
-these so paths stay consistent across the fleet.
+Runtime state lives under ``run/`` (git-ignored). The async team and the blackboard
+both read these so paths stay consistent.
 """
 
 import os
@@ -14,25 +14,36 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 CAMPAIGN_ROOT = Path(os.getenv("JED_CAMPAIGN_ROOT", str(_REPO_ROOT / "run"))).resolve()
 
-CANDIDATES_DIR = (
-    CAMPAIGN_ROOT / "candidates"
-)  # run/candidates/<producer>.jsonl (producers append)
-HARVEST_FILE = CAMPAIGN_ROOT / "harvest" / "candidates.jsonl"  # deduped collection
-GATE_LEDGER = CAMPAIGN_ROOT / "gate_ledger.jsonl"  # one Verdict per chain (newest wins)
+# API tokens (ZAI_API_KEY, CHEAPEST_API_KEY) load from a gitignored repo-root .env.
+# Pass this explicit path to load_dotenv: bare load_dotenv()/find_dotenv() cannot locate
+# .env under ``python -m`` (no reliable calling frame), so the swarm ran keyless
+# and dropped every api proposer. An explicit path is deterministic.
+ENV_FILE = _REPO_ROOT / ".env"
+
 BUILD_NEXT_DIR = (
     CAMPAIGN_ROOT / "build_next"
-)  # assembled attack_src.py + attack.py + status
-LEADERBOARD = CAMPAIGN_ROOT / "leaderboard.jsonl"
-FLOOR_DIR = CAMPAIGN_ROOT / "floor"  # promoted best submission
-
-# Shared cross-agent knowledge log (see knowledge.py). Each writer appends its own
-# <producer>.jsonl so the fleet learns from every agent's tries without locks.
-KNOWLEDGE_DIR = CAMPAIGN_ROOT / "knowledge"
-ATTEMPTS_DIR = KNOWLEDGE_DIR / "attempts"  # every probed chain, fired or not
-NOTES_DIR = KNOWLEDGE_DIR / "notes"  # free-form insights + gate lessons
+)  # assembled attack.py + build_next_status.json
 
 # The two target models and their served base URLs (llama-server on green).
 MODELS: tuple[str, ...] = ("gpt_oss", "gemma_4")
+
+# The proposer models the async team rotates. optimize_team GROUPS these by API key into
+# one lane per key (one worker per lane), and the lane's worker rotates through its
+# models one generation at a time — so only one request per key is ever in flight (the
+# cheapestinference concurrency cap is per-KEY, confirmed empirically). Two lanes
+# result: CHEAPEST_API_KEY (5 CI models) and ZAI_API_KEY (the glm-5 family, which
+# reliably honors structured outputs). A model whose key_env is unset is skipped.
+TEAM_PROPOSERS: tuple[str, ...] = (
+    "cheapest-kimi",
+    "cheapest-deepseek",
+    "cheapest-glm5.2",
+    "cheapest-minimax",
+    "cheapest-mimo",
+    "zai-glm5",
+    "zai-glm5-turbo",
+    "zai-glm5.1",
+    "zai-glm5.2",
+)
 
 # Max tool hops per interaction. MUST match the scored gateway's replay depth
 # (aicomp_sdk DEFAULT_MAX_TOOL_HOPS = AttackRunConfig.max_tool_hops = 8), or
@@ -40,78 +51,49 @@ MODELS: tuple[str, ...] = ("gpt_oss", "gemma_4")
 # under-counted locally and wrongly gated out. Single-post scores are unchanged.
 EVAL_HOPS = 8
 
-# Concurrent replay workers for the GPU consumers (gate, score, produce). Sized to
-# the gemma llama-server's batch slots (-np 8) so concurrent requests fill the
-# continuous-batching slots instead of queuing one-at-a-time. gemma is the binding
-# server; gpt (fewer slots) just queues the excess, which is harmless.
-REPLAY_WORKERS = int(os.getenv("JED_REPLAY_WORKERS", "8"))
-
-# Returned-candidate ceiling for the assembled submission (see docs/strategy.md).
-MAX_CANDIDATES = int(os.getenv("JED_MAX_CANDIDATES", "300"))
-
-# Ship ARTIFACT: the shape of build_next/attack.py. "adaptive" (default) ships the
-# self-sizing adaptive.build_adaptive run() that probes the live env and fills only as
-# many candidates as fit the 9000s/cell budget on the actual hardware — it CANNOT time
-# out the way a fixed pool does (a static 150× multi-post pool overran the T4 and scored
-# a zero). "static" ships the fixed assemble() pool (legacy; only safe when the
-# per-candidate replay cost is known to fit the budget — e.g. single-post).
-SHIP_ARTIFACT = os.getenv("JED_SHIP_ARTIFACT", "adaptive")
-
-# Ship-pool source (the STATIC path / score-daemon proxy). "multipost" uses the
-# deterministic multi-post template directly (produce.multipost_chain — the winning
-# attack); "ledger" uses the gate-adopted pool.
-SHIP_POOL = os.getenv("JED_SHIP_POOL", "multipost")
-
-# Ship-pool ranking (only used when SHIP_POOL="ledger"). "public" ranks candidates by
-# their OptimalGuardrail (public LB)
-# score and fills every slot with the highest-firing multi-post — maximizes the visible
-# LB, bets the private guardrail is lenient. "robust" ranks by strict-guardrail survival
-# and reserves SHIP_HEDGE_SLOTS for diverse chains — anti-overfit (bets private strict).
-SHIP_RANK = os.getenv("JED_SHIP_RANK", "public")
-
-# Ship-pool slots reserved for diverse NON-SECRET_MARKER chains (Family-1
-# read-then-post exfil + confused-deputy) in "robust" ranking only. The SECRET_MARKER
-# multi-post template drives the public score and bets the private LB is taint-based;
-# these slots hedge the other private guardrail family (a payload scanner).
-SHIP_HEDGE_SLOTS = int(os.getenv("JED_SHIP_HEDGE_SLOTS", "20"))
-
-# Prompt-optimization incumbents (one per attack FAMILY — the portfolio hedge). The
-# fitness harness (prompt_opt.py) writes the best template + count for each family.
-# EXFIL = SECRET_MARKER multi-post: maximizes PUBLIC (OptimalGuardrail) severity, but is
-# 0 under the RulesGuardrail (which denies exactly the scored exfil payload) — the bet
-# that the private LB is lenient. DEPUTY = single-message multi-email confused-deputy:
-# lower per-hit severity but survives ALL guardrails (optimal/rules/hardened) — the bet
-# that the private LB is strict. produce/adaptive read the EXFIL file; the hedged ship
-# pool draws from both.
-BEST_PROMPT_FILE = (
-    CAMPAIGN_ROOT / "best_prompt.json"
-)  # EXFIL incumbent (back-compat name)
-BEST_DEPUTY_FILE = CAMPAIGN_ROOT / "best_deputy.json"  # DEPUTY (robust) incumbent
-
-# Live proposer config (optimize_prompts.read_proposer). Workers re-read this each
-# generation, so `jed-optimize --switch` can change the proposer backend/model/endpoint
-# without a restart. Holds no secret — only a `key_env` naming the env var with the key.
-PROPOSER_CONFIG_FILE = CAMPAIGN_ROOT / "proposer.json"
-
-# Prompt-optimization orchestrator (optimize_prompts.py): its generation logfile and the
-# scratch cwd handed to the bounded codex proposer subprocess (kept away from src/).
+# Prompt-optimization orchestrator (optimize_prompts.py): its generation logfile.
 OPTIMIZE_LOG = CAMPAIGN_ROOT / "optimize_prompts.log"
-CODEX_SCRATCH_DIR = CAMPAIGN_ROOT / "codex_scratch"
 
-# Calibrated-score daemon: the single-message ship pool it scores + its result/cache.
-SCORE_CAP = int(os.getenv("JED_SCORE_CAP", "300"))
-SCORE_FILE = CAMPAIGN_ROOT / "score.json"  # latest calibrated public-LB prediction
-SCORE_CACHE = CAMPAIGN_ROOT / "score_cache.jsonl"  # per-(message,model) replay cache
+# The team's shared memory (blackboard.py): an append-only JSONL record of every scored
+# submission (messages, score, feedback, the proposer's reasoning, model, worker). The
+# in-memory blackboard is rebuilt from it on start (warm restart).
+BLACKBOARD_LOG = CAMPAIGN_ROOT / "blackboard.jsonl"
+
+# Tool-hop ceiling for the submission budget check — the binding T4 resource (replay
+# work ∝ tool hops), DETERMINISTIC and identical on green and T4 (unlike measured
+# wall-time, which fleet contention inflates). Calibrated to the empirical boundary:
+# 80×K5 = 400 hops PASSED (scored 34.315); 105×K5 = 525 and 230×K2 = 460 BLANKED. 460 is
+# the observed failure point; BUDGET_FILL_FRACTION keeps us safely under it.
+HOP_CEILING = int(os.getenv("JED_HOP_CEILING", "460"))
+
+# Pack to this fraction of the ceiling, leaving margin below the observed 460-hop fail
+# point (460 * 0.85 = 391 hops ≈ the proven 400-hop pool). Hops are green==T4, so this
+# margin is pure pass/fail safety, not a green-vs-T4 correction.
+BUDGET_FILL_FRACTION = 0.85
+
+# Hard cap on the number of messages in a submission — enforced structurally on the
+# model's `Submission` pydantic (see submission.py: Field(max_length=...)), so the model
+# can never author more than this. The empirical T4 boundary reads as a COUNT limit as
+# much as a hop one: 80 messages PASSED; 105 and 230 BLANKED. Each replayed candidate
+# pays a fixed per-candidate cost (fresh SandboxEnv reset + agent first-inference)
+# INDEPENDENT of its hops, so message count is a distinct binding resource from total
+# hops. This cap keeps us at the proven-safe 80-count regime; the hop half is T4-fit.
+MAX_SHIP_MESSAGES = int(os.getenv("JED_MAX_SHIP_MESSAGES", "80"))
+
+# The competition's per-cell novelty bonus (raw += 2 * unique_cells). Each rendered copy
+# carries unique .invalid domains/addresses -> a distinct score cell, so a firing copy
+# is worth (surviving_severity + NOVELTY_PER_CELL). Single source for the scorer's cell
+# bonus (submission_score.py).
+NOVELTY_PER_CELL = 2.0
+
+# Tier-2 victim introspection (victim_feedback.introspect_worst): number of the
+# lowest-severity messages in a scored submission to probe with an extra "what
+# change would flip your decision" turn against the victim itself. Bounds the
+# extra per-submission inference cost to a fixed count, not O(submission size).
+INTROSPECT_WORST_N = int(os.getenv("JED_INTROSPECT_WORST_N", "3"))
 
 
 def ensure_dirs() -> None:
-    """Create the runtime directories if missing."""
-    for path in (
-        CANDIDATES_DIR,
-        HARVEST_FILE.parent,
-        BUILD_NEXT_DIR,
-        FLOOR_DIR,
-        ATTEMPTS_DIR,
-        NOTES_DIR,
-    ):
+    """Create the runtime directories the submission pipeline writes to."""
+    for path in (BUILD_NEXT_DIR, CAMPAIGN_ROOT / "logs"):
         path.mkdir(parents=True, exist_ok=True)

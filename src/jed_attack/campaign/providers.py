@@ -4,11 +4,16 @@ Non-secret proposer config — backend kind, model, and endpoint — lives here 
 is selected by name. Only the API token comes from the environment, looked up by each
 provider's ``key_env`` at call time. So switching providers is a name change (no sprawl
 of ``PROPOSER_API_BASE``/``_MODEL`` env vars), and secrets never live in code or config
-files. ``jed-optimize --proposer <name>`` and the live ``proposer.json`` both use these
-names; see :func:`optimize_prompts.current_provider`.
+files. ``config.TEAM_PROPOSERS`` names the lanes the async team runs, one worker per
+usable entry (see :func:`optimize_prompts.optimize_team`).
 """
 
+import os
 from dataclasses import dataclass
+
+from openai import AsyncOpenAI, OpenAI
+
+from jed_attack.harness.models import resolve_base_url
 
 
 @dataclass(frozen=True)
@@ -39,8 +44,18 @@ PROVIDERS: dict[str, Provider] = {
     "gpt_oss": Provider("local", model="gpt_oss"),
     "gemma_4": Provider("local", model="gemma_4"),
     # z.ai GLM Coding Plan (subscription weekly quota via _ZAI; token in ZAI_API_KEY).
+    # The glm-5 family reliably honors OpenAI structured outputs (probed 2026-07-23 with
+    # a 32768 budget); glm-4.6 only loosely adheres (salvage) and glm-4.7 is flaky, so
+    # they are kept for reference but excluded from the team's z.ai rotation.
     "zai-glm4.6": Provider(
         "api", model="glm-4.6", base_url=_ZAI, key_env="ZAI_API_KEY"
+    ),
+    "zai-glm5": Provider("api", model="glm-5", base_url=_ZAI, key_env="ZAI_API_KEY"),
+    "zai-glm5-turbo": Provider(
+        "api", model="glm-5-turbo", base_url=_ZAI, key_env="ZAI_API_KEY"
+    ),
+    "zai-glm5.1": Provider(
+        "api", model="glm-5.1", base_url=_ZAI, key_env="ZAI_API_KEY"
     ),
     "zai-glm5.2": Provider(
         "api", model="glm-5.2", base_url=_ZAI, key_env="ZAI_API_KEY"
@@ -67,16 +82,6 @@ PROVIDERS: dict[str, Provider] = {
     "codex": Provider("codex"),
 }
 
-# Default proposer when nothing is selected (free, always available on green).
-DEFAULT = "gpt_oss"
-
-# Preference order for "use whatever's available" (jed-optimize with no --proposer). The
-# proposer walks it each generation, SKIPS api providers whose key_env is unset, and
-# uses the first that responds; DEFAULT (local) is the guaranteed tail. Both APIs are
-# live: cheapest (flat-rate, in-window) leads, then z.ai GLM (coding-plan quota via the
-# /api/coding endpoint), then local gpt_oss.
-PREFERENCE: tuple[str, ...] = ("cheapest-kimi", "zai-glm4.6", DEFAULT)
-
 
 def get(name: str) -> Provider:
     """Return the named provider, or raise with the list of valid names.
@@ -96,3 +101,39 @@ def get(name: str) -> Provider:
         raise KeyError(
             f"unknown proposer '{name}'; valid: {sorted(PROVIDERS)}"
         ) from None
+
+
+def openai_client(provider: Provider) -> OpenAI:
+    """Build an OpenAI-SDK client for a provider (api or local llama-server).
+
+    Both cheapest and llama-server speak the OpenAI chat API, so one client type drives
+    both via base_url. The bearer token is read from the provider's key_env at call time
+    (local providers use a placeholder — llama-server ignores auth).
+
+    Args:
+        provider: The ``api`` or ``local`` provider to build a client for.
+
+    Returns:
+        An ``openai.OpenAI`` client pointed at the provider's endpoint.
+    """
+    key = (
+        os.environ.get(provider.key_env, "sk-local") if provider.key_env else "sk-local"
+    )
+    base = provider.base_url or resolve_base_url(provider.model)  # local -> served base
+    return OpenAI(base_url=base.rstrip("/"), api_key=key)
+
+
+def async_openai_client(provider: Provider) -> AsyncOpenAI:
+    """Async OpenAI-SDK client for a provider (api or local). Mirrors openai_client.
+
+    Args:
+        provider: The ``api`` or ``local`` provider to build a client for.
+
+    Returns:
+        An ``openai.AsyncOpenAI`` client pointed at the provider's endpoint.
+    """
+    key = (
+        os.environ.get(provider.key_env, "sk-local") if provider.key_env else "sk-local"
+    )
+    base = provider.base_url or resolve_base_url(provider.model)
+    return AsyncOpenAI(base_url=base.rstrip("/"), api_key=key)
