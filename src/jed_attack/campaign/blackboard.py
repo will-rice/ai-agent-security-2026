@@ -1,10 +1,11 @@
 """The team's shared blackboard: append-only JSONL + derived in-memory views.
 
-One async process owns it, so appends are serialized with an ``asyncio.Lock`` (no fcntl).
-Every scored submission is one JSONL line; the in-memory views (best submission, best
-individual messages per shape, recent cross-model reasoning) are rebuilt on load and
-updated on append. When an append sets a new public best, the shipped ``attack.py`` is
-rewritten immediately via :func:`assemble.build`, so the artifact never lags the best.
+One async process owns it, so appends are serialized with an ``asyncio.Lock`` (no
+fcntl). Every scored submission is one JSONL line; the in-memory views (best submission,
+best individual messages per shape, recent cross-model reasoning) are rebuilt on load
+and updated on append. When an append sets a new public best, the shipped
+``attack.py`` is rewritten immediately via :func:`assemble.build`, so the artifact
+never lags the best.
 """
 
 import asyncio
@@ -30,10 +31,12 @@ class Record:
     ts: float
 
     def to_json(self) -> dict[str, Any]:
+        """Return a JSON-serializable dict for this record."""
         return asdict(self)
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> "Record":
+        """Build a Record from a parsed JSON dict (tolerant of older/missing fields)."""
         return cls(
             messages=list(data["messages"]),
             public=float(data["public"]),
