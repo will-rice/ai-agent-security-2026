@@ -128,29 +128,35 @@ def make_record(
 
 async def worker_loop(
     worker_id: int,
-    provider: providers.Provider,
+    providers_cycle: list[providers.Provider],
     board: blackboard.Blackboard,
     out_dir: Path,
     timeout_s: float,
     run: _WandbRun | None = None,
 ) -> None:
-    """One lane: author from the team digest, score, append, forever.
+    """One lane (one API key): rotate through the lane's models, author, score, append.
 
-    Reads the shared blackboard's global best + team digest, authors an improved
-    submission on ``provider``, scores it off-thread, and appends the scored record
-    (which reships ``attack.py`` on a new public best). One generation's failure
-    (proposer blip, refusal yielding no JSON, score outage) is caught and backed off so
-    the lane keeps running; a cancellation propagates so the team shuts down cleanly.
+    A lane owns a single API key and rotates through its models one generation at a
+    time, so only one request per key is ever in flight — a shared-key concurrency cap
+    (cheapestinference's per-key limit, confirmed empirically) can never be hit, while
+    every model still gets exercised. Reads the shared blackboard's global best + team
+    digest, authors an improved submission on the generation's model, scores it
+    off-thread, and appends the scored record (which reships ``attack.py`` on a new
+    public best). One generation's failure (proposer blip, refusal yielding no JSON,
+    score outage) is caught and backed off so the lane keeps running (and advances to
+    the next model); a cancellation propagates so the team shuts down cleanly.
 
     Args:
         worker_id: This lane's index (its metric/record tag).
-        provider: The proposer lane to author on.
+        providers_cycle: The lane's models, rotated one per generation.
         board: The shared team blackboard.
         out_dir: Where a new-best append reships ``attack.py``.
         timeout_s: Per-generation proposer timeout.
         run: The shared W&B run to log to, or ``None``.
     """
+    gen = 0
     while True:
+        provider = providers_cycle[gen % len(providers_cycle)]
         try:
             incumbent = board.best()
             prompt = submission_prompt(
@@ -198,6 +204,7 @@ async def worker_loop(
         except Exception:
             _log.exception("worker %d generation failed; retrying", worker_id)
             await asyncio.sleep(_GENERATION_RETRY_S)
+        gen += 1  # rotate to the next model in the lane (also skips a failing one)
 
 
 async def optimize_team(
@@ -214,22 +221,32 @@ async def optimize_team(
         timeout_s: Per-generation proposer timeout.
         run: The shared W&B run to log to, or ``None``.
     """
-    lanes: list[providers.Provider] = []
+    # One lane per API KEY: the lane's worker rotates through that key's models one
+    # generation at a time, so only one request per key is ever in flight. The
+    # cheapestinference concurrency cap is per-key (confirmed empirically — N pinned CI
+    # workers 429'd each other), so its models collapse into a single rotating lane;
+    # z.ai is its own key, hence a second independent lane that also rotates its models.
+    lanes: dict[str, list[providers.Provider]] = {}
     for name in config.TEAM_PROPOSERS:
         provider = providers.get(name)
         if provider.key_env and provider.key_env not in os.environ:
             _log.warning("lane %s skipped: %s unset", name, provider.key_env)
             continue
-        lanes.append(provider)
+        lanes.setdefault(provider.key_env, []).append(provider)
     if not lanes:  # no keys set -> fail loudly instead of a silent successful no-op
         raise SystemExit(
             "no usable proposer lanes; set CHEAPEST_API_KEY and/or ZAI_API_KEY"
         )
-    _log.info("team: %d lanes -> %s", len(lanes), [p.model for p in lanes])
+    cycles = list(lanes.values())
+    _log.info(
+        "team: %d lanes -> %s",
+        len(cycles),
+        [[p.model for p in cycle] for cycle in cycles],
+    )
     await asyncio.gather(
         *(
-            worker_loop(i, p, board, out_dir, timeout_s, run)
-            for i, p in enumerate(lanes)
+            worker_loop(i, cycle, board, out_dir, timeout_s, run)
+            for i, cycle in enumerate(cycles)
         )
     )
 

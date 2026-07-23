@@ -27,17 +27,22 @@ BUILD_NEXT_DIR = (
 # The two target models and their served base URLs (llama-server on green).
 MODELS: tuple[str, ...] = ("gpt_oss", "gemma_4")
 
-# The proposer lanes the async team runs — one worker per name, each pinned to that
-# model. The five cheapest-* lanes share CHEAPEST_API_KEY (the per-key concurrency
-# test); zai-glm4.6 is on ZAI_API_KEY (separate, proven-firing). A lane whose key_env
-# is unset is skipped.
+# The proposer models the async team rotates. optimize_team GROUPS these by API key into
+# one lane per key (one worker per lane), and the lane's worker rotates through its
+# models one generation at a time — so only one request per key is ever in flight (the
+# cheapestinference concurrency cap is per-KEY, confirmed empirically). Two lanes
+# result: CHEAPEST_API_KEY (5 CI models) and ZAI_API_KEY (the glm-5 family, which
+# reliably honors structured outputs). A model whose key_env is unset is skipped.
 TEAM_PROPOSERS: tuple[str, ...] = (
     "cheapest-kimi",
     "cheapest-deepseek",
     "cheapest-glm5.2",
     "cheapest-minimax",
     "cheapest-mimo",
-    "zai-glm4.6",
+    "zai-glm5",
+    "zai-glm5-turbo",
+    "zai-glm5.1",
+    "zai-glm5.2",
 )
 
 # Max tool hops per interaction. MUST match the scored gateway's replay depth

@@ -228,7 +228,7 @@ def test_worker_loop_appends_then_survives_failure(
     board = bb.Blackboard.load(tmp_path / "bb.jsonl")
     prov = providers.get("cheapest-kimi")
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(op.worker_loop(0, prov, board, tmp_path / "out", timeout_s=1.0))
+        asyncio.run(op.worker_loop(0, [prov], board, tmp_path / "out", timeout_s=1.0))
     best = board.best()
     assert best is not None and best.public == 3.0  # first iteration appended
     assert calls["n"] == 3  # blip at 2 was caught, loop continued

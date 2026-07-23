@@ -44,8 +44,18 @@ PROVIDERS: dict[str, Provider] = {
     "gpt_oss": Provider("local", model="gpt_oss"),
     "gemma_4": Provider("local", model="gemma_4"),
     # z.ai GLM Coding Plan (subscription weekly quota via _ZAI; token in ZAI_API_KEY).
+    # The glm-5 family reliably honors OpenAI structured outputs (probed 2026-07-23 with
+    # a 32768 budget); glm-4.6 only loosely adheres (salvage) and glm-4.7 is flaky, so
+    # they are kept for reference but excluded from the team's z.ai rotation.
     "zai-glm4.6": Provider(
         "api", model="glm-4.6", base_url=_ZAI, key_env="ZAI_API_KEY"
+    ),
+    "zai-glm5": Provider("api", model="glm-5", base_url=_ZAI, key_env="ZAI_API_KEY"),
+    "zai-glm5-turbo": Provider(
+        "api", model="glm-5-turbo", base_url=_ZAI, key_env="ZAI_API_KEY"
+    ),
+    "zai-glm5.1": Provider(
+        "api", model="glm-5.1", base_url=_ZAI, key_env="ZAI_API_KEY"
     ),
     "zai-glm5.2": Provider(
         "api", model="glm-5.2", base_url=_ZAI, key_env="ZAI_API_KEY"
