@@ -103,19 +103,18 @@ def test_hops_count_the_union_of_all_invalid_targets() -> None:
     assert _exfil(mixed, 2)  # union count accepted
 
 
-def test_submission_rejects_over_budget_summed_hops() -> None:
-    """Submission rejects a summed union-hops total over the T4 tool-hop budget."""
-    from jed_attack.campaign import config
-    from jed_attack.campaign.submission import Submission
+def test_count_cap_makes_hop_budget_unreachable_under_stopgap() -> None:
+    """Stopgap cap=25: the summed-hop budget is unreachable (MAX_SHIP_MESSAGES * EVAL_HOPS
+    <= HOP_BUDGET), so the message-count cap is the sole binding submission-level limit.
 
-    budget = config.HOP_BUDGET
-    urls = " ".join(f"https://x{i}.invalid/r" for i in range(config.EVAL_HOPS))
-    full = _exfil(f"SECRET_MARKER {urls}", config.EVAL_HOPS)
-    over_count = (budget // config.EVAL_HOPS) + 1  # summed hops > budget
-    with pytest.raises(pydantic.ValidationError):
-        Submission(messages=[full] * over_count)
-    # One under the overflow fits.
-    assert Submission(messages=[full] * (budget // config.EVAL_HOPS))
+    The real T4 constraint is wall-clock replay time (~9000s/model), for which the count
+    cap is a proxy; hops are not binding. This tripwire fires if the cap is later raised
+    so the hop budget becomes reachable again -- at which point the summed-hop validator
+    (and a rejection test for it) should be revisited alongside a real replay-time model.
+    """
+    from jed_attack.campaign import config
+
+    assert config.MAX_SHIP_MESSAGES * config.EVAL_HOPS <= config.HOP_BUDGET
 
 
 def test_validate_message_is_type_aware() -> None:
