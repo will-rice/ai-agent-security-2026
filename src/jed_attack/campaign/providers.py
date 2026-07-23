@@ -72,17 +72,6 @@ PROVIDERS: dict[str, Provider] = {
     "codex": Provider("codex"),
 }
 
-# Default proposer when nothing is selected (free, always available on green).
-DEFAULT = "gpt_oss"
-
-# Preference order for "use whatever's available" (jed-optimize with no --proposer). The
-# proposer walks it each generation, SKIPS api providers whose key_env is unset, and
-# uses the first that responds; DEFAULT (local) is the guaranteed tail. cheapest-kimi
-# (flat-rate, in-window) leads; z.ai is dropped from the default chain (kept in
-# PROVIDERS for explicit --proposer use) since cheapest covers the same structured-
-# output niche without the coding-plan quota's off-window failures.
-PREFERENCE: tuple[str, ...] = ("cheapest-kimi", DEFAULT)
-
 
 def get(name: str) -> Provider:
     """Return the named provider, or raise with the list of valid names.
