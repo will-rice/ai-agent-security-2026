@@ -61,9 +61,10 @@ PROVIDERS: dict[str, Provider] = {
     "zai-glm5.2": Provider(
         "api", model="glm-5.2", base_url=_ZAI, key_env="ZAI_API_KEY"
     ),
-    # cheapestinference.com flat-rate pools (token in CHEAPEST_API_KEY). Model ids
-    # verified from their docs (/docs/getting-started/models). Core = deepseek/mimo;
-    # Frontier = kimi/glm/minimax (stronger, pricier flat rate).
+    # cheapestinference.com (token in CHEAPEST_API_KEY). The active SUBSCRIPTION covers
+    # exactly kimi-k2.7, kimi-k2.6, glm-5.2, minimax-m3 — those are the only ids with an
+    # open window; deepseek-v4-flash and mimo-v2.5 are NOT subscribed and 429 with "no
+    # open window", so they are kept for reference but excluded from the team's CI lane.
     "cheapest-deepseek": Provider(
         "api", model="deepseek-v4-flash", base_url=_CHEAP, key_env="CHEAPEST_API_KEY"
     ),
@@ -72,6 +73,9 @@ PROVIDERS: dict[str, Provider] = {
     ),
     "cheapest-kimi": Provider(
         "api", model="kimi-k2.7", base_url=_CHEAP, key_env="CHEAPEST_API_KEY"
+    ),
+    "cheapest-kimi2.6": Provider(
+        "api", model="kimi-k2.6", base_url=_CHEAP, key_env="CHEAPEST_API_KEY"
     ),
     "cheapest-glm5.2": Provider(
         "api", model="glm-5.2", base_url=_CHEAP, key_env="CHEAPEST_API_KEY"

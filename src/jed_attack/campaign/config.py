@@ -31,11 +31,11 @@ MODELS: tuple[str, ...] = ("gpt_oss", "gemma_4")
 # one lane per key (one worker per lane), and the lane's worker rotates through its
 # models one generation at a time — so only one request per key is ever in flight (the
 # cheapestinference concurrency cap is per-KEY, confirmed). Two lanes result:
-# CHEAPEST_API_KEY (5 CI models) and ZAI_API_KEY (glm-5-turbo — the one glm model both
-# structured-output-capable AND fast enough to author 80 messages without the full glm-5
-# family's 10-20 min/call latency). A model whose key_env is unset is skipped.
+# CHEAPEST_API_KEY (all 6 CI models — the new token covers every one) and ZAI_API_KEY
+# (glm-5-turbo — structured-capable + fast). A model whose key_env is unset is skipped.
 TEAM_PROPOSERS: tuple[str, ...] = (
     "cheapest-kimi",
+    "cheapest-kimi2.6",
     "cheapest-deepseek",
     "cheapest-glm5.2",
     "cheapest-minimax",
