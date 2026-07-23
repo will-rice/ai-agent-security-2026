@@ -19,7 +19,9 @@ from jed_attack.campaign import (
 )
 
 if TYPE_CHECKING:
-    from jed_attack.campaign.submission import Message
+    from jed_attack.campaign import blackboard
+    from jed_attack.campaign.submission import Message, Submission
+    from jed_attack.campaign.submission_score import SubmissionScore
 
 
 def _exfil(text: str, hops: int) -> "Message":
@@ -197,11 +199,14 @@ def test_propose_submission_async_streams_and_salvages(
 def test_worker_loop_appends_then_survives_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """One worker iteration appends a scored record; a raised proposer is caught.
+    """One generation appends a scored record; a raised proposer is caught.
 
-    A call counter drives three iterations: the first appends (public 3.0), the second
-    raises (caught + backed off so the loop continues), the third cancels. ``score`` is
-    a sync stub (no GPU) run off-thread and ``propose`` an async stub.
+    A call counter drives three propose calls: the first is round 0 (succeeds, appends
+    public 3.0); the second is refine round 1 (raises -> caught by the inner refine
+    handler, which logs + breaks, so round 0's already-scored best is still appended,
+    no backoff); the third is the next generation's round 0 (cancels, propagating
+    through the outer handler and ending the loop). ``score`` is a sync stub (no GPU)
+    run off-thread and ``propose`` an async stub.
     """
     import asyncio
 
@@ -251,6 +256,156 @@ def test_worker_loop_appends_then_survives_failure(
     best = board.best()
     assert best is not None and best.public == 3.0  # first iteration appended
     assert calls["n"] == 3  # blip at 2 was caught, loop continued
+
+
+def _mk_score(public: float) -> "SubmissionScore":
+    from jed_attack.campaign.submission import MessageType
+    from jed_attack.campaign.submission_score import MessageScore, SubmissionScore
+
+    return SubmissionScore(
+        public=public,
+        total_hops=1,
+        per_message=[
+            MessageScore(
+                message="m",
+                type=MessageType.DEPUTY,
+                severity={"optimal": public},
+                trace={},
+                feedback="",
+            )
+        ],
+    )
+
+
+def _mk_sub(tag: str) -> "Submission":
+    from jed_attack.campaign.submission import Message, MessageType, Submission
+
+    return Submission(
+        messages=[
+            Message(type=MessageType.DEPUTY, text=f"Ping {tag}@h.invalid", hops=1)
+        ]
+    )
+
+
+def _run_refine_worker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    subs: list["Submission"],
+    publics: list[float],
+) -> "blackboard.Record | None":
+    """Drive one worker with a scripted propose/score sequence; return board.best().
+
+    ``subs``/``publics`` are consumed one per successful propose/score. When ``subs``
+    is exhausted the next propose raises CancelledError, ending the loop after the
+    generation(s) the script covers.
+    """
+    import asyncio
+
+    from jed_attack.campaign import blackboard as bb
+    from jed_attack.campaign import config
+    from jed_attack.campaign import optimize_prompts as op
+
+    sub_it = iter(subs)
+    pub_it = iter(publics)
+
+    async def fake_propose(
+        prompt: str, provider: object, timeout_s: float
+    ) -> tuple["Submission", str]:
+        try:
+            return next(sub_it), "rz"
+        except StopIteration:
+            raise asyncio.CancelledError from None
+
+    monkeypatch.setattr(op, "propose_submission_async", fake_propose)
+    monkeypatch.setattr(
+        op, "score_submission", lambda m, models=config.MODELS: _mk_score(next(pub_it))
+    )
+    monkeypatch.setattr(op, "_GENERATION_RETRY_S", 0.0)
+
+    board = bb.Blackboard.load(tmp_path / "bb.jsonl")
+    prov = providers.get("cheapest-kimi")
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(op.worker_loop(0, [prov], board, tmp_path / "out", timeout_s=1.0))
+    return board.best()
+
+
+def test_refine_runs_to_cap_when_every_round_improves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """4 improving refine rounds (the cap) -> records the peak; no mid-climb cancel."""
+    # round0=1.0, refine1..4 = 2..5 (all improve). 5th propose (gen1 round0) cancels.
+    subs = [_mk_sub(f"s{i}") for i in range(5)]
+    publics = [1.0, 2.0, 3.0, 4.0, 5.0]
+    best = _run_refine_worker(monkeypatch, tmp_path, subs, publics)
+    assert best is not None and best.public == 5.0
+
+
+def test_refine_keeps_peak_and_discards_regression(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Improve then regress -> records the peak; the regressing rewrite is discarded."""
+    # round0=3.0, refine1=5.0 (accept), refine2=4.0 (<=5.0 -> stop). Then gen1 cancels.
+    subs = [_mk_sub(f"s{i}") for i in range(3)]
+    best = _run_refine_worker(monkeypatch, tmp_path, subs, [3.0, 5.0, 4.0])
+    assert best is not None and best.public == 5.0
+
+
+def test_refine_stops_when_round0_already_best(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refine round that doesn't beat round 0 -> records round 0, one refine try."""
+    subs = [_mk_sub("s0"), _mk_sub("s1")]
+    best = _run_refine_worker(monkeypatch, tmp_path, subs, [5.0, 3.0])
+    assert best is not None and best.public == 5.0
+
+
+def test_refine_round_failure_keeps_best_so_far(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refine round raising a non-cancel error -> break, still append round-0 best."""
+    import asyncio
+
+    from jed_attack.campaign import blackboard as bb
+    from jed_attack.campaign import config
+    from jed_attack.campaign import optimize_prompts as op
+
+    calls = {"n": 0}
+
+    async def fake_propose(
+        prompt: str, provider: object, timeout_s: float
+    ) -> tuple["Submission", str]:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _mk_sub("s0"), "rz"  # round 0 succeeds
+        if calls["n"] == 2:
+            raise RuntimeError("refine blip")  # refine round 1 fails -> break
+        raise asyncio.CancelledError  # gen1 round 0 -> end the loop
+
+    monkeypatch.setattr(op, "propose_submission_async", fake_propose)
+    monkeypatch.setattr(
+        op, "score_submission", lambda m, models=config.MODELS: _mk_score(3.0)
+    )
+    monkeypatch.setattr(op, "_GENERATION_RETRY_S", 0.0)
+
+    board = bb.Blackboard.load(tmp_path / "bb.jsonl")
+    prov = providers.get("cheapest-kimi")
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(op.worker_loop(0, [prov], board, tmp_path / "out", timeout_s=1.0))
+    best = board.best()
+    assert best is not None and best.public == 3.0  # round-0 best still appended
+    assert calls["n"] == 3  # round0, failed refine (caught), gen1 cancel
+
+
+def test_refine_disabled_when_max_rounds_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REFINE_MAX_ROUNDS=0 -> no refine rounds; pure propose->score->record."""
+    from jed_attack.campaign import config
+
+    monkeypatch.setattr(config, "REFINE_MAX_ROUNDS", 0)
+    # Only round-0 propose consumes a sub; the next propose (gen1) cancels.
+    best = _run_refine_worker(monkeypatch, tmp_path, [_mk_sub("s0")], [3.0])
+    assert best is not None and best.public == 3.0
 
 
 def test_optimize_team_raises_when_no_usable_lanes(

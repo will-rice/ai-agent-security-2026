@@ -156,43 +156,84 @@ async def worker_loop(
     while True:
         provider = providers_cycle[gen % len(providers_cycle)]
         try:
+            team = {t: board.top_messages(t, k=_TEAM_TOP_K) for t in MessageType}
+            reasoning_digest = board.recent_reasoning(k=_TEAM_REASONING_K)
+            model = provider.model or provider.kind
+
+            # Round 0: propose from the GLOBAL incumbent, score, adopt as local best.
             incumbent = board.best()
             prompt = submission_prompt(
                 incumbent,
                 incumbent.feedback if incumbent else [],
                 {},
-                top_messages={
-                    t: board.top_messages(t, k=_TEAM_TOP_K) for t in MessageType
-                },
-                reasoning=board.recent_reasoning(k=_TEAM_REASONING_K),
+                top_messages=team,
+                reasoning=reasoning_digest,
             )
             submission, reasoning = await propose_submission_async(
                 prompt, provider, timeout_s
             )
             score = await asyncio.to_thread(score_submission, submission.messages)
-            record = make_record(
-                submission,
-                score,
-                reasoning,
-                provider.model or provider.kind,
-                worker_id,
-            )
-            await board.append(record, out_dir)
+            local_best = make_record(submission, score, reasoning, model, worker_id)
+            local_best_score = score
+            round0_public = score.public
+
+            # Rounds 1..REFINE_MAX_ROUNDS: hill-climb the local draft on its own real
+            # score. Whole-submission rewrite via the same submission_prompt, with the
+            # draft as the incumbent; keep the best, stop at the first non-improving
+            # round. A round's proposer/score failure ends the climb with the best kept.
+            refine_rounds = 0
+            for _ in range(config.REFINE_MAX_ROUNDS):
+                try:
+                    prompt = submission_prompt(
+                        local_best,
+                        local_best.feedback,
+                        {},
+                        top_messages=team,
+                        reasoning=reasoning_digest,
+                    )
+                    refined, refined_reasoning = await propose_submission_async(
+                        prompt, provider, timeout_s
+                    )
+                    refined_score = await asyncio.to_thread(
+                        score_submission, refined.messages
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    _log.warning(
+                        "worker %d refine round failed; keeping best",
+                        worker_id,
+                        exc_info=True,
+                    )
+                    break
+                if refined_score.public <= local_best.public:
+                    break  # no improvement -> stop the climb
+                local_best = make_record(
+                    refined, refined_score, refined_reasoning, model, worker_id
+                )
+                local_best_score = refined_score
+                refine_rounds += 1
+
+            await board.append(local_best, out_dir)
             best = board.best()
             assert best is not None  # just appended -> the board is non-empty
             _log.info(
-                "worker %d (%s): public=%g best=%g",
+                "worker %d (%s): public=%g (+%g over %d refine rounds) best=%g",
                 worker_id,
                 provider.model,
-                score.public,
+                local_best.public,
+                local_best.public - round0_public,
+                refine_rounds,
                 best.public,
             )
             _log_wandb(  # one shared run; tag by lane so models are comparable
                 run,
                 {
-                    "public": score.public,
+                    "public": local_best.public,
                     "best_public": best.public,
-                    "total_hops": float(score.total_hops),
+                    "total_hops": float(local_best_score.total_hops),
+                    "refine_rounds": refine_rounds,
+                    "refine_gain": local_best.public - round0_public,
                     "model": provider.model,
                     "worker": worker_id,
                 },

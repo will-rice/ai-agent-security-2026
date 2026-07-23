@@ -49,6 +49,14 @@ TEAM_PROPOSERS: tuple[str, ...] = (
 # under-counted locally and wrongly gated out. Single-post scores are unchanged.
 EVAL_HOPS = 8
 
+# Adversarial refinement: max per-generation hill-climb rounds. After proposing and
+# scoring a draft, the lane re-authors the whole submission against its own real
+# per-message score + guardrail trace, re-scores, and repeats while the public score
+# strictly improves, up to this many rounds (=> at most REFINE_MAX_ROUNDS + 1 scorings
+# per generation). A static calibration knob (like EVAL_HOPS), not hot-reloadable.
+# Set to 0 to disable refinement entirely (propose -> score -> record).
+REFINE_MAX_ROUNDS = 4
+
 # Prompt-optimization orchestrator (optimize_prompts.py): its generation logfile.
 OPTIMIZE_LOG = CAMPAIGN_ROOT / "optimize_prompts.log"
 
