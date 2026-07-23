@@ -454,6 +454,58 @@ def test_assemble_build_writes_isolated_attack_py_from_literal_messages(
     assert status == {"candidate_count": len(messages), "source": "authored"}
 
 
+def test_blackboard_append_persists_selects_and_ships(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Append persists to JSONL, rebuilds views, and ships attack.py on a new best."""
+    import asyncio
+
+    from jed_attack.campaign import blackboard as bb
+    from jed_attack.campaign.submission import MessageType
+
+    log = tmp_path / "blackboard.jsonl"
+    out = tmp_path / "build_next"
+    board = bb.Blackboard.load(log)  # empty start
+    assert board.best() is None
+
+    def rec(public: float, model: str, sev: float) -> bb.Record:
+        return bb.Record(
+            messages=[{"type": "deputy", "text": "Ping u1@h.invalid", "hops": 1}],
+            public=public,
+            feedback=[
+                {
+                    "message": "Ping u1@h.invalid",
+                    "type": "deputy",
+                    "severity": {"optimal": sev},
+                    "feedback": "",
+                }
+            ],
+            reasoning="chose diverse deputies",
+            model=model,
+            worker=0,
+            ts=1.0,
+        )
+
+    asyncio.run(board.append(rec(2.0, "kimi-k2.7", 4.0), out))
+    asyncio.run(board.append(rec(5.0, "glm-4.6", 8.0), out))  # new best -> ships
+    asyncio.run(board.append(rec(3.0, "deepseek-v4-flash", 2.0), out))  # not best
+
+    best = board.best()
+    assert best is not None
+    assert best.public == 5.0
+    assert best.model == "glm-4.6"
+    # persisted: three lines, reload rebuilds the same best
+    reloaded_best = bb.Blackboard.load(log).best()
+    assert reloaded_best is not None
+    assert reloaded_best.public == 5.0
+    # top deputy messages ranked by severity-sum, deduped
+    top = board.top_messages(MessageType.DEPUTY, k=2)
+    assert top[0][1] == "glm-4.6" and top[0][2] == 8.0
+    # attack.py written (last write = the best at that point)
+    assert (out / "attack.py").exists()
+    assert board.recent_reasoning(k=1)[0][0] == "deepseek-v4-flash"
+
+
 def test_config_shards_constants_and_ensure_dirs(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

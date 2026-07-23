@@ -51,6 +51,18 @@ PROPOSER_CONFIG_FILE = CAMPAIGN_ROOT / "proposer.json"
 # Prompt-optimization orchestrator (optimize_prompts.py): its generation logfile.
 OPTIMIZE_LOG = CAMPAIGN_ROOT / "optimize_prompts.log"
 
+# The team's shared memory (blackboard.py): an append-only JSONL record of every scored
+# submission (messages, score, feedback, the proposer's reasoning, model, worker). The
+# in-memory blackboard is rebuilt from it on start (warm restart). Replaces
+# submission_log.
+BLACKBOARD_LOG = CAMPAIGN_ROOT / "blackboard.jsonl"
+
+# A thinking proposer (kimi) returns its chain-of-thought in a non-standard
+# ``reasoning_content`` field, separate from the answer JSON. It is billed and otherwise
+# discarded, so persist the full text here (one JSON line per proposer call) for
+# inspection — the reasoning is where the diversity/private-board decisions are made.
+REASONING_LOG = CAMPAIGN_ROOT / "proposer_reasoning.jsonl"
+
 # The consolidator's status file (best public of the submission log) + its cycle
 # interval. The consolidator claims submission shards and appends them to the log.
 CONSOLIDATOR_STATUS_FILE = CAMPAIGN_ROOT / "consolidator_status.json"
