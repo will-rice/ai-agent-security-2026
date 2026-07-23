@@ -11,6 +11,7 @@ usable entry (see :func:`optimize_prompts.optimize_team`).
 import os
 from dataclasses import dataclass
 
+import httpx
 from openai import AsyncOpenAI, OpenAI
 
 from jed_attack.harness.models import resolve_base_url
@@ -126,6 +127,10 @@ def openai_client(provider: Provider) -> OpenAI:
 def async_openai_client(provider: Provider) -> AsyncOpenAI:
     """Async OpenAI-SDK client for a provider (api or local). Mirrors openai_client.
 
+    The read timeout is disabled (``read=None``) because the proposer STREAMS the
+    completion and enforces its own idle cutoff (abort only if no token arrives for a
+    while); a fixed read timeout would kill a slow but actively streaming model.
+
     Args:
         provider: The ``api`` or ``local`` provider to build a client for.
 
@@ -136,4 +141,8 @@ def async_openai_client(provider: Provider) -> AsyncOpenAI:
         os.environ.get(provider.key_env, "sk-local") if provider.key_env else "sk-local"
     )
     base = provider.base_url or resolve_base_url(provider.model)
-    return AsyncOpenAI(base_url=base.rstrip("/"), api_key=key)
+    return AsyncOpenAI(
+        base_url=base.rstrip("/"),
+        api_key=key,
+        timeout=httpx.Timeout(connect=30.0, read=None, write=30.0, pool=30.0),
+    )

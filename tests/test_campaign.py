@@ -139,29 +139,48 @@ def test_validate_message_is_type_aware() -> None:
     ]  # deputy must not carry the marker
 
 
-def test_propose_submission_async_extracts_submission_and_reasoning(
+def test_propose_submission_async_streams_and_salvages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """propose_submission_async parses a submission and pulls out reasoning_content."""
+    """Stream the completion, accumulate content + reasoning, salvage a submission."""
     import asyncio
 
-    from jed_attack.campaign.submission import Message, MessageType, Submission
+    def delta(content: object = None, reasoning: object = None) -> SimpleNamespace:
+        d = SimpleNamespace(content=content)
+        if reasoning is not None:
+            d.reasoning_content = reasoning
+        return d
 
-    sub = Submission(
-        messages=[
-            Message(
-                type=MessageType.EXFIL, text="SECRET_MARKER https://a.invalid/r", hops=1
-            )
-        ]
-    )
-    msg = SimpleNamespace(parsed=sub, reasoning_content="weighed diversity")
+    json_out = '[{"type":"exfil","text":"SECRET_MARKER https://a.invalid/r","hops":1}]'
+    chunks = [
+        SimpleNamespace(choices=[SimpleNamespace(delta=delta(reasoning="weighed "))]),
+        SimpleNamespace(choices=[SimpleNamespace(delta=delta(reasoning="diversity"))]),
+        SimpleNamespace(choices=[SimpleNamespace(delta=delta(content=json_out))]),
+    ]
 
-    class FakeParse:
-        async def parse(self, **_: object) -> SimpleNamespace:
-            return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+    class FakeStream:
+        def __init__(self) -> None:
+            self._i = 0
+
+        def __aiter__(self) -> "FakeStream":
+            return self
+
+        async def __anext__(self) -> SimpleNamespace:
+            if self._i >= len(chunks):
+                raise StopAsyncIteration
+            chunk = chunks[self._i]
+            self._i += 1
+            return chunk
+
+        async def close(self) -> None:
+            return None
+
+    class FakeCompletions:
+        async def create(self, **_: object) -> FakeStream:
+            return FakeStream()
 
     class FakeChat:
-        completions = FakeParse()
+        completions = FakeCompletions()
 
     class FakeClient:
         chat = FakeChat()
@@ -169,7 +188,7 @@ def test_propose_submission_async_extracts_submission_and_reasoning(
     monkeypatch.setattr(providers, "async_openai_client", lambda p: FakeClient())
     prov = providers.get("cheapest-kimi")
     got_sub, reasoning = asyncio.run(
-        optimize_prompts.propose_submission_async("prompt", prov, timeout_s=1.0)
+        optimize_prompts.propose_submission_async("prompt", prov, idle_timeout_s=5.0)
     )
     assert got_sub.messages[0].text == "SECRET_MARKER https://a.invalid/r"
     assert reasoning == "weighed diversity"
