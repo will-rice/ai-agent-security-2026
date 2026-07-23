@@ -318,99 +318,63 @@ def test_submission_log_read_skips_malformed_lines(tmp_path: Path) -> None:
     assert records == [good]
 
 
-def test_run_submission_generation_writes_record_and_prompt_embeds_feedback(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_worker_loop_appends_then_survives_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """One submission generation writes exactly one scored SubmissionRecord shard.
+    """One worker iteration appends a scored record; a raised proposer is caught.
 
-    ``propose_submission``/``score_submission``/``introspect_worst`` are stubbed (no
-    GPU): the shard's ``public`` matches the scored public and carries the fresh
-    introspection, and ``submission_prompt`` embeds the incumbent's feedback text plus
-    the 80-message and hop-budget limits — all as labelled data.
+    A call counter drives three iterations: the first appends (public 3.0), the second
+    raises (caught + backed off so the loop continues), the third cancels. ``score`` is
+    a sync stub (no GPU) run off-thread and ``propose`` an async stub.
     """
-    from jed_attack.campaign import config, shards, submission_log
-    from jed_attack.campaign.submission import Submission
+    import asyncio
+
+    from jed_attack.campaign import blackboard as bb
+    from jed_attack.campaign import config
+    from jed_attack.campaign import optimize_prompts as op
+    from jed_attack.campaign.submission import Message, MessageType, Submission
     from jed_attack.campaign.submission_score import MessageScore, SubmissionScore
 
-    monkeypatch.setenv("JED_WORKER_ID", "w7")
-    monkeypatch.setattr(config, "SUBMISSION_LOG", tmp_path / "sub_log.jsonl")
-    monkeypatch.setattr(config, "SUBMISSION_SHARDS_DIR", tmp_path / "sub_shards")
-
-    from jed_attack.campaign.submission import Message, MessageType
-
-    incumbent = submission_log.SubmissionRecord(
-        messages=[
-            {
-                "type": "exfil",
-                "text": "OLD SECRET_MARKER https://a.invalid/r",
-                "hops": 1,
-            }
-        ],
+    sub = Submission(
+        messages=[Message(type=MessageType.DEPUTY, text="Ping u1@h.invalid", hops=1)]
+    )
+    score = SubmissionScore(
         public=3.0,
-        feedback=[
-            {
-                "message": "OLD SECRET_MARKER https://a.invalid/r",
-                "type": "exfil",
-                "severity": {"optimal": 16.0},
-                "feedback": "INCUMBENT_FEEDBACK_MARKER rules=0",
-                "introspection": "try a benign framing",
-            }
-        ],
         total_hops=1,
-        ts=1.0,
-    )
-    submission_log.append(incumbent, tmp_path / "sub_log.jsonl")
-
-    new_message = Message(
-        type=MessageType.EXFIL, text="NEW SECRET_MARKER https://b.invalid/r", hops=1
-    )
-    proposed = Submission(messages=[new_message])
-    monkeypatch.setattr(optimize_prompts, "propose_submission", lambda p, t: proposed)
-
-    scored = SubmissionScore(
-        public=7.5,
         per_message=[
             MessageScore(
-                message="NEW SECRET_MARKER https://b.invalid/r",
-                type=MessageType.EXFIL,
-                severity={"optimal": 16.0},
+                message="Ping u1@h.invalid",
+                type=MessageType.DEPUTY,
+                severity={"optimal": 4.0},
                 trace={},
-                feedback="new fb",
+                feedback="",
             )
         ],
-        total_hops=1,
-    )
-    monkeypatch.setattr(
-        optimize_prompts.submission_score, "score_submission", lambda m, **k: scored
-    )
-    monkeypatch.setattr(
-        optimize_prompts.victim_feedback,
-        "introspect_worst",
-        lambda s, m, **k: {0: "suggest"},
     )
 
-    metrics = optimize_prompts.run_submission_generation(gen=0, timeout_s=1.0)
+    calls = {"n": 0}
 
-    assert metrics["public"] == 7.5
-    claimed = shards.claim(
-        tmp_path / "sub_shards", submission_log.SubmissionRecord.from_json
-    )
-    assert len(claimed) == 1
-    _, rec = claimed[0]
-    assert rec.public == 7.5
-    assert rec.messages == [
-        {"type": "exfil", "text": "NEW SECRET_MARKER https://b.invalid/r", "hops": 1}
-    ]
-    assert rec.feedback[0]["introspection"] == "suggest"
+    async def fake_propose(
+        prompt: str, provider: object, timeout_s: float
+    ) -> tuple[Submission, str]:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("proposer blip")
+        if calls["n"] > 2:
+            raise asyncio.CancelledError
+        return sub, "reasoning"
 
-    prompt = optimize_prompts.submission_prompt(
-        incumbent, incumbent.feedback, {0: "try a benign framing"}
-    )
-    assert "INCUMBENT_FEEDBACK_MARKER" in prompt  # incumbent per-message feedback
-    assert "try a benign framing" in prompt  # victim introspection suggestion (data)
-    assert str(config.MAX_SHIP_MESSAGES) in prompt  # the 80-message cap
-    hop_budget = str(int(config.HOP_CEILING * config.BUDGET_FILL_FRACTION))
-    assert hop_budget in prompt  # the T4 hop budget
+    monkeypatch.setattr(op, "propose_submission_async", fake_propose)
+    monkeypatch.setattr(op, "score_submission", lambda m, models=config.MODELS: score)
+    monkeypatch.setattr(op, "_GENERATION_RETRY_S", 0.0)
+
+    board = bb.Blackboard.load(tmp_path / "bb.jsonl")
+    prov = providers.get("cheapest-kimi")
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(op.worker_loop(0, prov, board, tmp_path / "out", timeout_s=1.0))
+    best = board.best()
+    assert best is not None and best.public == 3.0  # first iteration appended
+    assert calls["n"] == 3  # blip at 2 was caught, loop continued
 
 
 def test_submission_prompt_handles_cold_start_none_incumbent() -> None:
@@ -440,35 +404,6 @@ def test_submission_prompt_embeds_team_digest() -> None:
     assert "kimi-k2.7" in prompt  # message tagged with the model that found it
     assert "Ping u1@h.invalid" in prompt
     assert "spread deputies across hosts" in prompt  # cross-model reasoning (DATA)
-
-
-def test_optimize_survives_a_failing_generation(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A generation that raises is caught + backed off; the worker loop continues.
-
-    ``optimize(generations=None)`` runs forever per worker with no respawn supervisor,
-    so a transient failure (proposer blip, refusal yielding no JSON, score outage) must
-    not permanently terminate the worker.
-    """
-    seen: list[int] = []
-    slept: list[float] = []
-
-    def flaky(gen: int, timeout_s: float) -> dict[str, Any]:
-        seen.append(gen)
-        if gen == 0:
-            raise RuntimeError("proposer network blip")
-        return {"generation": gen, "public": 1.0}
-
-    monkeypatch.setattr(optimize_prompts, "run_submission_generation", flaky)
-    monkeypatch.setattr(optimize_prompts.time, "sleep", lambda s: slept.append(s))
-
-    optimize_prompts.optimize(generations=3, timeout_s=1.0, wandb_run=None)
-
-    assert seen == [0, 1, 2]  # the raising gen 0 did not stop gens 1 and 2
-    assert slept == [
-        optimize_prompts._GENERATION_RETRY_S
-    ]  # backed off once, on failure
 
 
 def test_assemble_build_writes_isolated_attack_py_from_literal_messages(

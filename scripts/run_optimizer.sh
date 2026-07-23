@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Launch the whole-submission optimizer worker in a detached tmux session.
+# Launch the whole-submission optimizer in a detached tmux session.
+#
+# One process owns every proposer lane (async team orchestrator), so there is
+# no per-worker env — a single tmux session runs the whole team.
 #
 # Run this on the serving host (green) from the repo root. It is the clean
 # replacement for `setsid nohup ... &`, which left the launching ssh channel
@@ -26,10 +29,10 @@ sleep 1
 # this script's, so exporting here would not reach the worker.
 tmux new-session -d -s "$SESSION" -c "$REPO" \
   "exec bash -lc 'mkdir -p run/logs; \
-    export JED_CAMPAIGN_ROOT=\"$REPO/run\" JED_WANDB=1 JED_WORKER_ID=1 \
+    export JED_CAMPAIGN_ROOT=\"$REPO/run\" JED_WANDB=1 \
       LD_LIBRARY_PATH=\"/usr/local/cuda-12.8/lib64:\${LD_LIBRARY_PATH:-}\"; \
     uv run python -m jed_attack.campaign.optimize_prompts 2>&1 \
-      | tee -a run/logs/optimizer-1.log'"
+      | tee -a run/logs/optimizer.log'"
 
 echo "optimizer worker launched in tmux session '$SESSION'"
 echo "  watch:   tmux attach -t $SESSION   (detach: Ctrl-b d)"
