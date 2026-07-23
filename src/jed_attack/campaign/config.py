@@ -27,6 +27,14 @@ BUILD_NEXT_DIR = (
 # The two target models and their served base URLs (llama-server on green).
 MODELS: tuple[str, ...] = ("gpt_oss", "gemma_4")
 
+# In-process scoring: where the GGUFs live, and which GPU each model loads on (under
+# CUDA_DEVICE_ORDER=PCI_BUS_ID: device 0 = RTX 3090, device 1 = RTX 6000 Ada). The
+# scorer loads each GGUF resident and replays in-process (llama-cpp-python) to match
+# the T4 gateway exactly -- see docs/.../in-process-scoring-design.md and memory
+# jed-t4-replay-time-budget.
+MODELS_DIR = Path(os.getenv("JED_MODELS_DIR", str(_REPO_ROOT / "models")))
+MODEL_GPU: dict[str, int] = {"gpt_oss": 0, "gemma_4": 1}
+
 # The proposer models the async team rotates. optimize_team GROUPS these by API key into
 # one lane per key (one worker per lane), and the lane's worker rotates through its
 # models one generation at a time — so only one request per key is ever in flight (the
