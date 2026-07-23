@@ -30,19 +30,17 @@ MODELS: tuple[str, ...] = ("gpt_oss", "gemma_4")
 # The proposer models the async team rotates. optimize_team GROUPS these by API key into
 # one lane per key (one worker per lane), and the lane's worker rotates through its
 # models one generation at a time — so only one request per key is ever in flight (the
-# cheapestinference concurrency cap is per-KEY, confirmed empirically). Two lanes
-# result: CHEAPEST_API_KEY (5 CI models) and ZAI_API_KEY (the glm-5 family, which
-# reliably honors structured outputs). A model whose key_env is unset is skipped.
+# cheapestinference concurrency cap is per-KEY, confirmed). Two lanes result:
+# CHEAPEST_API_KEY (all 6 CI models — the new token covers every one) and ZAI_API_KEY
+# (glm-5-turbo — structured-capable + fast). A model whose key_env is unset is skipped.
 TEAM_PROPOSERS: tuple[str, ...] = (
     "cheapest-kimi",
+    "cheapest-kimi2.6",
     "cheapest-deepseek",
     "cheapest-glm5.2",
     "cheapest-minimax",
     "cheapest-mimo",
-    "zai-glm5",
     "zai-glm5-turbo",
-    "zai-glm5.1",
-    "zai-glm5.2",
 )
 
 # Max tool hops per interaction. MUST match the scored gateway's replay depth
