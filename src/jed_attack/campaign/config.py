@@ -1,7 +1,7 @@
 """Campaign paths, models, and knobs — env-overridable.
 
-Runtime state lives under ``run/`` (git-ignored). The optimizer swarm, the consolidator,
-and the assemble daemon all read these so paths stay consistent across the fleet.
+Runtime state lives under ``run/`` (git-ignored). The async team and the blackboard
+both read these so paths stay consistent.
 """
 
 import os
@@ -23,11 +23,6 @@ ENV_FILE = _REPO_ROOT / ".env"
 BUILD_NEXT_DIR = (
     CAMPAIGN_ROOT / "build_next"
 )  # assembled attack.py + build_next_status.json
-
-# Shared cross-agent knowledge log (see knowledge.py). Each writer appends its own
-# <producer>.jsonl so the fleet learns from every agent's tries without locks.
-KNOWLEDGE_DIR = CAMPAIGN_ROOT / "knowledge"
-NOTES_DIR = KNOWLEDGE_DIR / "notes"  # free-form insights
 
 # The two target models and their served base URLs (llama-server on green).
 MODELS: tuple[str, ...] = ("gpt_oss", "gemma_4")
@@ -51,29 +46,13 @@ TEAM_PROPOSERS: tuple[str, ...] = (
 # under-counted locally and wrongly gated out. Single-post scores are unchanged.
 EVAL_HOPS = 8
 
-# Kept memory for the whole-submission loop (submission_log.py): append-only record of
-# every evaluated submission with its score + per-message feedback (nothing pruned).
-SUBMISSION_LOG = CAMPAIGN_ROOT / "submission_log.jsonl"
-SUBMISSION_SHARDS_DIR = CAMPAIGN_ROOT / "submission_shards"
-
-# Live proposer config (optimize_prompts._configured_chain). Workers re-read this each
-# generation, so `jed-optimize --switch` can change the proposer backend/model/endpoint
-# without a restart. Holds no secret — only a `key_env` naming the env var with the key.
-PROPOSER_CONFIG_FILE = CAMPAIGN_ROOT / "proposer.json"
-
 # Prompt-optimization orchestrator (optimize_prompts.py): its generation logfile.
 OPTIMIZE_LOG = CAMPAIGN_ROOT / "optimize_prompts.log"
 
 # The team's shared memory (blackboard.py): an append-only JSONL record of every scored
 # submission (messages, score, feedback, the proposer's reasoning, model, worker). The
-# in-memory blackboard is rebuilt from it on start (warm restart). Replaces
-# submission_log.
+# in-memory blackboard is rebuilt from it on start (warm restart).
 BLACKBOARD_LOG = CAMPAIGN_ROOT / "blackboard.jsonl"
-
-# The consolidator's status file (best public of the submission log) + its cycle
-# interval. The consolidator claims submission shards and appends them to the log.
-CONSOLIDATOR_STATUS_FILE = CAMPAIGN_ROOT / "consolidator_status.json"
-CONSOLIDATE_INTERVAL_S = float(os.getenv("JED_CONSOLIDATE_INTERVAL_S", "15"))
 
 # Tool-hop ceiling for the submission budget check — the binding T4 resource (replay
 # work ∝ tool hops), DETERMINISTIC and identical on green and T4 (unlike measured
@@ -111,10 +90,5 @@ INTROSPECT_WORST_N = int(os.getenv("JED_INTROSPECT_WORST_N", "3"))
 
 def ensure_dirs() -> None:
     """Create the runtime directories the submission pipeline writes to."""
-    for path in (
-        BUILD_NEXT_DIR,
-        NOTES_DIR,
-        CAMPAIGN_ROOT / "logs",
-        SUBMISSION_SHARDS_DIR,
-    ):
+    for path in (BUILD_NEXT_DIR, CAMPAIGN_ROOT / "logs"):
         path.mkdir(parents=True, exist_ok=True)

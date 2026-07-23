@@ -4,8 +4,8 @@ Non-secret proposer config — backend kind, model, and endpoint — lives here 
 is selected by name. Only the API token comes from the environment, looked up by each
 provider's ``key_env`` at call time. So switching providers is a name change (no sprawl
 of ``PROPOSER_API_BASE``/``_MODEL`` env vars), and secrets never live in code or config
-files. ``jed-optimize --proposer <name>`` and the live ``proposer.json`` both use these
-names; see :func:`optimize_prompts.current_provider`.
+files. ``config.TEAM_PROPOSERS`` names the lanes the async team runs, one worker per
+usable entry (see :func:`optimize_prompts.optimize_team`).
 """
 
 import os

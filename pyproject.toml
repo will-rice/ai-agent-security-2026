@@ -19,9 +19,6 @@ dependencies = [
   "wandb>=0.18.0",
 ]
 
-[project.scripts]
-jed-optimize = "jed_attack.campaign.launch:main"
-
 [project.optional-dependencies]
 gpu = ["llama-cpp-python>=0.3.0"]
 

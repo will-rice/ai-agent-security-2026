@@ -1,11 +1,12 @@
 """Isolated ``attack.py`` template + pool renderer for the shipped submission.
 
 The submission returns a pre-scored candidate pool directly, so it needs no live search.
-:func:`build` wraps literal messages (e.g. the global-best :mod:`submission_log` record)
-into that pool and renders it into ``attack.py`` via :data:`_TEMPLATE` and
-:func:`_render_pool`. The emitted attack.py imports only ``aicomp_sdk`` + stdlib, so
-it satisfies the submission-isolation contract with no inlining. It prepends a Kaggle
-sys.path preamble (no-op off-Kaggle), so ``build_next`` is directly shippable.
+:func:`build` wraps literal messages (the global-best :class:`~jed_attack.campaign.
+blackboard.Record`'s messages) into that pool and renders it into ``attack.py`` via
+:data:`_TEMPLATE` and :func:`_render_pool`. The emitted attack.py imports only
+``aicomp_sdk`` + stdlib, so it satisfies the submission-isolation contract with no
+inlining. It prepends a Kaggle sys.path preamble (no-op off-Kaggle), so ``build_next``
+is directly shippable.
 """
 
 import json
@@ -96,8 +97,8 @@ def build(messages: list[str], out_dir: Path) -> Path:
     carries no duplicated template.
 
     Args:
-        messages: The global-best submission's messages (typically
-            ``submission_log.best(...).messages``).
+        messages: The global-best submission's messages (typically the
+            blackboard's ``best().messages``).
         out_dir: Output directory for the built submission (typically
             ``config.BUILD_NEXT_DIR``).
 

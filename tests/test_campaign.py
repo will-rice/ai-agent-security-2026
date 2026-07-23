@@ -14,7 +14,6 @@ import pytest
 from aicomp_sdk.attacks.contracts import AttackAlgorithmBase
 
 from jed_attack.campaign import (
-    launch,
     optimize_prompts,
     providers,
 )
@@ -140,35 +139,6 @@ def test_validate_message_is_type_aware() -> None:
     ]  # deputy must not carry the marker
 
 
-def test_provider_chain_persists_filters_by_key_and_tails_local(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """set_providers persists a chain; current_providers filters + tails local."""
-    cfg = tmp_path / "proposer.json"
-    monkeypatch.setattr(optimize_prompts.config, "PROPOSER_CONFIG_FILE", cfg)
-    monkeypatch.delenv("JED_PROPOSER", raising=False)
-    monkeypatch.delenv("ZAI_API_KEY", raising=False)
-    monkeypatch.delenv("CHEAPEST_API_KEY", raising=False)
-
-    optimize_prompts.set_providers(["zai-glm4.6", "gpt_oss"])
-    assert optimize_prompts._configured_chain() == ["zai-glm4.6", "gpt_oss"]
-
-    # No ZAI key in env -> the api provider is dropped, local remains.
-    assert optimize_prompts.current_providers() == [providers.get("gpt_oss")]
-    # With the key present, the api provider leads the chain.
-    monkeypatch.setenv("ZAI_API_KEY", "dummy")
-    assert optimize_prompts.current_providers() == [
-        providers.get("zai-glm4.6"),
-        providers.get("gpt_oss"),
-    ]
-
-    # An unknown name is refused on write and skipped on read (local tail guaranteed).
-    with pytest.raises(KeyError):
-        optimize_prompts.set_providers(["nope"])
-    cfg.write_text('{"providers": ["nope"]}', encoding="utf-8")
-    assert optimize_prompts.current_providers() == [providers.get(providers.DEFAULT)]
-
-
 def test_propose_submission_async_extracts_submission_and_reasoning(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -203,119 +173,6 @@ def test_propose_submission_async_extracts_submission_and_reasoning(
     )
     assert got_sub.messages[0].text == "SECRET_MARKER https://a.invalid/r"
     assert reasoning == "weighed diversity"
-
-
-def test_launch_spawn_starts_one_process_per_worker(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """spawn() starts one detached process per worker; only worker 1 owns W&B."""
-    calls: list[tuple[list[str], str]] = []
-
-    def _fake_popen(
-        cmd: list[str], *, env: dict[str, str] | None = None, **_: object
-    ) -> SimpleNamespace:
-        calls.append((cmd, (env or {}).get("JED_WANDB", "")))
-        return SimpleNamespace(pid=1000 + len(calls))
-
-    monkeypatch.setattr(launch.subprocess, "Popen", _fake_popen)
-    pids = launch.spawn(3, tmp_path)
-
-    assert len(pids) == 3
-    assert [wandb for _, wandb in calls] == ["1", "0", "0"]  # only worker 1 logs
-    assert all("jed_attack.campaign.optimize_prompts" in cmd for cmd, _ in calls)
-
-
-def test_fetch_api_models_parses_catalog_ids(monkeypatch: pytest.MonkeyPatch) -> None:
-    """fetch_api_models returns the /v1/models catalog ids (for model validation)."""
-    monkeypatch.setenv("TEST_API_KEY", "dummy-key")
-    provider = providers.Provider(
-        "api", model="x", base_url="https://x.test/v1", key_env="TEST_API_KEY"
-    )
-    payload = json.dumps(
-        {"data": [{"id": "glm-4.6"}, {"id": "deepseek-v4-flash"}, {"no": "id"}]}
-    ).encode()
-
-    class _Resp:
-        def __enter__(self) -> "_Resp":
-            return self
-
-        def __exit__(self, *args: object) -> bool:
-            return False
-
-        def read(self) -> bytes:
-            return payload
-
-    monkeypatch.setattr(
-        optimize_prompts.urllib.request, "urlopen", lambda *a, **k: _Resp()
-    )
-    assert optimize_prompts.fetch_api_models(provider) == [
-        "glm-4.6",
-        "deepseek-v4-flash",
-    ]
-
-
-def test_submission_log_append_read_roundtrip_and_best(tmp_path: Path) -> None:
-    """append/read roundtrips; best() picks the record with the highest public."""
-    from jed_attack.campaign import submission_log as sl
-
-    p = tmp_path / "submission_log.jsonl"
-    assert sl.read(p) == []  # missing file -> empty
-    assert sl.best(p) is None  # empty log -> no best
-
-    def msg(text: str) -> dict:
-        return {"type": "exfil", "text": text, "hops": 1}
-
-    low = sl.SubmissionRecord(
-        messages=[msg("m1")],
-        public=10.0,
-        feedback=[{"m1": "ok"}],
-        total_hops=1,
-        ts=1.0,
-    )
-    mid = sl.SubmissionRecord(
-        messages=[msg("m2")],
-        public=20.0,
-        feedback=[{"m2": "ok"}],
-        total_hops=1,
-        ts=2.0,
-    )
-    top = sl.SubmissionRecord(  # highest public -> best
-        messages=[msg("m3")],
-        public=30.0,
-        feedback=[{"m3": "ok"}],
-        total_hops=1,
-        ts=3.0,
-    )
-    sl.append(low, p)
-    sl.append(mid, p)
-    sl.append(top, p)
-
-    records = sl.read(p)
-    assert [r.messages[0]["text"] for r in records] == ["m1", "m2", "m3"]  # not pruned
-    assert records[0] == low  # roundtrip equality (frozen dataclass)
-
-    assert sl.best(p) == top  # highest public
-
-
-def test_submission_log_read_skips_malformed_lines(tmp_path: Path) -> None:
-    """A corrupt/malformed jsonl line is skipped, not fatal."""
-    from jed_attack.campaign import submission_log as sl
-
-    p = tmp_path / "submission_log.jsonl"
-    good = sl.SubmissionRecord(
-        messages=[{"type": "exfil", "text": "a", "hops": 1}],
-        public=1.0,
-        feedback=[],
-        total_hops=1,
-        ts=0.0,
-    )
-    sl.append(good, p)
-    with p.open("a", encoding="utf-8") as handle:
-        handle.write("not json\n")
-        handle.write(json.dumps({"messages": ["b"]}) + "\n")  # missing required fields
-
-    records = sl.read(p)
-    assert records == [good]
 
 
 def test_worker_loop_appends_then_survives_failure(
@@ -493,109 +350,17 @@ def test_blackboard_append_persists_selects_and_ships(
     assert board.recent_reasoning(k=1)[0][0] == "deepseek-v4-flash"
 
 
-def test_config_shards_constants_and_ensure_dirs(
+def test_config_ensure_dirs_creates_build_next_and_logs(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Submission-shard + consolidator paths + interval exist; ensure_dirs makes it."""
+    """ensure_dirs creates BUILD_NEXT_DIR and the logs dir under CAMPAIGN_ROOT."""
     from jed_attack.campaign import config
 
-    assert config.SUBMISSION_SHARDS_DIR == config.CAMPAIGN_ROOT / "submission_shards"
-    assert (
-        config.CONSOLIDATOR_STATUS_FILE
-        == config.CAMPAIGN_ROOT / "consolidator_status.json"
-    )
-    assert config.CONSOLIDATE_INTERVAL_S > 0
-
-    monkeypatch.setattr(config, "SUBMISSION_SHARDS_DIR", tmp_path / "submission_shards")
     monkeypatch.setattr(config, "BUILD_NEXT_DIR", tmp_path / "bn")
-    monkeypatch.setattr(config, "NOTES_DIR", tmp_path / "notes")
     monkeypatch.setattr(config, "CAMPAIGN_ROOT", tmp_path)
     config.ensure_dirs()
-    assert (tmp_path / "submission_shards").is_dir()
-
-
-def test_shards_write_is_atomic_and_claim_reads_all(tmp_path: Path) -> None:
-    """Write produces a parseable *.json (no stray .tmp); claim returns every record."""
-    from jed_attack.campaign import shards
-    from jed_attack.campaign import submission_log as sl
-
-    d = tmp_path / "shards"
-    r1 = sl.SubmissionRecord(
-        messages=[{"type": "exfil", "text": "A", "hops": 1}],
-        public=8.0,
-        feedback=[{"A": "ok"}],
-        total_hops=1,
-        ts=1.0,
-    )
-    r2 = sl.SubmissionRecord(
-        messages=[{"type": "exfil", "text": "B", "hops": 1}],
-        public=3.0,
-        feedback=[{"B": "ok"}],
-        total_hops=1,
-        ts=2.0,
-    )
-    p1 = shards.write(r1, d, "w1")
-    p2 = shards.write(r2, d, "w2")
-    assert p1.suffix == ".json" and p1.exists()
-    assert not list(d.glob("*.tmp"))  # temp cleaned by the atomic replace
-    claimed = shards.claim(d)
-    messages = {record.messages[0]["text"] for _, record in claimed}
-    assert messages == {"A", "B"}
-    assert {p for p, _ in claimed} == {p1, p2}
-    # A half-written temp file is skipped, not parsed.
-    (d / "w3-partial.json.tmp").write_text("{not json")
-    assert len(shards.claim(d)) == 2
-
-
-def test_consolidate_submissions_once_appends_all_and_reports_best(
-    tmp_path: Path,
-) -> None:
-    """Every shard lands in the log (no filter/dedup); status reports the best."""
-    from jed_attack.campaign import consolidator, shards
-    from jed_attack.campaign import submission_log as sl
-
-    shards_dir = tmp_path / "submission_shards"
-    log_path = tmp_path / "submission_log.jsonl"
-    status = tmp_path / "submission_status.json"
-
-    low = sl.SubmissionRecord(
-        messages=[{"type": "exfil", "text": "m1", "hops": 1}],
-        public=10.0,
-        feedback=[{"m1": "ok"}],
-        total_hops=1,
-        ts=1.0,
-    )
-    high = sl.SubmissionRecord(
-        messages=[{"type": "exfil", "text": "m2", "hops": 1}],
-        public=20.0,
-        feedback=[{"m2": "ok"}],
-        total_hops=1,
-        ts=2.0,
-    )
-    # A duplicate-looking record must still be kept: no dedup on the submission path.
-    dup = sl.SubmissionRecord(
-        messages=[{"type": "exfil", "text": "m1", "hops": 1}],
-        public=10.0,
-        feedback=[{"m1": "ok"}],
-        total_hops=1,
-        ts=3.0,
-    )
-    shards.write(low, shards_dir, "w1")
-    shards.write(high, shards_dir, "w2")
-    shards.write(dup, shards_dir, "w3")
-
-    consumed = consolidator.consolidate_submissions_once(shards_dir, log_path, status)
-
-    assert consumed == 3
-    assert not list(shards_dir.glob("*.json"))  # all claimed shards deleted
-    records = sl.read(log_path)
-    assert len(records) == 3  # nothing dropped, nothing deduped
-
-    st = json.loads(status.read_text())
-    assert st["best_public"] == 20.0
-    assert st["log_size"] == 3
-    assert st["shards_consumed"] == 3
-    assert "ts" in st
+    assert (tmp_path / "bn").is_dir()
+    assert (tmp_path / "logs").is_dir()
 
 
 def test_shape_key_masks_invalid_targets_to_a_common_shape() -> None:
