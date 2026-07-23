@@ -43,33 +43,28 @@ from aicomp_sdk.core.env.api import AttackEnvProtocol
 _POOL: tuple[tuple[str, ...], ...] = (
 {pool}
 )
-_MAX_CANDIDATES = {max_candidates}
 
 
 class AttackAlgorithm(AttackAlgorithmBase):
-    """Return the pre-scored candidate pool, repeated to fill the replay budget."""
+    """Return the authored attack candidates directly — one per message."""
 
     def run(
         self, env: AttackEnvProtocol, config: AttackRunConfig
     ) -> list[AttackCandidate]:
-        """Return the pool, cycled best-first to fill the candidate budget.
+        """Return the authored candidate pool as-is (one candidate per message).
+
+        The pool is authored, not searched, and each message ships exactly once (no
+        repetition to fill a budget), so the candidate count equals the message count.
 
         Args:
-            env: The opaque attack environment (unused; the pool is pre-scored).
-            config: Runtime budget and caps (unused; count is capped internally).
+            env: The opaque attack environment (unused; messages are pre-authored).
+            config: Runtime budget and caps (unused).
 
         Returns:
-            The replayable attack candidates.
+            One :class:`AttackCandidate` per authored message chain.
         """
         del env, config
-        if not _POOL:
-            return []
-        out: list[AttackCandidate] = []
-        index = 0
-        while len(out) < _MAX_CANDIDATES:
-            out.append(AttackCandidate.from_messages(_POOL[index % len(_POOL)]))
-            index += 1
-        return out
+        return [AttackCandidate.from_messages(chain) for chain in _POOL]
 '''
 
 
@@ -109,7 +104,7 @@ def build(messages: list[str], out_dir: Path) -> Path:
         ((message,), "authored") for message in messages
     ]
     out_dir.mkdir(parents=True, exist_ok=True)
-    source = _TEMPLATE.format(pool=_render_pool(pairs), max_candidates=len(pairs))
+    source = _TEMPLATE.format(pool=_render_pool(pairs))
     attack_path = out_dir / "attack.py"
     attack_path.write_text(source, encoding="utf-8")
     status = {"candidate_count": len(pairs), "source": "authored"}
