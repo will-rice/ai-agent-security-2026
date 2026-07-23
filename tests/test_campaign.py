@@ -292,12 +292,14 @@ def _run_refine_worker(
     tmp_path: Path,
     subs: list["Submission"],
     publics: list[float],
-) -> "blackboard.Record | None":
-    """Drive one worker with a scripted propose/score sequence; return board.best().
+) -> "blackboard.Blackboard":
+    """Drive one worker with a scripted propose/score sequence; return the board.
 
     ``subs``/``publics`` are consumed one per successful propose/score. When ``subs``
-    is exhausted the next propose raises CancelledError, ending the loop after the
-    generation(s) the script covers.
+    is exhausted the next propose raises CancelledError, ending the loop. Tests assert
+    on ``board._records`` (the append count) -- the observable that distinguishes the
+    refine loop (one append per generation, refining within it) from the old
+    propose->score->append-every-generation behavior.
     """
     import asyncio
 
@@ -326,43 +328,55 @@ def _run_refine_worker(
     prov = providers.get("cheapest-kimi")
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(op.worker_loop(0, [prov], board, tmp_path / "out", timeout_s=1.0))
-    return board.best()
+    return board
 
 
 def test_refine_runs_to_cap_when_every_round_improves(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """4 improving refine rounds (the cap) -> records the peak; no mid-climb cancel."""
-    # round0=1.0, refine1..4 = 2..5 (all improve). 5th propose (gen1 round0) cancels.
+    """4 improving rounds (the cap) in ONE generation -> a single append at the peak.
+
+    Old loop fed these 5 scores appends 5 records across 5 generations; the refine
+    loop appends exactly one -- so len(_records) discriminates.
+    """
     subs = [_mk_sub(f"s{i}") for i in range(5)]
-    publics = [1.0, 2.0, 3.0, 4.0, 5.0]
-    best = _run_refine_worker(monkeypatch, tmp_path, subs, publics)
+    board = _run_refine_worker(monkeypatch, tmp_path, subs, [1.0, 2.0, 3.0, 4.0, 5.0])
+    assert len(board._records) == 1  # one generation refined 4x (old: 5 appends)
+    best = board.best()
     assert best is not None and best.public == 5.0
 
 
 def test_refine_keeps_peak_and_discards_regression(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Improve then regress -> records the peak; the regressing rewrite is discarded."""
-    # round0=3.0, refine1=5.0 (accept), refine2=4.0 (<=5.0 -> stop). Then gen1 cancels.
+    """Improve then regress in ONE generation -> one append at the peak; dropped."""
     subs = [_mk_sub(f"s{i}") for i in range(3)]
-    best = _run_refine_worker(monkeypatch, tmp_path, subs, [3.0, 5.0, 4.0])
-    assert best is not None and best.public == 5.0
+    board = _run_refine_worker(monkeypatch, tmp_path, subs, [3.0, 5.0, 4.0])
+    assert len(board._records) == 1  # one generation (old: 3 appends)
+    best = board.best()
+    assert best is not None and best.public == 5.0  # peak kept, 4.0 discarded
 
 
 def test_refine_stops_when_round0_already_best(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A refine round that doesn't beat round 0 -> records round 0, one refine try."""
+    """A refine round that doesn't beat round 0 -> stop; one append at round 0."""
     subs = [_mk_sub("s0"), _mk_sub("s1")]
-    best = _run_refine_worker(monkeypatch, tmp_path, subs, [5.0, 3.0])
+    board = _run_refine_worker(monkeypatch, tmp_path, subs, [5.0, 3.0])
+    assert len(board._records) == 1  # one generation (old: 2 appends)
+    best = board.best()
     assert best is not None and best.public == 5.0
 
 
-def test_refine_round_failure_keeps_best_so_far(
+def test_refine_round_failure_keeps_improved_best(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A refine round raising a non-cancel error -> break, still append round-0 best."""
+    """An improving refine then a raising one -> inner break, keep the improved best.
+
+    Round 0 = 3.0, refine 1 improves to 5.0, refine 2's proposer raises: the inner
+    handler breaks and the generation still appends 5.0. The old loop needs two
+    generations to reach 5.0 (two appends); the refine loop does it in one.
+    """
     import asyncio
 
     from jed_attack.campaign import blackboard as bb
@@ -370,20 +384,23 @@ def test_refine_round_failure_keeps_best_so_far(
     from jed_attack.campaign import optimize_prompts as op
 
     calls = {"n": 0}
+    subs = iter([_mk_sub("s0"), _mk_sub("s1")])
+    pubs = iter([3.0, 5.0])
 
     async def fake_propose(
         prompt: str, provider: object, timeout_s: float
     ) -> tuple["Submission", str]:
         calls["n"] += 1
-        if calls["n"] == 1:
-            return _mk_sub("s0"), "rz"  # round 0 succeeds
-        if calls["n"] == 2:
-            raise RuntimeError("refine blip")  # refine round 1 fails -> break
-        raise asyncio.CancelledError  # gen1 round 0 -> end the loop
+        if calls["n"] == 3:
+            raise RuntimeError("refine blip")  # refine round 2 fails -> inner break
+        try:
+            return next(subs), "rz"
+        except StopIteration:
+            raise asyncio.CancelledError from None  # gen1 round 0 -> end the loop
 
     monkeypatch.setattr(op, "propose_submission_async", fake_propose)
     monkeypatch.setattr(
-        op, "score_submission", lambda m, models=config.MODELS: _mk_score(3.0)
+        op, "score_submission", lambda m, models=config.MODELS: _mk_score(next(pubs))
     )
     monkeypatch.setattr(op, "_GENERATION_RETRY_S", 0.0)
 
@@ -391,21 +408,31 @@ def test_refine_round_failure_keeps_best_so_far(
     prov = providers.get("cheapest-kimi")
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(op.worker_loop(0, [prov], board, tmp_path / "out", timeout_s=1.0))
+    assert len(board._records) == 1  # one generation kept 5.0 (old: 2 appends)
     best = board.best()
-    assert best is not None and best.public == 3.0  # round-0 best still appended
-    assert calls["n"] == 3  # round0, failed refine (caught), gen1 cancel
+    assert best is not None and best.public == 5.0
+    assert (
+        calls["n"] == 4
+    )  # round0, refine1(improve), refine2(raise->break), gen1 cancel
 
 
 def test_refine_disabled_when_max_rounds_zero(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """REFINE_MAX_ROUNDS=0 -> no refine rounds; pure propose->score->record."""
+    """REFINE_MAX_ROUNDS=0 -> no refinement: each score lands in its own generation.
+
+    With refinement enabled these two scores would be one generation (round 0 + one
+    refine), so asserting TWO appends proves the flag actually disables the loop.
+    """
     from jed_attack.campaign import config
 
     monkeypatch.setattr(config, "REFINE_MAX_ROUNDS", 0)
-    # Only round-0 propose consumes a sub; the next propose (gen1) cancels.
-    best = _run_refine_worker(monkeypatch, tmp_path, [_mk_sub("s0")], [3.0])
-    assert best is not None and best.public == 3.0
+    board = _run_refine_worker(
+        monkeypatch, tmp_path, [_mk_sub("s0"), _mk_sub("s1")], [3.0, 5.0]
+    )
+    assert len(board._records) == 2  # two generations, no refinement (enabled: <2)
+    best = board.best()
+    assert best is not None and best.public == 5.0
 
 
 def test_optimize_team_raises_when_no_usable_lanes(

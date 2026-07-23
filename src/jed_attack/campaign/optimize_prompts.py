@@ -137,10 +137,15 @@ async def worker_loop(
     A lane owns a single API key and rotates through its models one generation at a
     time, so only one request per key is ever in flight — a shared-key concurrency cap
     (cheapestinference's per-key limit, confirmed empirically) can never be hit, while
-    every model still gets exercised. Reads the shared blackboard's global best + team
-    digest, authors an improved submission on the generation's model, scores it
-    off-thread, and appends the scored record (which reships ``attack.py`` on a new
-    public best). One generation's failure (proposer blip, refusal yielding no JSON,
+    every model still gets exercised. Each generation reads the shared blackboard's
+    global best + team digest, authors round 0 on the generation's model, scores it
+    off-thread, then hill-climbs: up to ``config.REFINE_MAX_ROUNDS`` further whole-
+    submission rewrites of its OWN draft against its own real per-message score,
+    re-scoring each round and keeping the best, stopping at the first round that
+    doesn't strictly improve (or on a refine round's own failure). Only the local best
+    across all rounds is appended once (which reships ``attack.py`` on a new public
+    best). A round's failure inside the climb is caught and the best-so-far is still
+    appended; a whole generation's failure (proposer blip, refusal yielding no JSON,
     score outage) is caught and backed off so the lane keeps running (and advances to
     the next model); a cancellation propagates so the team shuts down cleanly.
 
