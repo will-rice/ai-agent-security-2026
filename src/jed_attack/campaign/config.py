@@ -52,6 +52,11 @@ EVAL_HOPS = 8
 # Prompt-optimization orchestrator (optimize_prompts.py): its generation logfile.
 OPTIMIZE_LOG = CAMPAIGN_ROOT / "optimize_prompts.log"
 
+# The hot-reloadable proposer prompts (system + template), re-read every generation, so
+# editing the guidance takes effect on the next generation with NO worker restart (edit,
+# then sync_green.sh). Version-controlled next to the code, not runtime state.
+PROMPTS_FILE = Path(__file__).resolve().parent / "prompts.toml"
+
 # The team's shared memory (blackboard.py): an append-only JSONL record of every scored
 # submission (messages, score, feedback, the proposer's reasoning, model, worker). The
 # in-memory blackboard is rebuilt from it on start (warm restart).
