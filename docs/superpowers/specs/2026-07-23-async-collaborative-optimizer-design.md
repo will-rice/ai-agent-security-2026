@@ -3,10 +3,11 @@
 **Status:** approved design (2026-07-23), pending implementation plan.
 
 **Goal:** Replace the multi-process, filesystem-coordinated optimizer swarm with a single
-`asyncio` process that runs one worker per cheapestinference (CI) model, cooperating through
-a shared append-only JSONL blackboard, to (a) exercise all CI models at once, (b) test
-whether spreading proposer calls across distinct models dodges the CI per-key concurrency
-429, and (c) let every model build on the whole team's latest findings.
+`asyncio` process that runs one worker per proposer lane — five cheapestinference (CI)
+models sharing the CI key, plus z.ai's glm-4.6 on its own key — cooperating through a
+shared append-only JSONL blackboard, to (a) exercise all models at once, (b) test whether
+spreading proposer calls across distinct models dodges the CI per-key concurrency 429, and
+(c) let every model build on the whole team's latest findings.
 
 **Supersedes:** the per-worker shard files, `consolidator.py`, and `assemble_daemon.py`
 (all existed only to coordinate separate OS processes).
@@ -36,7 +37,8 @@ whether spreading proposer calls across distinct models dodges the CI per-key co
 
 ## Architecture
 
-One `asyncio` event loop, five long-lived worker coroutines, one shared blackboard object.
+One `asyncio` event loop, six long-lived worker coroutines (5 CI + 1 z.ai), one shared
+blackboard object.
 
 ```
                        ┌─────────────────── Blackboard (in-memory + blackboard.jsonl) ──────────────────┐
@@ -44,7 +46,8 @@ One `asyncio` event loop, five long-lived worker coroutines, one shared blackboa
                        └───────▲───────────────────────────────────────────────────────────────┬───────┘
         read digest each gen   │                                                                 │ append (asyncio.Lock)
                     ┌──────────┴──────────┬──────────┬──────────┬──────────┐                     │  → persist + (if new best) write attack.py
-   worker[kimi]  worker[deepseek]  worker[glm5.2]  worker[minimax]  worker[mimo]                 │
+ker[kimi] w[deepseek] w[glm5.2] w[minimax] w[mimo] | w[zai-glm4.6]                               │
+   └──────── 5 CI lanes: shared CHEAPEST_API_KEY ────────┘   └ own ZAI_API_KEY ┘                  │
         │ AsyncOpenAI (its pinned model) → Submission + reasoning_content                        │
         │ asyncio.to_thread(score_submission)  → SubmissionScore                                 │
         └───────────────────────────── build record ────────────────────────────────────────────┘
@@ -121,19 +124,23 @@ await asyncio.gather(*(worker_loop(i, p, blackboard) for i, p in enumerate(provi
 ```
 
 `config.TEAM_PROPOSERS = ("cheapest-kimi", "cheapest-deepseek", "cheapest-glm5.2",
-"cheapest-minimax", "cheapest-mimo")`. Each worker is pinned to one model — all five run
-continuously and concurrently (that IS "rotate through all" in aggregate, and the clean
-per-model concurrency test).
+"cheapest-minimax", "cheapest-mimo", "zai-glm4.6")`. Each worker is pinned to one model —
+all six run continuously and concurrently (that IS "rotate through all" in aggregate, and
+the clean per-model concurrency test). The `zai-glm4.6` lane uses `ZAI_API_KEY` (separate
+key + endpoint), so it is orthogonal to the CI concurrency test and adds a proven-firing
+proposer (the current best=4.95 came from it) for free. A worker whose `key_env` is unset
+is skipped at startup, so the team degrades gracefully if a key is absent.
 
 ---
 
 ## The concurrency experiment
 
-Free-fire: no artificial cap on in-flight CI calls — all five different-model proposer calls
-can be outstanding at once. Every `429 Concurrency limit reached` is logged with its model.
-If none fire, the limit is per-model and the team stands. If they fire, it is per-key and we
-learn the fleet must serialize (a follow-up, out of scope here). The existing per-request
-backoff/retry remains the only throttle.
+Free-fire: no artificial cap on in-flight CI calls — all five CI different-model proposer
+calls can be outstanding at once. Every `429 Concurrency limit reached` is logged with its
+model. If none fire, the limit is per-model and the team stands. If they fire, it is per-key
+and we learn the CI lanes must serialize (a follow-up, out of scope here). The existing
+per-request backoff/retry remains the only throttle. The `zai-glm4.6` lane is on a separate
+key, so it never contends here and keeps producing regardless of the CI verdict.
 
 ---
 
