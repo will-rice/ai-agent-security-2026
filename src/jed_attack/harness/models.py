@@ -89,6 +89,7 @@ def gguf_agent_factory(
     n_ctx: int = 8192,
     n_gpu_layers: int = -1,
     max_new_tokens: int = 1024,
+    main_gpu: int | None = None,
 ) -> Callable[[], AgentProtocol]:
     """Return a zero-arg factory building GGUF-backed agents over ONE shared backend.
 
@@ -107,6 +108,9 @@ def gguf_agent_factory(
         n_ctx: llama.cpp context window (Kaggle uses 8192).
         n_gpu_layers: GPU offload layer count (-1 = all).
         max_new_tokens: Generation cap (Kaggle uses 1024).
+        main_gpu: If set, loads the whole model onto this GPU (single-process
+            placement, e.g. gpt_oss on GPU 0 and gemma on GPU 1 in one process).
+            ``None`` keeps the SDK's default placement.
 
     Returns:
         A zero-arg callable returning a fresh SDK agent bound to the shared backend.
@@ -142,12 +146,19 @@ def gguf_agent_factory(
         max_new_tokens=max_new_tokens,
     )
     # Load the GGUF once; share this backend across all agent instances.
+    # Whole model on a specific GPU (split_mode 0 == LLAMA_SPLIT_MODE_NONE) when
+    # main_gpu is set; default (None) keeps the SDK's placement. Uses the integer
+    # directly so this module stays importable without llama-cpp-python installed.
+    llama_kwargs = (
+        {"main_gpu": main_gpu, "split_mode": 0} if main_gpu is not None else None
+    )
     backend = LlamaCppChatTemplateBackend.from_model_path(
         model_path=str(model_path),
         config=config,
         n_ctx=n_ctx,
         n_gpu_layers=n_gpu_layers,
         supports_tools=True,
+        llama_kwargs=llama_kwargs,
     )
 
     def factory() -> AgentProtocol:

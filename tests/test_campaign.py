@@ -907,3 +907,32 @@ def test_score_submission_live() -> None:
         ]
     )
     assert out.public >= 0
+
+
+def test_gguf_agent_factory_places_model_on_main_gpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """main_gpu forwards {main_gpu, split_mode=0} as llama_kwargs to from_model_path."""
+    from aicomp_sdk.agents.hf_chat_template.backends import llama_cpp as be
+
+    from jed_attack.harness import models
+
+    captured: dict[str, object] = {}
+
+    def fake_from_model_path(
+        *,
+        model_path: str,
+        config: object,
+        n_ctx: int,
+        n_gpu_layers: int,
+        supports_tools: bool,
+        llama_kwargs: dict[str, object] | None = None,
+    ) -> object:
+        captured["llama_kwargs"] = llama_kwargs
+        return object()  # a dummy backend; the agent is never invoked here
+
+    monkeypatch.setattr(
+        be.LlamaCppChatTemplateBackend, "from_model_path", fake_from_model_path
+    )
+    models.gguf_agent_factory("gpt_oss", Path("/x.gguf"), main_gpu=1)
+    assert captured["llama_kwargs"] == {"main_gpu": 1, "split_mode": 0}
