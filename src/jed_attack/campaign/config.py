@@ -73,10 +73,10 @@ BLACKBOARD_LOG = CAMPAIGN_ROOT / "blackboard.jsonl"
 # Static T4 caps (plain module constants like EVAL_HOPS; NOT hot-reloadable -- changing
 # one is a worker restart). MAX_SHIP_MESSAGES is a real Field(max_length) on Submission,
 # so it is the JSON schema's maxItems (what the proposer sees) AND the validation rule
-# from one source -- no drift. HOP_BUDGET is a summed-hop constraint with no schema form,
+# from one source -- no drift. HOP_BUDGET is a summed-hop cap with no schema form,
 # enforced in a model_validator.
 #   MAX_SHIP_MESSAGES (25): message-count STOPGAP. The real T4 limit is a 9000s/model
-#     WALL-CLOCK replay budget, NOT a count/hop count: gpt_oss spends ~333s per candidate
+#     WALL-CLOCK replay budget, NOT count/hops: gpt_oss spends ~333s per candidate
 #     (even ones that fire nothing), so a 54-candidate submission timed out at candidate
 #     27 -> INVALID_SUBMISSION (0 on the LB; verified 2026-07-23). 25 keeps replay under
 #     budget for slow messages until the scorer models replay time directly. See memory

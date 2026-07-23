@@ -104,13 +104,13 @@ def test_hops_count_the_union_of_all_invalid_targets() -> None:
 
 
 def test_count_cap_makes_hop_budget_unreachable_under_stopgap() -> None:
-    """Stopgap cap=25: the summed-hop budget is unreachable (MAX_SHIP_MESSAGES * EVAL_HOPS
-    <= HOP_BUDGET), so the message-count cap is the sole binding submission-level limit.
+    """The count cap is the sole binding submission-level limit at the stopgap.
 
-    The real T4 constraint is wall-clock replay time (~9000s/model), for which the count
-    cap is a proxy; hops are not binding. This tripwire fires if the cap is later raised
-    so the hop budget becomes reachable again -- at which point the summed-hop validator
-    (and a rejection test for it) should be revisited alongside a real replay-time model.
+    At cap=25 the summed-hop budget is unreachable (MAX_SHIP_MESSAGES * EVAL_HOPS <=
+    HOP_BUDGET); hops are not binding, the real T4 limit is wall-clock replay time
+    (~9000s/model), for which the count cap is a proxy. This tripwire fires if the cap
+    is later raised so the hop budget becomes reachable -- then the summed-hop validator
+    (and a rejection test) should return alongside a real replay-time model.
     """
     from jed_attack.campaign import config
 
