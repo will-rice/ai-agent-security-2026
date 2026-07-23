@@ -89,21 +89,26 @@ class Message(BaseModel):
 class Submission(BaseModel):
     """The model's whole submission: the typed attack messages that ship as-is.
 
-    The model-validator bounds the summed per-message hops to the T4 tool-hop budget, so
-    an over-budget submission cannot be constructed (superseding the old runtime guard).
+    The model-validator bounds the message COUNT and the summed per-message hops to the
+    (hot-reloadable) T4 caps, so an over-cap submission cannot be built. Both caps are
+    read from ``config`` at VALIDATION time (not as a ``Field`` constraint) so a
+    tunables.toml change takes effect with no worker restart.
     """
 
     messages: list[Message] = Field(
         min_length=1,
-        max_length=config.MAX_SHIP_MESSAGES,
         description=(
-            f"The complete attack submission (1-{config.MAX_SHIP_MESSAGES} messages)."
+            "The complete attack submission (>= 1 message; count and total-hop caps "
+            "are enforced live from config)."
         ),
     )
 
     @model_validator(mode="after")
-    def _fits_hop_budget(self) -> "Submission":
-        """Reject a submission whose summed hops exceed the T4 tool-hop budget."""
+    def _within_caps(self) -> "Submission":
+        """Reject a submission over the message-count cap or the T4 tool-hop budget."""
+        cap = config.MAX_SHIP_MESSAGES
+        if len(self.messages) > cap:
+            raise ValueError(f"too many messages ({len(self.messages)} > cap {cap})")
         budget = int(config.HOP_CEILING * config.BUDGET_FILL_FRACTION)
         total = sum(message.hops for message in self.messages)
         if total > budget:
