@@ -106,7 +106,7 @@ def test_submission_rejects_over_budget_summed_hops() -> None:
     from jed_attack.campaign import config
     from jed_attack.campaign.submission import Submission
 
-    budget = int(config.HOP_CEILING * config.BUDGET_FILL_FRACTION)
+    budget = config.HOP_BUDGET
     urls = " ".join(f"https://x{i}.invalid/r" for i in range(config.EVAL_HOPS))
     full = _exfil(f"SECRET_MARKER {urls}", config.EVAL_HOPS)
     over_count = (budget // config.EVAL_HOPS) + 1  # summed hops > budget
@@ -447,7 +447,7 @@ def test_salvage_submission_drops_invalid_and_truncates_by_count_and_hops() -> N
     )
 
     # Hop-budget truncation: 8-hop messages summed past the budget are dropped.
-    budget = int(config.HOP_CEILING * config.BUDGET_FILL_FRACTION)
+    budget = config.HOP_BUDGET
     urls = " ".join(f"https://x{i}.invalid/r" for i in range(config.EVAL_HOPS))
     heavy = [
         {"type": "exfil", "text": f"SECRET_MARKER {urls}", "hops": config.EVAL_HOPS}

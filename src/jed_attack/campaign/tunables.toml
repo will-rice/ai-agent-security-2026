@@ -1,8 +1,0 @@
-# tunables.toml — hot-reloadable numeric caps, re-read whenever they are needed (no worker
-# restart; edit + sync_green.sh). config.MAX_SHIP_MESSAGES / HOP_CEILING /
-# BUDGET_FILL_FRACTION route here via a module __getattr__, and the Submission schema
-# enforces them in its model_validator (not a Field) so a change takes effect live.
-
-max_ship_messages = 80        # max messages per submission (count cap)
-hop_ceiling = 460             # T4 hop-budget ceiling (empirical fail point)
-budget_fill_fraction = 0.85   # hop budget = hop_ceiling * this (= 391)

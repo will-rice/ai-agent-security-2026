@@ -296,9 +296,9 @@ def submission_prompt(
     has every required arg present, and the victim never stalls asking for a
     subject/body). States the ship rules the author must respect: the typed ``Message``
     schema (type/text/hops), the ``config.MAX_SHIP_MESSAGES`` cap, the per-message hop
-    cap and the total T4 tool-hop budget
-    (``config.HOP_CEILING * config.BUDGET_FILL_FRACTION``), and that repetition scores
-    (no dedup) but a repeated exfil message dies under the strict private guardrails, so
+    cap and the total T4 tool-hop budget (``config.HOP_BUDGET``), and that repetition
+    scores (no dedup) but a repeated exfil message dies under the strict private
+    guardrails, so
     diversity is what lifts the private board. Optionally appends a team digest of
     teammates' best-scoring messages and cross-model reasoning when ``top_messages`` and
     ``reasoning`` are provided.
@@ -318,17 +318,16 @@ def submission_prompt(
     Returns:
         The full proposer prompt string.
     """
-    hop_budget = int(config.HOP_CEILING * config.BUDGET_FILL_FRACTION)
     template = _load_prompts()["template"]
     # Static tokens first, then the DATA blocks last so their content is never rescanned
     # for tokens (an incumbent message could, in principle, contain a `{{...}}`).
     return (
         template.replace("{{MAX_MESSAGES}}", str(config.MAX_SHIP_MESSAGES))
-        .replace("{{HOP_BUDGET}}", str(hop_budget))
+        .replace("{{HOP_BUDGET}}", str(config.HOP_BUDGET))
         .replace("{{SCHEMA}}", _SUBMISSION_SCHEMA_JSON)
         .replace(
             "{{INCUMBENT}}",
-            _render_incumbent(incumbent, feedback, introspection, hop_budget),
+            _render_incumbent(incumbent, feedback, introspection, config.HOP_BUDGET),
         )
         .replace("{{TEAM}}", _render_team(top_messages, reasoning))
     )
@@ -509,7 +508,7 @@ def _salvage_submission(content: str) -> Submission:
     Returns:
         A schema-valid :class:`~jed_attack.campaign.submission.Submission`.
     """
-    budget = int(config.HOP_CEILING * config.BUDGET_FILL_FRACTION)
+    budget = config.HOP_BUDGET
     kept: list[Message] = []
     used_hops = 0
     dropped = 0
