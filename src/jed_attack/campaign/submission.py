@@ -89,25 +89,36 @@ class Message(BaseModel):
 class Submission(BaseModel):
     """The model's whole submission: the typed attack messages that ship as-is.
 
-    The model-validator bounds the summed per-message hops to the T4 tool-hop budget, so
-    an over-budget submission cannot be constructed (superseding the old runtime guard).
+    The message-count cap is a ``Field(max_length=config.MAX_SHIP_MESSAGES)``, so it
+    is both the JSON schema's ``maxItems`` (what the proposer is shown) and the
+    validation rule from one source. The summed-hop T4 budget has no schema form and is
+    enforced in the ``_within_hop_budget`` validator. Both are static calibration
+    constants; an over-cap submission cannot be constructed.
     """
 
     messages: list[Message] = Field(
         min_length=1,
         max_length=config.MAX_SHIP_MESSAGES,
         description=(
-            f"The complete attack submission (1-{config.MAX_SHIP_MESSAGES} messages)."
+            "The complete attack submission: 1..MAX_SHIP_MESSAGES typed messages. The "
+            "count cap is this Field's schema maxItems; the summed-hop T4 budget is "
+            "enforced by the validator below."
         ),
     )
 
     @model_validator(mode="after")
-    def _fits_hop_budget(self) -> "Submission":
-        """Reject a submission whose summed hops exceed the T4 tool-hop budget."""
-        budget = int(config.HOP_CEILING * config.BUDGET_FILL_FRACTION)
+    def _within_hop_budget(self) -> "Submission":
+        """Reject a submission whose summed per-message hops exceed the T4 budget.
+
+        The message-COUNT cap is the ``Field(max_length)`` above, so it is the schema's
+        ``maxItems`` AND the validation rule from one source. The hop budget is a sum
+        across messages, which has no JSON-schema form, so it is enforced here.
+        """
         total = sum(message.hops for message in self.messages)
-        if total > budget:
-            raise ValueError(f"total hops ({total}) exceed the T4 budget ({budget})")
+        if total > config.HOP_BUDGET:
+            raise ValueError(
+                f"total hops ({total}) exceed the T4 budget ({config.HOP_BUDGET})"
+            )
         return self
 
 

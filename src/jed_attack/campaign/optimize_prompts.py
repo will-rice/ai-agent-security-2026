@@ -137,10 +137,15 @@ async def worker_loop(
     A lane owns a single API key and rotates through its models one generation at a
     time, so only one request per key is ever in flight — a shared-key concurrency cap
     (cheapestinference's per-key limit, confirmed empirically) can never be hit, while
-    every model still gets exercised. Reads the shared blackboard's global best + team
-    digest, authors an improved submission on the generation's model, scores it
-    off-thread, and appends the scored record (which reships ``attack.py`` on a new
-    public best). One generation's failure (proposer blip, refusal yielding no JSON,
+    every model still gets exercised. Each generation reads the shared blackboard's
+    global best + team digest, authors round 0 on the generation's model, scores it
+    off-thread, then hill-climbs: up to ``config.REFINE_MAX_ROUNDS`` further whole-
+    submission rewrites of its OWN draft against its own real per-message score,
+    re-scoring each round and keeping the best, stopping at the first round that
+    doesn't strictly improve (or on a refine round's own failure). Only the local best
+    across all rounds is appended once (which reships ``attack.py`` on a new public
+    best). A round's failure inside the climb is caught and the best-so-far is still
+    appended; a whole generation's failure (proposer blip, refusal yielding no JSON,
     score outage) is caught and backed off so the lane keeps running (and advances to
     the next model); a cancellation propagates so the team shuts down cleanly.
 
@@ -156,43 +161,84 @@ async def worker_loop(
     while True:
         provider = providers_cycle[gen % len(providers_cycle)]
         try:
+            team = {t: board.top_messages(t, k=_TEAM_TOP_K) for t in MessageType}
+            reasoning_digest = board.recent_reasoning(k=_TEAM_REASONING_K)
+            model = provider.model or provider.kind
+
+            # Round 0: propose from the GLOBAL incumbent, score, adopt as local best.
             incumbent = board.best()
             prompt = submission_prompt(
                 incumbent,
                 incumbent.feedback if incumbent else [],
                 {},
-                top_messages={
-                    t: board.top_messages(t, k=_TEAM_TOP_K) for t in MessageType
-                },
-                reasoning=board.recent_reasoning(k=_TEAM_REASONING_K),
+                top_messages=team,
+                reasoning=reasoning_digest,
             )
             submission, reasoning = await propose_submission_async(
                 prompt, provider, timeout_s
             )
             score = await asyncio.to_thread(score_submission, submission.messages)
-            record = make_record(
-                submission,
-                score,
-                reasoning,
-                provider.model or provider.kind,
-                worker_id,
-            )
-            await board.append(record, out_dir)
+            local_best = make_record(submission, score, reasoning, model, worker_id)
+            local_best_score = score
+            round0_public = score.public
+
+            # Rounds 1..REFINE_MAX_ROUNDS: hill-climb the local draft on its own real
+            # score. Whole-submission rewrite via the same submission_prompt, with the
+            # draft as the incumbent; keep the best, stop at the first non-improving
+            # round. A round's proposer/score failure ends the climb with the best kept.
+            refine_rounds = 0
+            for _ in range(config.REFINE_MAX_ROUNDS):
+                try:
+                    prompt = submission_prompt(
+                        local_best,
+                        local_best.feedback,
+                        {},
+                        top_messages=team,
+                        reasoning=reasoning_digest,
+                    )
+                    refined, refined_reasoning = await propose_submission_async(
+                        prompt, provider, timeout_s
+                    )
+                    refined_score = await asyncio.to_thread(
+                        score_submission, refined.messages
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    _log.warning(
+                        "worker %d refine round failed; keeping best",
+                        worker_id,
+                        exc_info=True,
+                    )
+                    break
+                if refined_score.public <= local_best.public:
+                    break  # no improvement -> stop the climb
+                local_best = make_record(
+                    refined, refined_score, refined_reasoning, model, worker_id
+                )
+                local_best_score = refined_score
+                refine_rounds += 1
+
+            await board.append(local_best, out_dir)
             best = board.best()
             assert best is not None  # just appended -> the board is non-empty
             _log.info(
-                "worker %d (%s): public=%g best=%g",
+                "worker %d (%s): public=%g (+%g over %d refine rounds) best=%g",
                 worker_id,
                 provider.model,
-                score.public,
+                local_best.public,
+                local_best.public - round0_public,
+                refine_rounds,
                 best.public,
             )
             _log_wandb(  # one shared run; tag by lane so models are comparable
                 run,
                 {
-                    "public": score.public,
+                    "public": local_best.public,
                     "best_public": best.public,
-                    "total_hops": float(score.total_hops),
+                    "total_hops": float(local_best_score.total_hops),
+                    "refine_rounds": refine_rounds,
+                    "refine_gain": local_best.public - round0_public,
                     "model": provider.model,
                     "worker": worker_id,
                 },
@@ -296,9 +342,9 @@ def submission_prompt(
     has every required arg present, and the victim never stalls asking for a
     subject/body). States the ship rules the author must respect: the typed ``Message``
     schema (type/text/hops), the ``config.MAX_SHIP_MESSAGES`` cap, the per-message hop
-    cap and the total T4 tool-hop budget
-    (``config.HOP_CEILING * config.BUDGET_FILL_FRACTION``), and that repetition scores
-    (no dedup) but a repeated exfil message dies under the strict private guardrails, so
+    cap and the total T4 tool-hop budget (``config.HOP_BUDGET``), and that repetition
+    scores (no dedup) but a repeated exfil message dies under the strict private
+    guardrails, so
     diversity is what lifts the private board. Optionally appends a team digest of
     teammates' best-scoring messages and cross-model reasoning when ``top_messages`` and
     ``reasoning`` are provided.
@@ -318,17 +364,16 @@ def submission_prompt(
     Returns:
         The full proposer prompt string.
     """
-    hop_budget = int(config.HOP_CEILING * config.BUDGET_FILL_FRACTION)
     template = _load_prompts()["template"]
     # Static tokens first, then the DATA blocks last so their content is never rescanned
     # for tokens (an incumbent message could, in principle, contain a `{{...}}`).
     return (
         template.replace("{{MAX_MESSAGES}}", str(config.MAX_SHIP_MESSAGES))
-        .replace("{{HOP_BUDGET}}", str(hop_budget))
+        .replace("{{HOP_BUDGET}}", str(config.HOP_BUDGET))
         .replace("{{SCHEMA}}", _SUBMISSION_SCHEMA_JSON)
         .replace(
             "{{INCUMBENT}}",
-            _render_incumbent(incumbent, feedback, introspection, hop_budget),
+            _render_incumbent(incumbent, feedback, introspection, config.HOP_BUDGET),
         )
         .replace("{{TEAM}}", _render_team(top_messages, reasoning))
     )
@@ -509,7 +554,7 @@ def _salvage_submission(content: str) -> Submission:
     Returns:
         A schema-valid :class:`~jed_attack.campaign.submission.Submission`.
     """
-    budget = int(config.HOP_CEILING * config.BUDGET_FILL_FRACTION)
+    budget = config.HOP_BUDGET
     kept: list[Message] = []
     used_hops = 0
     dropped = 0

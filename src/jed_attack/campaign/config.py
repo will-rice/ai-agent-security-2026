@@ -49,6 +49,14 @@ TEAM_PROPOSERS: tuple[str, ...] = (
 # under-counted locally and wrongly gated out. Single-post scores are unchanged.
 EVAL_HOPS = 8
 
+# Adversarial refinement: max per-generation hill-climb rounds. After proposing and
+# scoring a draft, the lane re-authors the whole submission against its own real
+# per-message score + guardrail trace, re-scores, and repeats while the public score
+# strictly improves, up to this many rounds (=> at most REFINE_MAX_ROUNDS + 1 scorings
+# per generation). A static calibration knob (like EVAL_HOPS), not hot-reloadable.
+# Set to 0 to disable refinement entirely (propose -> score -> record).
+REFINE_MAX_ROUNDS = 4
+
 # Prompt-optimization orchestrator (optimize_prompts.py): its generation logfile.
 OPTIMIZE_LOG = CAMPAIGN_ROOT / "optimize_prompts.log"
 
@@ -62,26 +70,17 @@ PROMPTS_FILE = Path(__file__).resolve().parent / "prompts.toml"
 # in-memory blackboard is rebuilt from it on start (warm restart).
 BLACKBOARD_LOG = CAMPAIGN_ROOT / "blackboard.jsonl"
 
-# Tool-hop ceiling for the submission budget check — the binding T4 resource (replay
-# work ∝ tool hops), DETERMINISTIC and identical on green and T4 (unlike measured
-# wall-time, which fleet contention inflates). Calibrated to the empirical boundary:
-# 80×K5 = 400 hops PASSED (scored 34.315); 105×K5 = 525 and 230×K2 = 460 BLANKED. 460 is
-# the observed failure point; BUDGET_FILL_FRACTION keeps us safely under it.
-HOP_CEILING = int(os.getenv("JED_HOP_CEILING", "460"))
-
-# Pack to this fraction of the ceiling, leaving margin below the observed 460-hop fail
-# point (460 * 0.85 = 391 hops ≈ the proven 400-hop pool). Hops are green==T4, so this
-# margin is pure pass/fail safety, not a green-vs-T4 correction.
-BUDGET_FILL_FRACTION = 0.85
-
-# Hard cap on the number of messages in a submission — enforced structurally on the
-# model's `Submission` pydantic (see submission.py: Field(max_length=...)), so the model
-# can never author more than this. The empirical T4 boundary reads as a COUNT limit as
-# much as a hop one: 80 messages PASSED; 105 and 230 BLANKED. Each replayed candidate
-# pays a fixed per-candidate cost (fresh SandboxEnv reset + agent first-inference)
-# INDEPENDENT of its hops, so message count is a distinct binding resource from total
-# hops. This cap keeps us at the proven-safe 80-count regime; the hop half is T4-fit.
-MAX_SHIP_MESSAGES = int(os.getenv("JED_MAX_SHIP_MESSAGES", "80"))
+# Static T4 calibration caps. These are empirical limits of the scored T4 replay -- they
+# don't move once found, so they are plain module constants (like EVAL_HOPS), NOT
+# hot-reloadable: changing one is a worker restart. MAX_SHIP_MESSAGES is a real
+# Field(max_length) on Submission, so it is the JSON schema's maxItems (what the
+# proposer sees) AND the validation rule from one source -- no drift. HOP_BUDGET is a
+# summed-hop constraint with no schema form, enforced in a model_validator.
+#   MAX_SHIP_MESSAGES (80): message-count cap; 80 PASSED on T4, 105/230 BLANKED.
+#   HOP_BUDGET (391): total tool-hop budget = 85% of the observed 460-hop fail point
+#     (safety margin; 80x5 = 400 hops PASSED at 34.315, 460/525 BLANKED).
+MAX_SHIP_MESSAGES = 80
+HOP_BUDGET = 391
 
 # The competition's per-cell novelty bonus (raw += 2 * unique_cells). Each rendered copy
 # carries unique .invalid domains/addresses -> a distinct score cell, so a firing copy
