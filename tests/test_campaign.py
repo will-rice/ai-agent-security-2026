@@ -426,6 +426,22 @@ def test_submission_prompt_handles_cold_start_none_incumbent() -> None:
     assert "http.post(url, data)" in prompt
 
 
+def test_submission_prompt_embeds_team_digest() -> None:
+    """Team digest: top_messages and reasoning DATA blocks render in the prompt."""
+    from jed_attack.campaign.submission import MessageType
+
+    prompt = optimize_prompts.submission_prompt(
+        None,
+        [],
+        {},
+        top_messages={MessageType.DEPUTY: [("Ping u1@h.invalid", "kimi-k2.7", 4.0)]},
+        reasoning=[("glm-4.6", "spread deputies across hosts")],
+    )
+    assert "kimi-k2.7" in prompt  # message tagged with the model that found it
+    assert "Ping u1@h.invalid" in prompt
+    assert "spread deputies across hosts" in prompt  # cross-model reasoning (DATA)
+
+
 def test_optimize_survives_a_failing_generation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
