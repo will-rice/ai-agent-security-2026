@@ -166,8 +166,10 @@ key, so it never contends here and keeps producing regardless of the CI verdict.
 - One worker's exception is caught in its loop; the other four keep running.
 - A killed process warm-starts from `blackboard.jsonl`; `attack.py` on disk is the last
   shipped best regardless.
-- Only worker 0 logs to wandb (one run; fewer "crashed" alerts on restart). Clean shutdown
-  (SIGTERM → `run.finish()`) is a nice-to-have, deferred.
+- One process → ONE wandb run for the whole team (no per-worker `JED_WANDB` flag); every
+  lane logs to the same run tagged by model/worker. SIGTERM → clean cancel → `run.finish()`
+  marks the run FINISHED, not crashed — the single process makes clean shutdown trivial, so
+  it's included, not deferred. This ends the restart crash-alert noise.
 
 ## Testing
 

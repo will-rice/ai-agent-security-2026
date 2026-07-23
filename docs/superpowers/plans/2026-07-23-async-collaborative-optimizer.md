@@ -450,11 +450,18 @@ def test_submission_prompt_embeds_team_digest() -> None:
   `submission_score.score_submission`, `victim_feedback` (feedback only), `config.MODELS`,
   `config.TEAM_PROPOSERS`, `config.BLACKBOARD_LOG`, `config.BUILD_NEXT_DIR`.
 - Produces:
-  - `async worker_loop(worker_id: int, provider, board, out_dir, timeout_s) -> None`.
+  - `async worker_loop(worker_id: int, provider, board, out_dir, timeout_s, run=None) ->
+    None` (logs per-generation metrics to the shared `run` if given).
   - `make_record(submission, score, reasoning, model, worker) -> blackboard.Record`.
-  - `async optimize_team(board, out_dir, timeout_s) -> None` (builds the provider list from
-    `TEAM_PROPOSERS`, skips unusable keys, `asyncio.gather`s the workers).
-  - `main()` → `asyncio.run(optimize_team(...))`.
+  - `async optimize_team(board, out_dir, timeout_s, run=None) -> None` (builds the provider
+    list from `TEAM_PROPOSERS`, skips unusable keys, `asyncio.gather`s the workers).
+  - `main()` → one `wandb.init`, SIGTERM/SIGINT → clean cancel → `run.finish()`.
+
+**wandb:** ONE run for the whole team (one process). All six lanes log to the same `run`
+handle via the existing `_log_wandb(run, metrics)` (guards `None`), each metric tagged with
+its `model` + `worker` so lanes are comparable in one chart. No per-worker `JED_WANDB` flag.
+SIGTERM (from `pkill`/tmux) triggers a clean cancel so `run.finish()` marks the run
+FINISHED, not crashed — eliminating the restart crash-alert noise.
 
 - [ ] **Step 1: Write the failing test** — one worker iteration appends a record and a raised
   proposer is caught so the loop continues. Use an async stub for `propose_submission_async`
@@ -514,7 +521,7 @@ def make_record(submission, score, reasoning, model, worker):
     )
 
 
-async def worker_loop(worker_id, provider, board, out_dir, timeout_s):
+async def worker_loop(worker_id, provider, board, out_dir, timeout_s, run=None):
     """One lane: author from the team digest, score, append (ships on new best), forever."""
     while True:
         try:
@@ -534,7 +541,14 @@ async def worker_loop(worker_id, provider, board, out_dir, timeout_s):
             record = make_record(
                 submission, score, reasoning, provider.model or provider.kind, worker_id)
             await board.append(record, out_dir)
-            _log.info("worker %d (%s): public=%g", worker_id, provider.model, score.public)
+            best = board.best()
+            _log.info("worker %d (%s): public=%g best=%g",
+                      worker_id, provider.model, score.public, best.public)
+            _log_wandb(run, {  # one shared run; tag by lane so models are comparable
+                "public": score.public, "best_public": best.public,
+                "total_hops": float(score.total_hops),
+                "model": provider.model, "worker": worker_id,
+            })
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -542,7 +556,7 @@ async def worker_loop(worker_id, provider, board, out_dir, timeout_s):
             await asyncio.sleep(_GENERATION_RETRY_S)
 
 
-async def optimize_team(board, out_dir, timeout_s):
+async def optimize_team(board, out_dir, timeout_s, run=None):
     """Launch one worker per usable TEAM_PROPOSERS lane and run them concurrently."""
     lanes = []
     for name in config.TEAM_PROPOSERS:
@@ -553,8 +567,21 @@ async def optimize_team(board, out_dir, timeout_s):
         lanes.append(provider)
     _log.info("team: %d lanes -> %s", len(lanes), [p.model for p in lanes])
     await asyncio.gather(*(
-        worker_loop(i, p, board, out_dir, timeout_s) for i, p in enumerate(lanes)
+        worker_loop(i, p, board, out_dir, timeout_s, run) for i, p in enumerate(lanes)
     ))
+
+
+async def _run_team(board, run) -> None:
+    """Run the team until cancelled; SIGTERM/SIGINT cancels cleanly so wandb can finish."""
+    task = asyncio.ensure_future(
+        optimize_team(board, config.BUILD_NEXT_DIR, PROPOSER_TIMEOUT_S, run))
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, task.cancel)
+    try:
+        await task
+    except asyncio.CancelledError:
+        _log.info("team cancelled; shutting down cleanly")
 ```
 
   Add module constants `_TEAM_TOP_K = 8`, `_TEAM_REASONING_K = 3`. Rewrite `main()`:
@@ -564,21 +591,20 @@ def main() -> None:
     load_dotenv(config.ENV_FILE)
     config.ensure_dirs()
     _setup_logging()
-    run = _init_wandb(f"team-{int(time.time())}")  # one run for the whole team
+    run = _init_wandb(f"team-{int(time.time())}")  # ONE run for the whole team
     board = blackboard.Blackboard.load(config.BLACKBOARD_LOG)
     try:
-        asyncio.run(optimize_team(board, config.BUILD_NEXT_DIR, PROPOSER_TIMEOUT_S))
+        asyncio.run(_run_team(board, run))
     finally:
-        _finish_wandb(run)
+        _finish_wandb(run)  # clean exit -> run marked FINISHED, not crashed
 ```
 
-  Imports: add `import asyncio`, `from jed_attack.campaign import blackboard`,
-  `from jed_attack.campaign.submission import MessageType`,
+  Imports: add `import asyncio`, `import signal`, `from jed_attack.campaign import
+  blackboard`, `from jed_attack.campaign.submission import MessageType`,
   `from jed_attack.campaign.submission_score import score_submission`. Remove the
   `submission_log`, `shards`, `knowledge`, `prompt_opt`, `SubmissionRecord`,
-  `victim_feedback.introspect_worst` usages from this module. (W&B per-generation `.log`
-  can stay via a periodic call in `worker_loop` for worker 0 only, or be dropped in v1 —
-  keep v1 lean: log only the summary line; wandb keeps the run alive.)
+  `victim_feedback.introspect_worst` usages from this module. KEEP `_init_wandb`,
+  `_finish_wandb`, `_log_wandb` — the single team run uses all three.
 
 - [ ] **Step 4: Update `scripts/run_optimizer.sh`** — the process owns all lanes, so drop
   `JED_WORKER_ID`/`JED_PROPOSER`; keep one tmux session `optimizer`, `JED_WANDB=1`,
@@ -613,11 +639,12 @@ def main() -> None:
   parent is `CAMPAIGN_ROOT`).
 - [ ] **Step 3: Strip `optimize_prompts.py`** — remove `_record_reasoning`, the sync
   `propose_submission`, `run_submission_generation`, `optimize`, `_configured_chain`,
-  `current_provider(s)`, `set_providers`, `_log_wandb`/`_request_json`/`fetch_api_models` if
-  now unused, and any `submission_log`/`shards`/`knowledge`/`prompt_opt` imports. KEEP
-  `submission_prompt`, `_feedback_table`, `propose_submission_async`, `_reasoning_of`,
-  `_salvage_submission`, `_parse_message_objects`, `_bracket_positions`, the async
-  orchestrator, wandb init/finish, `_setup_logging`, `main`.
+  `current_provider(s)`, `set_providers`, and `_request_json`/`fetch_api_models` if now
+  unused (they served the removed `launch.py` provider validation), and any
+  `submission_log`/`shards`/`knowledge`/`prompt_opt` imports. KEEP `submission_prompt`,
+  `_feedback_table`, `propose_submission_async`, `_reasoning_of`, `_salvage_submission`,
+  `_parse_message_objects`, `_bracket_positions`, the async orchestrator, `_init_wandb`,
+  `_finish_wandb`, `_log_wandb` (the team run uses all three), `_setup_logging`, `main`.
 - [ ] **Step 4: `pyproject.toml`** — remove the `jed-optimize = "…launch:main"` entry (and
   the `[project.scripts]` table if now empty).
 - [ ] **Step 5: `scripts/campaign_watchdog.sh`** — remove the `assemble`/`consolidator`
