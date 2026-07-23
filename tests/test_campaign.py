@@ -234,6 +234,25 @@ def test_worker_loop_appends_then_survives_failure(
     assert calls["n"] == 3  # blip at 2 was caught, loop continued
 
 
+def test_optimize_team_raises_when_no_usable_lanes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No proposer key set -> optimize_team fails loudly, not a silent no-op success."""
+    import asyncio
+
+    from jed_attack.campaign import blackboard as bb
+    from jed_attack.campaign import config
+    from jed_attack.campaign import optimize_prompts as op
+
+    for name in config.TEAM_PROPOSERS:
+        key_env = providers.get(name).key_env
+        if key_env:
+            monkeypatch.delenv(key_env, raising=False)
+    board = bb.Blackboard.load(tmp_path / "bb.jsonl")
+    with pytest.raises(SystemExit):
+        asyncio.run(op.optimize_team(board, tmp_path / "out", timeout_s=1.0))
+
+
 def test_submission_prompt_handles_cold_start_none_incumbent() -> None:
     """Cold start: submission_prompt states the caps and objective, no crash on None."""
     from jed_attack.campaign import config

@@ -221,6 +221,10 @@ async def optimize_team(
             _log.warning("lane %s skipped: %s unset", name, provider.key_env)
             continue
         lanes.append(provider)
+    if not lanes:  # no keys set -> fail loudly instead of a silent successful no-op
+        raise SystemExit(
+            "no usable proposer lanes; set CHEAPEST_API_KEY and/or ZAI_API_KEY"
+        )
     _log.info("team: %d lanes -> %s", len(lanes), [p.model for p in lanes])
     await asyncio.gather(
         *(
