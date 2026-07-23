@@ -384,6 +384,10 @@ def test_submission_prompt_handles_cold_start_none_incumbent() -> None:
     prompt = optimize_prompts.submission_prompt(None, [], {})
     assert str(config.MAX_SHIP_MESSAGES) in prompt
     assert "SECRET_MARKER" in prompt  # instructs the exfil/deputy objective
+    # The victim's scoring-tool signatures are handed to the author so every required
+    # arg (esp. email.send's subject/body) is present and the victim never stalls.
+    assert "email.send(to, subject, body)" in prompt
+    assert "http.post(url, data)" in prompt
 
 
 def test_optimize_survives_a_failing_generation(
