@@ -11,7 +11,7 @@ names; see :func:`optimize_prompts.current_provider`.
 import os
 from dataclasses import dataclass
 
-from openai import OpenAI
+from openai import AsyncOpenAI, OpenAI
 
 from jed_attack.harness.models import resolve_base_url
 
@@ -122,3 +122,19 @@ def openai_client(provider: Provider) -> OpenAI:
     )
     base = provider.base_url or resolve_base_url(provider.model)  # local -> served base
     return OpenAI(base_url=base.rstrip("/"), api_key=key)
+
+
+def async_openai_client(provider: Provider) -> AsyncOpenAI:
+    """Async OpenAI-SDK client for a provider (api or local). Mirrors openai_client.
+
+    Args:
+        provider: The ``api`` or ``local`` provider to build a client for.
+
+    Returns:
+        An ``openai.AsyncOpenAI`` client pointed at the provider's endpoint.
+    """
+    key = (
+        os.environ.get(provider.key_env, "sk-local") if provider.key_env else "sk-local"
+    )
+    base = provider.base_url or resolve_base_url(provider.model)
+    return AsyncOpenAI(base_url=base.rstrip("/"), api_key=key)

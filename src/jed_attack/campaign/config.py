@@ -32,6 +32,19 @@ NOTES_DIR = KNOWLEDGE_DIR / "notes"  # free-form insights
 # The two target models and their served base URLs (llama-server on green).
 MODELS: tuple[str, ...] = ("gpt_oss", "gemma_4")
 
+# The proposer lanes the async team runs — one worker per name, each pinned to that
+# model. The five cheapest-* lanes share CHEAPEST_API_KEY (the per-key concurrency
+# test); zai-glm4.6 is on ZAI_API_KEY (separate, proven-firing). A lane whose key_env
+# is unset is skipped.
+TEAM_PROPOSERS: tuple[str, ...] = (
+    "cheapest-kimi",
+    "cheapest-deepseek",
+    "cheapest-glm5.2",
+    "cheapest-minimax",
+    "cheapest-mimo",
+    "zai-glm4.6",
+)
+
 # Max tool hops per interaction. MUST match the scored gateway's replay depth
 # (aicomp_sdk DEFAULT_MAX_TOOL_HOPS = AttackRunConfig.max_tool_hops = 8), or
 # multi-post candidates (one message → up to 8 SECRET_MARKER posts) are

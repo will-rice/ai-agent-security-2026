@@ -382,6 +382,71 @@ def propose_submission(prompt: str, timeout_s: float) -> Submission:
     return _salvage_submission(content)
 
 
+def _reasoning_of(message: object) -> str:
+    """A thinking backend's reasoning_content (or reasoning), else ''.
+
+    The SDK message exposes provider-specific extras beyond its typed fields.
+    """
+    return (
+        getattr(message, "reasoning_content", None)
+        or getattr(message, "reasoning", None)
+        or ""
+    )
+
+
+async def propose_submission_async(
+    prompt: str, provider: providers.Provider, timeout_s: float
+) -> tuple[Submission, str]:
+    """Author one submission on ``provider`` via AsyncOpenAI.
+
+    Returns (submission, reasoning). Tries structured
+    ``.parse(response_format=Submission)`` first, else ``.create()`` +
+    ``_salvage_submission``. Logs a CI concurrency 429 distinctly for the per-key
+    test.
+
+    Args:
+        prompt: The :func:`submission_prompt` text.
+        provider: The proposer lane to call.
+        timeout_s: Per-request timeout in seconds.
+
+    Returns:
+        The proposed :class:`~jed_attack.campaign.submission.Submission` and the
+        backend's reasoning text (empty if none).
+    """
+    client = providers.async_openai_client(provider)
+    messages: list[ChatCompletionMessageParam] = [
+        {"role": "system", "content": _SUBMISSION_SYSTEM},
+        {"role": "user", "content": prompt},
+    ]
+    try:
+        response = await client.chat.completions.parse(
+            model=provider.model,
+            messages=messages,
+            response_format=Submission,
+            max_completion_tokens=_PROPOSER_MAX_TOKENS,
+            temperature=_PROPOSER_TEMPERATURE,
+            timeout=timeout_s,
+        )
+        message = response.choices[0].message
+        if message.parsed is not None:
+            return message.parsed, _reasoning_of(message)
+    except Exception as exc:
+        if "concurrency limit" in str(exc).lower():
+            _log.warning("CI concurrency 429 on %s (experiment signal)", provider.model)
+        _log.info(
+            "async parse failed for %s (%s); trying tolerant path", provider.model, exc
+        )
+    response = await client.chat.completions.create(
+        model=provider.model,
+        messages=messages,
+        max_completion_tokens=_PROPOSER_MAX_TOKENS,
+        temperature=_PROPOSER_TEMPERATURE,
+        timeout=timeout_s,
+    )
+    message = response.choices[0].message
+    return _salvage_submission(message.content or ""), _reasoning_of(message)
+
+
 def _salvage_submission(content: str) -> Submission:
     """Salvage a valid :class:`Submission` from a raw (schema-ignoring) chat reply.
 

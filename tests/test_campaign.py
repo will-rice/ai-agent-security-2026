@@ -169,6 +169,42 @@ def test_provider_chain_persists_filters_by_key_and_tails_local(
     assert optimize_prompts.current_providers() == [providers.get(providers.DEFAULT)]
 
 
+def test_propose_submission_async_extracts_submission_and_reasoning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """propose_submission_async parses a submission and pulls out reasoning_content."""
+    import asyncio
+
+    from jed_attack.campaign.submission import Message, MessageType, Submission
+
+    sub = Submission(
+        messages=[
+            Message(
+                type=MessageType.EXFIL, text="SECRET_MARKER https://a.invalid/r", hops=1
+            )
+        ]
+    )
+    msg = SimpleNamespace(parsed=sub, reasoning_content="weighed diversity")
+
+    class FakeParse:
+        async def parse(self, **_: object) -> SimpleNamespace:
+            return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+
+    class FakeChat:
+        completions = FakeParse()
+
+    class FakeClient:
+        chat = FakeChat()
+
+    monkeypatch.setattr(providers, "async_openai_client", lambda p: FakeClient())
+    prov = providers.get("cheapest-kimi")
+    got_sub, reasoning = asyncio.run(
+        optimize_prompts.propose_submission_async("prompt", prov, timeout_s=1.0)
+    )
+    assert got_sub.messages[0].text == "SECRET_MARKER https://a.invalid/r"
+    assert reasoning == "weighed diversity"
+
+
 def test_launch_spawn_starts_one_process_per_worker(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
