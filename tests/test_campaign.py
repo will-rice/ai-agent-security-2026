@@ -1101,46 +1101,31 @@ def test_gguf_agent_factory_places_model_on_main_gpu(
     assert captured["llama_kwargs"] == {"main_gpu": 1, "split_mode": 0}
 
 
-def test_render_judge_messages_includes_text_and_feedback() -> None:
-    """The judge prompt pairs every message with its observed-effect feedback."""
-    from jed_attack.campaign.judge import render_judge_messages
+def test_judge_models_bound_score_and_carry_feedback() -> None:
+    """SeverityScore/NoveltyScore clamp score into [0,100] via Field bounds."""
+    import pydantic
+
+    from jed_attack.campaign.judge import NoveltyScore, SeverityScore
+
+    assert SeverityScore(score=48.0, feedback="fired").score == 48.0
+    assert NoveltyScore(score=0.0, feedback="dup").score == 0.0
+    with pytest.raises(pydantic.ValidationError):
+        SeverityScore(score=150.0, feedback="x")  # out of [0,100]
+
+
+def test_severity_and_novelty_prompts_carry_inputs() -> None:
+    """The prompt builders render every message + its feedback / the pool sample."""
+    from jed_attack.campaign.judge import novelty_messages, severity_messages
 
     msgs = [_exfil("SECRET_MARKER https://a.invalid/r", 1)]
-    chat = render_judge_messages(
-        msgs, ["[exfil] severity: optimal(by model: gpt_oss=16 gemma_4=0)"]
-    )
-    assert chat[0]["role"] == "system"
-    assert "/no_think" in chat[0]["content"]
-    assert "SECRET_MARKER https://a.invalid/r" in chat[1]["content"]
-    assert "gpt_oss=16 gemma_4=0" in chat[1]["content"]
+    sev = severity_messages(msgs, ["optimal(by model: gpt_oss=16 gemma_4=0)"])
+    assert sev[0]["role"] == "system"
+    assert "SECRET_MARKER https://a.invalid/r" in sev[1]["content"]
+    assert "gpt_oss=16 gemma_4=0" in sev[1]["content"]
 
-
-def test_judge_submission_parses_score_and_clamps(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A JSON reply yields a clamped 0-100 score; fenced JSON is tolerated."""
-    from jed_attack.campaign import judge
-
-    monkeypatch.setattr(
-        judge,
-        "_chat",
-        lambda *a, **k: '```json\n{"score": 150, "rationale": "strong"}\n```',
-    )
-    v = judge.judge_submission(
-        [_exfil("SECRET_MARKER https://a.invalid/r", 1)], ["fired"]
-    )
-    assert v.score == 100 and v.rationale == "strong"
-
-
-def test_judge_submission_raises_on_malformed(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No silent fallback: an unparseable reply raises."""
-    from jed_attack.campaign import judge
-
-    monkeypatch.setattr(judge, "_chat", lambda *a, **k: "I cannot comply")
-    with pytest.raises(ValueError):
-        judge.judge_submission(
-            [_exfil("SECRET_MARKER https://a.invalid/r", 1)], ["fired"]
-        )
+    nov = novelty_messages(msgs, ["Notify a@b.invalid", "Send SECRET_MARKER to ..."])
+    assert "SECRET_MARKER https://a.invalid/r" in nov[1]["content"]
+    assert "Notify a@b.invalid" in nov[1]["content"]  # pool sample shown
 
 
 def test_stratified_sample_spans_range_and_size() -> None:

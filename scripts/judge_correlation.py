@@ -1,30 +1,62 @@
-"""Offline study: does the Qwen judge correlate with the faithful public score?
+"""Offline study: does the severity judge correlate with the faithful public score?
 
 Reads the live team blackboard's already-faithfully-scored submissions (post KV-fix,
 so each record's ``public`` is a trustworthy label and its per-message feedback is the
-observed effect the judge needs), judges each with the surrogate-guardrail judge, and
-reports Spearman rank correlation of judge score vs faithful public. Writes report.json
-+ pairs.csv (+ scatter.png if matplotlib is present) under config.JUDGE_STUDY_DIR.
+observed effect the judge needs), judges each with the surrogate-guardrail severity
+judge, and reports Spearman rank correlation of judge score vs faithful public. Writes
+report.json + pairs.csv (+ scatter.png if matplotlib is present) under
+config.JUDGE_STUDY_DIR.
 
 NO re-scoring: the study consumes the labels the live optimizer already produced, so it
-runs ALONGSIDE the optimizer with no GPU contention -- the judge runs on ollama/Qwen
-(Ada), the optimizer keeps its GGUF scorer. Per-model correlation is not reported: the
-blackboard persists only the aggregate ``public``, not per-model boards.
+runs ALONGSIDE the optimizer with no GPU contention -- the judge runs on the co-located
+vLLM server (config.VLLM_URL / config.VLLM_MODEL), the optimizer keeps its GGUF scorer.
+Per-model correlation is not reported: the blackboard persists only the aggregate
+``public``, not per-model boards.
 """
 
 import argparse
 import csv
 import json
 import logging
+from collections.abc import Sequence
+from typing import Any, cast
 
+from openai import OpenAI
 from scipy.stats import spearmanr
 
 from jed_attack.campaign import config
-from jed_attack.campaign.judge import judge_submission
+from jed_attack.campaign.judge import SeverityScore, severity_messages
 from jed_attack.campaign.submission import Message
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 _log = logging.getLogger("judge_correlation")
+
+
+def _judge_severity(
+    messages: Sequence[Message],
+    feedback: Sequence[str],
+    model: str = config.VLLM_MODEL,
+    base_url: str = config.VLLM_URL,
+) -> SeverityScore:
+    """Score one submission's elicited severity via the co-located vLLM server.
+
+    Args:
+        messages: The submission's messages, in order.
+        feedback: Per-message replay feedback aligned with ``messages`` by index.
+        model: The vLLM-served model name.
+        base_url: The vLLM OpenAI-compatible base URL.
+
+    Returns:
+        The judge's :class:`SeverityScore` (guided-JSON, so always schema-valid).
+    """
+    client = OpenAI(base_url=base_url, api_key="dylan")
+    completion = client.chat.completions.create(
+        model=model,
+        messages=cast(Any, severity_messages(list(messages), list(feedback))),
+        temperature=0.0,
+        extra_body={"guided_json": SeverityScore.model_json_schema()},
+    )
+    return SeverityScore.model_validate_json(completion.choices[0].message.content or "{}")
 
 
 def main() -> None:
@@ -42,19 +74,19 @@ def main() -> None:
     for i, row in enumerate(sample):
         messages = [Message(**m) for m in row["messages"]]
         feedback = [entry["feedback"] for entry in row["feedback"]]
-        verdict = judge_submission(messages, feedback)
+        verdict = _judge_severity(messages, feedback)
         public = float(row["public"])
         results.append(
             {
                 "faithful_public": public,
                 "judge_score": verdict.score,
-                "judge_rationale": verdict.rationale,
+                "judge_feedback": verdict.feedback,
                 "n_messages": len(messages),
             }
         )
-        _log.info("[%d/%d] public=%.3f judge=%d", i + 1, len(sample), public, verdict.score)
+        _log.info("[%d/%d] public=%.3f judge=%.1f", i + 1, len(sample), public, verdict.score)
 
-    judge_scores: list[int] = [int(r["judge_score"]) for r in results]
+    judge_scores: list[float] = [float(r["judge_score"]) for r in results]
     public_scores: list[float] = [float(r["faithful_public"]) for r in results]
     rho, pvalue = spearmanr(judge_scores, public_scores)
 
@@ -99,7 +131,7 @@ def stratified_sample(rows: list[dict], n: int) -> list[dict]:
     return picked + zeros
 
 
-def _write_scatter(judge: list[int], public: list[float], rho: float) -> None:
+def _write_scatter(judge: list[float], public: list[float], rho: float) -> None:
     """Write a judge-vs-public scatter PNG if matplotlib is available (optional)."""
     try:
         import matplotlib  # type: ignore

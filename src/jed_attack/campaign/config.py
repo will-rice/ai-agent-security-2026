@@ -130,6 +130,18 @@ JUDGE_GPU = 1
 JUDGE_STUDY_N = 25
 JUDGE_STUDY_DIR = CAMPAIGN_ROOT / "judge_study"
 
+# Dylan judge service (FastAPI + vLLM). The green optimizer POSTs typed judge requests
+# to this one endpoint; the service calls the co-located vLLM OpenAI server. See
+# docs/.../2026-07-24-dylan-judge-fleet-novelty-selection-design.md.
+DYLAN_JUDGE_URL = os.getenv("DYLAN_JUDGE_URL", "http://dylan:8100")
+VLLM_URL = os.getenv(
+    "VLLM_URL", "http://127.0.0.1:8000/v1"
+)  # dylan-local, service->vLLM
+VLLM_MODEL = os.getenv("VLLM_MODEL", "Qwen/Qwen3-32B-AWQ")
+# Novelty-aware pool curation.
+NOVELTY_ADMIT_THRESHOLD = 40.0  # min novelty score to admit a candidate to the pool
+NOVELTY_POOL_SAMPLE = 8  # current-pool messages shown to the novelty judge
+
 
 def ensure_dirs() -> None:
     """Create the runtime directories the submission pipeline writes to."""
