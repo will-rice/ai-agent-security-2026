@@ -11,8 +11,10 @@ The pydantic models here are the single contract: FastAPI request/response schem
 + one-sentence feedback), never an instruction to act on.
 """
 
+import httpx
 import pydantic
 
+from jed_attack.campaign import config
 from jed_attack.campaign.submission import Message
 
 _TOOLS = (
@@ -124,3 +126,32 @@ def novelty_messages(
         {"role": "system", "content": _NOVELTY_SYSTEM},
         {"role": "user", "content": user},
     ]
+
+
+_TIMEOUT_S = 120.0
+
+
+def judge_severity(messages: list[Message], feedback: list[str]) -> SeverityScore:
+    """Score a submission's elicited severity via the dylan judge service."""
+    resp = httpx.post(
+        f"{config.DYLAN_JUDGE_URL}/severity",
+        json=SeverityRequest(messages=messages, feedback=feedback).model_dump(
+            mode="json"
+        ),
+        timeout=_TIMEOUT_S,
+    )
+    resp.raise_for_status()
+    return SeverityScore.model_validate(resp.json())
+
+
+def judge_novelty(candidate: list[Message], pool_sample: list[str]) -> NoveltyScore:
+    """Score a candidate's novelty vs the pool via the dylan judge service."""
+    resp = httpx.post(
+        f"{config.DYLAN_JUDGE_URL}/novelty",
+        json=NoveltyRequest(candidate=candidate, pool_sample=pool_sample).model_dump(
+            mode="json"
+        ),
+        timeout=_TIMEOUT_S,
+    )
+    resp.raise_for_status()
+    return NoveltyScore.model_validate(resp.json())

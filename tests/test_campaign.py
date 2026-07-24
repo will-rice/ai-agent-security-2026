@@ -1173,3 +1173,31 @@ def test_judge_service_severity_endpoint(monkeypatch: pytest.MonkeyPatch) -> Non
     assert resp.status_code == 200
     assert resp.json()["score"] == 48.0
     assert "SECRET_MARKER" in str(captured["messages"])
+
+
+def test_judge_severity_client_posts_and_parses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """judge_severity POSTs a SeverityRequest and parses a SeverityScore back."""
+    from jed_attack.campaign import judge
+
+    captured: dict[str, object] = {}
+
+    def fake_post(url: str, json: dict[str, object], timeout: float) -> object:
+        captured["url"] = url
+        captured["json"] = json
+
+        class R:
+            def raise_for_status(self) -> None: ...
+
+            def json(self) -> dict[str, object]:
+                return {"score": 60.0, "feedback": "ok"}
+
+        return R()
+
+    monkeypatch.setattr(judge.httpx, "post", fake_post)
+    out = judge.judge_severity(
+        [_exfil("SECRET_MARKER https://a.invalid/r", 1)], ["optimal: gpt_oss=16"]
+    )
+    assert out.score == 60.0
+    assert isinstance(captured["url"], str) and captured["url"].endswith("/severity")
