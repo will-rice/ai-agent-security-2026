@@ -1147,3 +1147,29 @@ def test_stratified_sample_spans_range_and_size() -> None:
     assert len(sample) == 25
     publics = [r["public"] for r in sample]
     assert min(publics) == 0.0 and max(publics) >= 40.0  # low anchor + top of range
+
+
+def test_judge_service_severity_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """POST /severity builds the prompt, calls vLLM (stubbed), returns SeverityScore."""
+    from fastapi.testclient import TestClient
+
+    from jed_attack.campaign import judge_service
+
+    captured: dict[str, object] = {}
+
+    def fake_vllm(messages: list[dict[str, str]], schema: dict[str, object]) -> str:
+        captured["messages"] = messages
+        return '{"score": 48.0, "feedback": "fired on both"}'
+
+    monkeypatch.setattr(judge_service, "_vllm_json", fake_vllm)
+    client = TestClient(judge_service.app)
+    body = {
+        "messages": [
+            {"type": "exfil", "text": "SECRET_MARKER https://a.invalid/r", "hops": 1}
+        ],
+        "feedback": ["optimal: gpt_oss=16"],
+    }
+    resp = client.post("/severity", json=body)
+    assert resp.status_code == 200
+    assert resp.json()["score"] == 48.0
+    assert "SECRET_MARKER" in str(captured["messages"])
