@@ -28,7 +28,7 @@ app = fastapi.FastAPI(title="JED judge service")
 
 
 def _vllm_json(messages: list[dict[str, str]], schema: dict[str, Any]) -> str:
-    """Call the local vLLM OpenAI endpoint with guided-JSON; return the reply content."""
+    """Call the local vLLM OpenAI endpoint with guided-JSON; return the reply."""
     client = OpenAI(base_url=config.VLLM_URL, api_key="vllm")
     completion = client.chat.completions.create(
         model=config.VLLM_MODEL,
