@@ -116,12 +116,22 @@ class Blackboard:
                 break
         return out
 
-    async def append(self, record: Record, out_dir: Path) -> None:
-        """Append a record, persist it, and reship ``attack.py`` if it is a new best."""
+    async def append(self, record: Record, out_dir: Path, reship: bool = True) -> None:
+        """Append a record, persist it, and (optionally) reship on a new best.
+
+        Args:
+            record: The scored record to append and persist.
+            out_dir: Where a new-best reship writes ``attack.py``.
+            reship: Whether a new public best reships ``attack.py`` via
+                :func:`assemble.build`. The default preserves the legacy
+                best-submission ship path; the curated-pool loop passes ``False`` so
+                append only records candidates and curation is the sole ship path (no
+                double ship).
+        """
         async with self._lock:
             prior_best = self.best()
             self._records.append(record)
             with self._path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record.to_json(), sort_keys=True) + "\n")
-            if prior_best is None or record.public > prior_best.public:
+            if reship and (prior_best is None or record.public > prior_best.public):
                 assemble.build([m["text"] for m in record.messages], out_dir)

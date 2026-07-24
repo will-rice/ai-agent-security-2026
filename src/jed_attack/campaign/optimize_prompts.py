@@ -10,14 +10,16 @@ blackboard.Blackboard`. Each lane, forever:
    recent reasoning (:meth:`Blackboard.recent_reasoning`);
 2. builds a proposer prompt (:func:`submission_prompt`) that embeds — all clearly
    labelled as DATA — the incumbent's board total, its per-message feedback table, its
-   messages, and the team digest, and asks for an improved full submission;
-3. authors a new submission on its lane via AsyncOpenAI
-   (:func:`propose_submission_async`: structured ``.parse`` first, tolerant JSON-array
-   fallback), capturing the backend's reasoning;
-4. scores the whole submission on the live served models
-   (:func:`~jed_attack.campaign.submission_score.score_submission`, off-thread) and
-   appends the scored :class:`~jed_attack.campaign.blackboard.Record` to the shared
-   blackboard, which reships ``attack.py`` immediately on a new public best.
+   messages, and the team digest, and asks for a BATCH of improved full submissions;
+3. authors a batch of submissions on its lane via AsyncOpenAI
+   (:func:`propose_batch_async`: streams one reply, salvages a ``list[Submission]``),
+   capturing the backend's reasoning;
+4. scores EVERY submission in the batch on the live served models
+   (:func:`~jed_attack.campaign.submission_score.score_submission`, off-thread),
+   hill-climbs the batch on its mean public score, appends every submission of the kept
+   batch to the shared blackboard as its own candidate, and ships the curated pool
+   (:func:`~jed_attack.campaign.curate.curate_from_blackboard`) when
+   ``config.CURATE_POOL`` is on (else the append reships ``attack.py`` on a new best).
 
 One :func:`wandb.init` run spans the whole team (one process); every lane logs to it,
 each metric tagged with its ``model`` + ``worker`` so lanes are comparable in one chart.
@@ -34,8 +36,8 @@ import os
 import signal
 import time
 import tomllib
-from collections.abc import Iterator
 from pathlib import Path
+from statistics import mean
 from typing import Any, Protocol
 
 import git
@@ -44,7 +46,13 @@ from dotenv import load_dotenv
 from openai.types.chat import ChatCompletionMessageParam
 
 from jed_attack.campaign import blackboard, config, providers
-from jed_attack.campaign.submission import Message, MessageType, Submission
+from jed_attack.campaign.curate import curate_from_blackboard
+from jed_attack.campaign.submission import (
+    Message,
+    MessageType,
+    Submission,
+    SubmissionBatch,
+)
 from jed_attack.campaign.submission_score import SubmissionScore, score_submission
 
 
@@ -63,14 +71,6 @@ class _WandbRun(Protocol):
 _log = logging.getLogger("optimize_prompts")
 
 _PROPOSER_TEMPERATURE = 1.0  # high temp + random seed => successive calls explore
-# Completion budget for the proposer. A THINKING proposer (kimi, the glm-5 family)
-# spends reasoning_content BEFORE the JSON, so the cap must cover the reasoning AND the
-# JSON for up to MAX_SHIP_MESSAGES typed Message objects. But the cap trades directly
-# against latency: at 65536 the thinking models generated for >300s and every proposer
-# call timed out (0 completed generations). 32768 covers reasoning + the ~80-message
-# JSON while returning inside PROPOSER_TIMEOUT_S; salvage recovers a partial submission
-# if a verbose thinker still truncates. Env-tunable (JED_PROPOSER_MAX_TOKENS).
-_PROPOSER_MAX_TOKENS = int(os.getenv("JED_PROPOSER_MAX_TOKENS", "32768"))
 # Backoff after a whole generation raises, so a persistently-failing lane (a refusal
 # yielding no JSON, a proposer/score outage) retries without busy-spinning the process.
 _GENERATION_RETRY_S = float(os.getenv("JED_GENERATION_RETRY_S", "10"))
@@ -133,28 +133,33 @@ async def worker_loop(
     timeout_s: float,
     run: _WandbRun | None = None,
 ) -> None:
-    """One lane (one API key): rotate through the lane's models, author, score, append.
+    """One lane (one API key): rotate models, author a BATCH, score all, refine, ship.
 
     A lane owns a single API key and rotates through its models one generation at a
     time, so only one request per key is ever in flight — a shared-key concurrency cap
     (cheapestinference's per-key limit, confirmed empirically) can never be hit, while
     every model still gets exercised. Each generation reads the shared blackboard's
-    global best + team digest, authors round 0 on the generation's model, scores it
-    off-thread, then hill-climbs: up to ``config.REFINE_MAX_ROUNDS`` further whole-
-    submission rewrites of its OWN draft against its own real per-message score,
-    re-scoring each round and keeping the best, stopping at the first round that
-    doesn't strictly improve (or on a refine round's own failure). Only the local best
-    across all rounds is appended once (which reships ``attack.py`` on a new public
-    best). A round's failure inside the climb is caught and the best-so-far is still
-    appended; a whole generation's failure (proposer blip, refusal yielding no JSON,
-    score outage) is caught and backed off so the lane keeps running (and advances to
-    the next model); a cancellation propagates so the team shuts down cleanly.
+    global best + team digest, authors round 0 as a BATCH of submissions on the
+    generation's model, scores EVERY submission off-thread, then hill-climbs the batch:
+    up to ``config.REFINE_MAX_ROUNDS`` further re-authorings against the batch's
+    best-scoring submission + its feedback, re-scoring every submission and keeping the
+    batch with the higher MEAN public score, stopping at the first round that doesn't
+    strictly improve (or on a refine round's own failure). Every submission of the kept
+    batch is appended to the blackboard as its own candidate; the shipped ``attack.py``
+    is the curated pool (:func:`~jed_attack.campaign.curate.curate_from_blackboard`)
+    when ``config.CURATE_POOL`` is on, else the append reships on a new public best. A
+    refine round's failure is caught and the best-so-far batch is still shipped; an
+    empty batch skips the generation; a whole generation's failure (proposer blip,
+    refusal yielding no JSON, score outage) is caught and backed off so the lane keeps
+    running
+    (and advances to the next model); a cancellation propagates so the team shuts down
+    cleanly.
 
     Args:
         worker_id: This lane's index (its metric/record tag).
         providers_cycle: The lane's models, rotated one per generation.
         board: The shared team blackboard.
-        out_dir: Where a new-best append reships ``attack.py``.
+        out_dir: Where the curation ship (or a new-best append) writes ``attack.py``.
         timeout_s: Per-generation proposer timeout.
         run: The shared W&B run to log to, or ``None``.
     """
@@ -166,7 +171,7 @@ async def worker_loop(
             reasoning_digest = board.recent_reasoning(k=_TEAM_REASONING_K)
             model = provider.model or provider.kind
 
-            # Round 0: propose from the GLOBAL incumbent, score, adopt as local best.
+            # Round 0: author a BATCH from the GLOBAL incumbent; score every submission.
             incumbent = board.best()
             prompt = submission_prompt(
                 incumbent,
@@ -175,79 +180,71 @@ async def worker_loop(
                 top_messages=team,
                 reasoning=reasoning_digest,
             )
-            submission, reasoning = await propose_submission_async(
-                prompt, provider, timeout_s
+            batch, reasoning = await propose_batch_async(prompt, provider, timeout_s)
+            if not batch:  # a refusal / no-JSON reply -> skip, rotate to the next model
+                _log.warning("worker %d: empty batch; skipping generation", worker_id)
+                gen += 1
+                continue
+            scores = await _score_batch(batch)
+            round0_public = mean(sc.public for sc in scores)
+
+            # Hill-climb the whole batch on its MEAN public score (see _refine_batch).
+            local_batch, local_scores, reasoning, refine_rounds = await _refine_batch(
+                batch,
+                scores,
+                provider,
+                team,
+                reasoning_digest,
+                reasoning,
+                model,
+                worker_id,
+                timeout_s,
             )
-            score = await asyncio.to_thread(score_submission, submission.messages)
-            local_best = make_record(submission, score, reasoning, model, worker_id)
-            local_best_score = score
-            round0_public = score.public
+            batch_public = mean(sc.public for sc in local_scores)
 
-            # Rounds 1..REFINE_MAX_ROUNDS: hill-climb the local draft on its own real
-            # score. Whole-submission rewrite via the same submission_prompt, with the
-            # draft as the incumbent; keep the best, stop at the first non-improving
-            # round. A round's proposer/score failure ends the climb with the best kept.
-            refine_rounds = 0
-            for _ in range(config.REFINE_MAX_ROUNDS):
-                try:
-                    prompt = submission_prompt(
-                        local_best,
-                        local_best.feedback,
-                        {},
-                        top_messages=team,
-                        reasoning=reasoning_digest,
-                    )
-                    refined, refined_reasoning = await propose_submission_async(
-                        prompt, provider, timeout_s
-                    )
-                    refined_score = await asyncio.to_thread(
-                        score_submission, refined.messages
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    _log.warning(
-                        "worker %d refine round failed; keeping best",
-                        worker_id,
-                        exc_info=True,
-                    )
-                    break
-                if refined_score.public <= local_best.public:
-                    break  # no improvement -> stop the climb
-                local_best = make_record(
-                    refined, refined_score, refined_reasoning, model, worker_id
+            # Append EVERY submission of the kept batch as its own candidate. Under
+            # CURATE_POOL the append does NOT reship (curation below is the sole ship);
+            # otherwise the append reships ``attack.py`` on a new public best (legacy).
+            for submission, score in zip(local_batch, local_scores, strict=True):
+                await board.append(
+                    make_record(submission, score, reasoning, model, worker_id),
+                    out_dir,
+                    reship=not config.CURATE_POOL,
                 )
-                local_best_score = refined_score
-                refine_rounds += 1
+            if config.CURATE_POOL:
+                await asyncio.to_thread(curate_from_blackboard, board, out_dir, run)
 
-            await board.append(local_best, out_dir)
             best = board.best()
             assert best is not None  # just appended -> the board is non-empty
+            best_score = max(local_scores, key=lambda sc: sc.public)
             _log.info(
-                "worker %d (%s): public=%g (+%g over %d refine rounds) best=%g",
+                "worker %d (%s): batch_n=%d mean_public=%g (+%g over %d refine rounds) "
+                "best=%g",
                 worker_id,
                 provider.model,
-                local_best.public,
-                local_best.public - round0_public,
+                len(local_batch),
+                batch_public,
+                batch_public - round0_public,
                 refine_rounds,
                 best.public,
             )
             _log_wandb(  # one shared run; tag by lane so models are comparable
                 run,
                 {
-                    "public": local_best.public,
+                    "batch_n": len(local_batch),
+                    "batch_mean_public": batch_public,
                     "best_public": best.public,
-                    "total_hops": float(local_best_score.total_hops),
+                    "total_hops": float(best_score.total_hops),
                     "refine_rounds": refine_rounds,
-                    "refine_gain": local_best.public - round0_public,
+                    "refine_gain": batch_public - round0_public,
                     "model": provider.model,
                     "worker": worker_id,
                     **{
-                        f"{m}_public": local_best_score.public_by_model.get(m, 0.0)
+                        f"{m}_public": best_score.public_by_model.get(m, 0.0)
                         for m in config.MODELS
                     },
                     **{
-                        f"replay_s_{m}": local_best_score.replay_seconds.get(m, 0.0)
+                        f"replay_s_{m}": best_score.replay_seconds.get(m, 0.0)
                         for m in config.MODELS
                     },
                 },
@@ -258,6 +255,88 @@ async def worker_loop(
             _log.exception("worker %d generation failed; retrying", worker_id)
             await asyncio.sleep(_GENERATION_RETRY_S)
         gen += 1  # rotate to the next model in the lane (also skips a failing one)
+
+
+async def _score_batch(batch: list[Submission]) -> list[SubmissionScore]:
+    """Score every submission in a batch off-thread (one score per submission).
+
+    Args:
+        batch: The submissions to score.
+
+    Returns:
+        One :class:`SubmissionScore` per submission, in order.
+    """
+    return [await asyncio.to_thread(score_submission, s.messages) for s in batch]
+
+
+async def _refine_batch(
+    batch: list[Submission],
+    scores: list[SubmissionScore],
+    provider: providers.Provider,
+    team: dict[MessageType, list[tuple[str, str, float]]],
+    reasoning_digest: list[tuple[str, str]],
+    reasoning: str,
+    model: str,
+    worker_id: int,
+    timeout_s: float,
+) -> tuple[list[Submission], list[SubmissionScore], str, int]:
+    """Hill-climb a scored batch on its MEAN public score; return the kept batch.
+
+    Up to ``config.REFINE_MAX_ROUNDS`` rounds: each round re-authors a fresh batch from
+    the current batch's best-scoring submission + its real feedback, re-scores every
+    submission, and keeps the batch with the higher mean public; stops at the first
+    non-improving round, an empty re-author, or a round's own proposer/score failure
+    (a cancellation propagates so the team shuts down cleanly).
+
+    Args:
+        batch: The round-0 batch to refine.
+        scores: The round-0 batch's per-submission scores.
+        provider: The proposer lane to re-author on.
+        team: The teammate best-messages digest for the prompt.
+        reasoning_digest: The cross-model reasoning digest for the prompt.
+        reasoning: The round-0 backend reasoning (provenance for the kept batch).
+        model: The lane's model id (record provenance tag).
+        worker_id: The lane's worker id.
+        timeout_s: Per-generation proposer timeout.
+
+    Returns:
+        ``(batch, scores, reasoning, refine_rounds)`` for the kept (best-mean) batch.
+    """
+    batch_public = mean(sc.public for sc in scores)
+    refine_rounds = 0
+    for _ in range(config.REFINE_MAX_ROUNDS):
+        try:
+            best_i = max(range(len(scores)), key=lambda i: scores[i].public)
+            incumbent_rec = make_record(
+                batch[best_i], scores[best_i], reasoning, model, worker_id
+            )
+            prompt = submission_prompt(
+                incumbent_rec,
+                incumbent_rec.feedback,
+                {},
+                top_messages=team,
+                reasoning=reasoning_digest,
+            )
+            refined, refined_reasoning = await propose_batch_async(
+                prompt, provider, timeout_s
+            )
+            if not refined:
+                break  # empty refine reply -> stop the climb, keep the best
+            refined_scores = await _score_batch(refined)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _log.warning(
+                "worker %d refine round failed; keeping best", worker_id, exc_info=True
+            )
+            break
+        if mean(sc.public for sc in refined_scores) <= batch_public:
+            break  # no improvement -> stop the climb
+        batch, scores = refined, refined_scores
+        batch_public = mean(sc.public for sc in refined_scores)
+        reasoning = refined_reasoning
+        refine_rounds += 1
+    return batch, scores, reasoning, refine_rounds
 
 
 async def optimize_team(
@@ -323,12 +402,13 @@ async def _run_team(board: blackboard.Blackboard, run: _WandbRun | None) -> None
         _log.info("team cancelled; shutting down cleanly")
 
 
-# The Submission JSON Schema, handed to the proposer verbatim (compact). We give the
-# schema instead of a prose field-description: no remote provider reliably honors
+# The SubmissionBatch JSON Schema, handed to the proposer verbatim (compact). We give
+# the schema instead of a prose field-description: no remote provider reliably honors
 # structured outputs on this nested schema, so the model authors free-form JSON that
-# _salvage_submission validates against this very schema (dropping messages that fail).
+# _salvage_batch validates against this very schema (dropping messages/submissions that
+# fail).
 _SUBMISSION_SCHEMA_JSON = json.dumps(
-    Submission.model_json_schema(), separators=(",", ":")
+    SubmissionBatch.model_json_schema(), separators=(",", ":")
 )
 
 
@@ -489,78 +569,21 @@ def _feedback_table(
     return rows
 
 
-async def propose_submission_async(
-    prompt: str, provider: providers.Provider, idle_timeout_s: float
-) -> tuple[Submission, str]:
-    """Author one submission on ``provider`` by STREAMING an AsyncOpenAI completion.
-
-    No provider reliably honors structured outputs on the nested ``Submission`` schema
-    (they parse-fail), so we skip ``.parse()`` and stream one ``.create()``, gathering
-    the answer content plus any ``reasoning_content`` deltas, then feed it to
-    :func:`_salvage_submission`. Streaming replaces the wall-clock timeout with an IDLE
-    one (:func:`asyncio.timeout`, rescheduled per chunk): the call is abandoned only if
-    no token arrives for ``idle_timeout_s`` seconds (a stall), never mid-stream, so a
-    slow-but-active thinking model always finishes. A CI concurrency 429 (on the initial
-    request) is logged distinctly for the per-key experiment, then re-raised.
-
-    Args:
-        prompt: The :func:`submission_prompt` text.
-        provider: The proposer lane to call.
-        idle_timeout_s: Max seconds to wait for the next streamed token before aborting.
-
-    Returns:
-        The proposed submission and the backend's reasoning text (empty if none).
-    """
-    client = providers.async_openai_client(provider)
-    messages: list[ChatCompletionMessageParam] = [
-        {"role": "system", "content": _load_prompts()["system"]},
-        {"role": "user", "content": prompt},
-    ]
-    try:
-        stream = await client.chat.completions.create(
-            model=provider.model,
-            messages=messages,
-            max_completion_tokens=_PROPOSER_MAX_TOKENS,
-            temperature=_PROPOSER_TEMPERATURE,
-            stream=True,
-        )
-    except Exception as exc:
-        if "concurrency limit" in str(exc).lower():
-            _log.warning("CI concurrency 429 on %s (experiment signal)", provider.model)
-        raise
-    content: list[str] = []
-    reasoning: list[str] = []
-    loop = asyncio.get_running_loop()
-    try:
-        async with asyncio.timeout(idle_timeout_s) as timer:
-            async for chunk in stream:
-                timer.reschedule(loop.time() + idle_timeout_s)  # a token -> reset idle
-                if not chunk.choices:
-                    continue
-                delta = chunk.choices[0].delta
-                if delta.content:
-                    content.append(delta.content)
-                piece = getattr(delta, "reasoning_content", None) or getattr(
-                    delta, "reasoning", None
-                )
-                if piece:
-                    reasoning.append(piece)
-    finally:
-        with contextlib.suppress(Exception):
-            await stream.close()
-    return _salvage_submission("".join(content)), "".join(reasoning)
-
-
 async def propose_batch_async(
     prompt: str, provider: providers.Provider, idle_timeout_s: float
 ) -> tuple[list[Submission], str]:
     """Author a batch of submissions on ``provider`` by STREAMING an AsyncOpenAI call.
 
-    A near-copy of :func:`propose_submission_async` (same streaming, idle-timeout
-    reschedule, reasoning gather, and 429-concurrency log), differing only in the
-    completion budget -- ``provider.max_tokens`` (the model's real per-model max,
-    since a batch reply is several submissions long) rather than the single-submission
-    ``_PROPOSER_MAX_TOKENS`` -- and in salvaging a list of submissions instead of one.
+    No provider reliably honors structured outputs on the nested ``SubmissionBatch``
+    schema (they parse-fail), so we skip ``.parse()`` and stream one ``.create()``,
+    gathering the answer content plus any ``reasoning_content`` deltas, then feed it to
+    :func:`_salvage_batch`. Streaming replaces the wall-clock timeout with an IDLE one
+    (:func:`asyncio.timeout`, rescheduled per chunk): the call is abandoned only if no
+    token arrives for ``idle_timeout_s`` seconds (a stall), never mid-stream, so a
+    slow-but-active thinking model always finishes. The completion budget is
+    ``provider.max_tokens`` (the model's real per-model max, since a batch reply is
+    several submissions long). A CI concurrency 429 (on the initial request) is logged
+    distinctly for the per-key experiment, then re-raised.
 
     Args:
         prompt: The batch-proposer prompt text.
@@ -611,46 +634,13 @@ async def propose_batch_async(
     return _salvage_batch("".join(content)), "".join(reasoning)
 
 
-def _salvage_submission(content: str) -> Submission:
-    """Salvage a valid :class:`Submission` from a raw (schema-ignoring) chat reply.
-
-    Parses the message objects, drops any that fail :class:`Message` construction (bad
-    type, ``hops`` != target count, invalid text), then keeps the leading messages that
-    fit BOTH the ``config.MAX_SHIP_MESSAGES`` count cap and the T4 total-hop budget
-    (greedily dropping the trailing overflow). The resulting :class:`Submission` is
-    schema-valid, or its construction raises (empty after filtering) and the generation
-    is skipped by the loop's per-generation resilience.
-
-    Args:
-        content: Raw chat-completion content.
-
-    Returns:
-        A schema-valid :class:`~jed_attack.campaign.submission.Submission`.
-    """
-    budget = config.HOP_BUDGET
-    kept: list[Message] = []
-    used_hops = 0
-    dropped = 0
-    for obj in _parse_message_objects(content):
-        try:
-            message = Message(**obj)
-        except pydantic.ValidationError:
-            dropped += 1
-            continue
-        if len(kept) >= config.MAX_SHIP_MESSAGES or used_hops + message.hops > budget:
-            break  # count- or budget-overflow: drop this and every trailing message
-        kept.append(message)
-        used_hops += message.hops
-    _log.info("salvaged submission: %d kept, %d dropped as invalid", len(kept), dropped)
-    return Submission(messages=kept)
-
-
 def _salvage_batch(content: str) -> list[Submission]:
     """Salvage a list of valid Submissions from a raw SubmissionBatch chat reply.
 
-    Parses the batch JSON (a ``{"submissions": [...]}`` object or a bare list), salvages
-    each submission's messages exactly as :func:`_salvage_submission` does (drop invalid
-    messages; keep the leading messages within the count + hop caps), and drops any
+    Parses the batch JSON (a ``{"submissions": [...]}`` object or a bare list), then for
+    each submission drops any message that fails :class:`Message` construction (bad
+    type, ``hops`` != target count, invalid text), keeps the leading messages within the
+    ``config.MAX_SHIP_MESSAGES`` count cap and the T4 total-hop budget, and drops any
     submission left empty. Truncation is not relied on (we await the full response); a
     trailing malformed submission is simply dropped.
 
@@ -685,63 +675,13 @@ def _salvage_batch(content: str) -> list[Submission]:
     return batch
 
 
-def _parse_message_objects(text: str) -> list[dict[str, Any]]:
-    """Extract the first JSON array of message objects from a chat reply.
-
-    Scans each ``[`` and decodes the JSON value there (tolerating prose/fences), and —
-    since a schema-ignoring provider may wrap the array in ``{"messages": [...]}`` —
-    also decodes a leading object and reads its ``messages`` field.
-
-    Args:
-        text: Raw chat-completion content.
-
-    Returns:
-        The message-object dicts, or ``[]`` if none parse.
-    """
-    decoder = json.JSONDecoder()
-    for start in _bracket_positions(text):
-        try:
-            data, _ = decoder.raw_decode(text[start:])
-        except json.JSONDecodeError:
-            continue
-        if isinstance(data, list):
-            objects = [item for item in data if isinstance(item, dict)]
-            if objects:
-                return objects
-    brace = text.find("{")
-    if brace != -1:
-        try:
-            obj, _ = decoder.raw_decode(text[brace:])
-        except json.JSONDecodeError:
-            return []
-        if isinstance(obj, dict) and isinstance(obj.get("messages"), list):
-            return [m for m in obj["messages"] if isinstance(m, dict)]
-    return []
-
-
-def _bracket_positions(text: str) -> Iterator[int]:
-    """Yield the index of every ``[`` in the text, left to right.
-
-    Args:
-        text: The text to scan.
-
-    Yields:
-        Each opening-bracket index.
-    """
-    start = text.find("[")
-    while start != -1:
-        yield start
-        start = text.find("[", start + 1)
-
-
 def _extract_json(content: str) -> dict[str, Any] | list[Any]:
     """Extract the largest JSON object or array from a raw chat reply.
 
-    Generalizes :func:`_parse_message_objects`'s bracket-scan (tolerant of surrounding
+    Scans each ``{``/``[`` and decodes the JSON value there (tolerant of surrounding
     prose/``` fences, since decoding starts right at the ``{``/``[`` and ignores
-    anything before or after the matched span) from arrays-of-messages to any
-    ``{...}``/``[...]`` JSON value, picking the longest span that parses so a batch
-    reply's outer object wins over any smaller nested value.
+    anything before or after the matched span), picking the longest span that parses so
+    a batch reply's outer object wins over any smaller nested value.
 
     Args:
         content: Raw chat-completion content.

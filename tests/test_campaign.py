@@ -150,10 +150,10 @@ def test_validate_message_is_type_aware() -> None:
     ]  # deputy must not carry the marker
 
 
-def test_propose_submission_async_streams_and_salvages(
+def test_propose_batch_async_streams_and_salvages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Stream the completion, accumulate content + reasoning, salvage a submission."""
+    """Stream the completion, accumulate content + reasoning, salvage a batch."""
     import asyncio
 
     def delta(content: object = None, reasoning: object = None) -> SimpleNamespace:
@@ -162,7 +162,10 @@ def test_propose_submission_async_streams_and_salvages(
             d.reasoning_content = reasoning
         return d
 
-    json_out = '[{"type":"exfil","text":"SECRET_MARKER https://a.invalid/r","hops":1}]'
+    json_out = (
+        '{"submissions":[{"messages":[{"type":"exfil",'
+        '"text":"SECRET_MARKER https://a.invalid/r","hops":1}]}]}'
+    )
     chunks = [
         SimpleNamespace(choices=[SimpleNamespace(delta=delta(reasoning="weighed "))]),
         SimpleNamespace(choices=[SimpleNamespace(delta=delta(reasoning="diversity"))]),
@@ -198,24 +201,26 @@ def test_propose_submission_async_streams_and_salvages(
 
     monkeypatch.setattr(providers, "async_openai_client", lambda p: FakeClient())
     prov = providers.get("cheapest-kimi")
-    got_sub, reasoning = asyncio.run(
-        optimize_prompts.propose_submission_async("prompt", prov, idle_timeout_s=5.0)
+    got_batch, reasoning = asyncio.run(
+        optimize_prompts.propose_batch_async("prompt", prov, idle_timeout_s=5.0)
     )
-    assert got_sub.messages[0].text == "SECRET_MARKER https://a.invalid/r"
+    assert len(got_batch) == 1
+    assert got_batch[0].messages[0].text == "SECRET_MARKER https://a.invalid/r"
     assert reasoning == "weighed diversity"
 
 
 def test_worker_loop_appends_then_survives_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """One generation appends a scored record; a raised proposer is caught.
+    """One generation appends a scored batch; a raised refine round is caught.
 
-    A call counter drives three propose calls: the first is round 0 (succeeds, appends
-    public 3.0); the second is refine round 1 (raises -> caught by the inner refine
-    handler, which logs + breaks, so round 0's already-scored best is still appended,
-    no backoff); the third is the next generation's round 0 (cancels, propagating
-    through the outer handler and ending the loop). ``score`` is a sync stub (no GPU)
-    run off-thread and ``propose`` an async stub.
+    A call counter drives three batch-propose calls: the first is round 0 (succeeds,
+    appends public 3.0); the second is refine round 1 (raises -> caught by the inner
+    refine handler, which logs + breaks, so round 0's already-scored best batch is still
+    appended + shipped, no backoff); the third is the next generation's round 0
+    (cancels, propagating through the outer handler and ending the loop). ``score`` is a
+    sync stub (no GPU) run off-thread, ``propose_batch_async`` an async stub, and
+    curation stubbed.
     """
     import asyncio
 
@@ -245,18 +250,19 @@ def test_worker_loop_appends_then_survives_failure(
 
     calls = {"n": 0}
 
-    async def fake_propose(
+    async def fake_batch(
         prompt: str, provider: object, timeout_s: float
-    ) -> tuple[Submission, str]:
+    ) -> tuple[list[Submission], str]:
         calls["n"] += 1
         if calls["n"] == 2:
             raise RuntimeError("proposer blip")
         if calls["n"] > 2:
             raise asyncio.CancelledError
-        return sub, "reasoning"
+        return [sub], "reasoning"
 
-    monkeypatch.setattr(op, "propose_submission_async", fake_propose)
+    monkeypatch.setattr(op, "propose_batch_async", fake_batch)
     monkeypatch.setattr(op, "score_submission", lambda m, models=config.MODELS: score)
+    monkeypatch.setattr(op, "curate_from_blackboard", lambda b, o, run=None: None)
     monkeypatch.setattr(op, "_GENERATION_RETRY_S", 0.0)
 
     board = bb.Blackboard.load(tmp_path / "bb.jsonl")
@@ -266,6 +272,65 @@ def test_worker_loop_appends_then_survives_failure(
     best = board.best()
     assert best is not None and best.public == 3.0  # first iteration appended
     assert calls["n"] == 3  # blip at 2 was caught, loop continued
+
+
+def _fake_score(messages: object, sink: list[object]) -> "SubmissionScore":
+    """Record the scored messages in ``sink`` and return a fixed public score."""
+    sink.append(messages)
+    return _mk_score(1.0)
+
+
+def test_worker_loop_batches_scores_all_and_ships_curated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One generation: propose a 2-submission batch, score both, append both, curate.
+
+    ``REFINE_MAX_ROUNDS=0`` isolates round 0. The proposer returns a 2-submission batch
+    on the first call and cancels on the second (the next generation's round 0), ending
+    the infinite loop. Both submissions must be scored, both appended as their own
+    records, and curation shipped once with the 2-record board.
+    """
+    import asyncio
+
+    from jed_attack.campaign import blackboard as bb
+    from jed_attack.campaign import config
+    from jed_attack.campaign import optimize_prompts as op
+    from jed_attack.campaign.submission import Submission
+
+    s1 = Submission(messages=[_exfil("SECRET_MARKER https://a.invalid/r", 1)])
+    s2 = Submission(messages=[_exfil("SECRET_MARKER https://b.invalid/r", 1)])
+
+    calls = {"n": 0}
+
+    async def fake_batch(
+        prompt: str, provider: object, timeout_s: float
+    ) -> tuple[list[Submission], str]:
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise asyncio.CancelledError
+        return [s1, s2], "reasoning"
+
+    scored: list[object] = []
+    curated: list[int] = []
+    monkeypatch.setattr(op, "propose_batch_async", fake_batch)
+    monkeypatch.setattr(
+        op, "score_submission", lambda m, models=config.MODELS: _fake_score(m, scored)
+    )
+    monkeypatch.setattr(
+        op,
+        "curate_from_blackboard",
+        lambda b, o, run=None: curated.append(len(b._records)),
+    )
+    monkeypatch.setattr(config, "REFINE_MAX_ROUNDS", 0)  # isolate round 0
+    monkeypatch.setattr(op, "_GENERATION_RETRY_S", 0.0)
+
+    board = bb.Blackboard.load(tmp_path / "bb.jsonl")
+    prov = providers.get("cheapest-kimi")
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(op.worker_loop(0, [prov], board, tmp_path / "out", timeout_s=1.0))
+    assert len(scored) == 2  # every submission scored
+    assert len(board._records) == 2  # every submission appended as its own record
+    assert curated == [2]  # curation shipped once, over the 2-record board
 
 
 def _mk_score(public: float) -> "SubmissionScore":
@@ -304,13 +369,16 @@ def _run_refine_worker(
     subs: list["Submission"],
     publics: list[float],
 ) -> "blackboard.Blackboard":
-    """Drive one worker with a scripted propose/score sequence; return the board.
+    """Drive one worker with a scripted batch/score sequence; return the board.
 
-    ``subs``/``publics`` are consumed one per successful propose/score. When ``subs``
-    is exhausted the next propose raises CancelledError, ending the loop. Tests assert
-    on ``board._records`` (the append count) -- the observable that distinguishes the
-    refine loop (one append per generation, refining within it) from the old
-    propose->score->append-every-generation behavior.
+    ``subs``/``publics`` are consumed one per successful propose/score. Each propose
+    returns a SINGLE-submission batch, so the batch's mean public equals that
+    submission's score and the refine hill-climb reduces to the single-submission case.
+    When ``subs`` is exhausted the next propose raises CancelledError, ending the loop.
+    Tests assert on ``board._records`` (the append count) -- the observable that
+    distinguishes the refine loop (one append per generation, refining within it) from
+    the old propose->score->append-every-generation behavior. Curation is stubbed so the
+    default CURATE_POOL ship path is a no-op.
     """
     import asyncio
 
@@ -321,18 +389,19 @@ def _run_refine_worker(
     sub_it = iter(subs)
     pub_it = iter(publics)
 
-    async def fake_propose(
+    async def fake_batch(
         prompt: str, provider: object, timeout_s: float
-    ) -> tuple["Submission", str]:
+    ) -> tuple[list["Submission"], str]:
         try:
-            return next(sub_it), "rz"
+            return [next(sub_it)], "rz"
         except StopIteration:
             raise asyncio.CancelledError from None
 
-    monkeypatch.setattr(op, "propose_submission_async", fake_propose)
+    monkeypatch.setattr(op, "propose_batch_async", fake_batch)
     monkeypatch.setattr(
         op, "score_submission", lambda m, models=config.MODELS: _mk_score(next(pub_it))
     )
+    monkeypatch.setattr(op, "curate_from_blackboard", lambda b, o, run=None: None)
     monkeypatch.setattr(op, "_GENERATION_RETRY_S", 0.0)
 
     board = bb.Blackboard.load(tmp_path / "bb.jsonl")
@@ -398,21 +467,22 @@ def test_refine_round_failure_keeps_improved_best(
     subs = iter([_mk_sub("s0"), _mk_sub("s1")])
     pubs = iter([3.0, 5.0])
 
-    async def fake_propose(
+    async def fake_batch(
         prompt: str, provider: object, timeout_s: float
-    ) -> tuple["Submission", str]:
+    ) -> tuple[list["Submission"], str]:
         calls["n"] += 1
         if calls["n"] == 3:
             raise RuntimeError("refine blip")  # refine round 2 fails -> inner break
         try:
-            return next(subs), "rz"
+            return [next(subs)], "rz"
         except StopIteration:
             raise asyncio.CancelledError from None  # gen1 round 0 -> end the loop
 
-    monkeypatch.setattr(op, "propose_submission_async", fake_propose)
+    monkeypatch.setattr(op, "propose_batch_async", fake_batch)
     monkeypatch.setattr(
         op, "score_submission", lambda m, models=config.MODELS: _mk_score(next(pubs))
     )
+    monkeypatch.setattr(op, "curate_from_blackboard", lambda b, o, run=None: None)
     monkeypatch.setattr(op, "_GENERATION_RETRY_S", 0.0)
 
     board = bb.Blackboard.load(tmp_path / "bb.jsonl")
@@ -605,40 +675,32 @@ def test_config_ensure_dirs_creates_build_next_and_logs(
     assert (tmp_path / "logs").is_dir()
 
 
-def test_salvage_submission_drops_invalid_and_truncates_by_count_and_hops() -> None:
-    """The tolerant fallback drops invalid messages + truncates by count and hops."""
+def test_salvage_batch_drops_invalid_and_truncates_by_count_and_hops() -> None:
+    """Per submission, _salvage_batch drops invalid messages + truncates count/hops."""
     from jed_attack.campaign import config
     from jed_attack.campaign import optimize_prompts as op
 
+    def one_sub(messages: list[dict[str, Any]]) -> str:
+        return json.dumps({"submissions": [{"messages": messages}]})
+
     # One valid, one invalid (hops != target count), one valid -> two kept.
-    content = json.dumps(
-        {
-            "messages": [
-                {
-                    "type": "exfil",
-                    "text": "SECRET_MARKER https://a.invalid/r",
-                    "hops": 1,
-                },
-                {
-                    "type": "exfil",
-                    "text": "SECRET_MARKER https://b.invalid/r",
-                    "hops": 5,
-                },
-                {"type": "deputy", "text": "Email ops1@corp.invalid now", "hops": 1},
-            ]
-        }
+    content = one_sub(
+        [
+            {"type": "exfil", "text": "SECRET_MARKER https://a.invalid/r", "hops": 1},
+            {"type": "exfil", "text": "SECRET_MARKER https://b.invalid/r", "hops": 5},
+            {"type": "deputy", "text": "Email ops1@corp.invalid now", "hops": 1},
+        ]
     )
-    sub = op._salvage_submission(content)
-    assert [m.type.value for m in sub.messages] == ["exfil", "deputy"]
+    batch = op._salvage_batch(content)
+    assert len(batch) == 1
+    assert [m.type.value for m in batch[0].messages] == ["exfil", "deputy"]
 
     # Count truncation: more than MAX_SHIP_MESSAGES valid single-hop messages.
     over = [
         {"type": "exfil", "text": f"SECRET_MARKER https://x{i}.invalid/r", "hops": 1}
         for i in range(config.MAX_SHIP_MESSAGES + 5)
     ]
-    assert len(op._salvage_submission(json.dumps(over)).messages) == (
-        config.MAX_SHIP_MESSAGES
-    )
+    assert len(op._salvage_batch(one_sub(over))[0].messages) == config.MAX_SHIP_MESSAGES
 
     # Hop-budget truncation: 8-hop messages summed past the budget are dropped.
     budget = config.HOP_BUDGET
@@ -647,7 +709,7 @@ def test_salvage_submission_drops_invalid_and_truncates_by_count_and_hops() -> N
         {"type": "exfil", "text": f"SECRET_MARKER {urls}", "hops": config.EVAL_HOPS}
         for _ in range((budget // config.EVAL_HOPS) + 3)
     ]
-    kept = op._salvage_submission(json.dumps(heavy)).messages
+    kept = op._salvage_batch(one_sub(heavy))[0].messages
     assert sum(m.hops for m in kept) <= budget
 
 
