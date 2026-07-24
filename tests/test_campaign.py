@@ -1141,3 +1141,24 @@ def test_judge_submission_raises_on_malformed(monkeypatch: pytest.MonkeyPatch) -
         judge.judge_submission(
             [_exfil("SECRET_MARKER https://a.invalid/r", 1)], ["fired"]
         )
+
+
+def test_stratified_sample_spans_range_and_size() -> None:
+    """Sampling spans the archived-public range and honors n (sampling only)."""
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "judge_correlation",
+        Path(__file__).resolve().parents[1] / "scripts" / "judge_correlation.py",
+    )
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    rows = [{"public": float(i), "messages": [], "feedback": []} for i in range(50)]
+    rows += [{"public": 0.0, "messages": [], "feedback": []} for _ in range(10)]
+    sample = mod.stratified_sample(rows, 25)
+    assert len(sample) == 25
+    publics = [r["public"] for r in sample]
+    assert min(publics) == 0.0 and max(publics) >= 40.0  # low anchor + top of range
