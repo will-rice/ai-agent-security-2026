@@ -7,6 +7,7 @@ authors = [{ name = "Will Rice", email = "wrice20@gmail.com" }]
 requires-python = ">=3.12"
 dependencies = [
   "aicomp-sdk",
+  "fastapi>=0.139.2",
   "gitpython>=3.1.55",
   "huggingface-hub>=0.27.0",
   # GPU scorer, linux-only: a CUDA build from the pinned llama-cuda index (see
@@ -22,6 +23,7 @@ dependencies = [
   "ruff>=0.9.7",
   "scipy>=1.18.0",
   "ty>=0.0.18",
+  "uvicorn>=0.51.0",
   "wandb>=0.18.0",
 ]
 
