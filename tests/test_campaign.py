@@ -651,6 +651,25 @@ def test_salvage_submission_drops_invalid_and_truncates_by_count_and_hops() -> N
     assert sum(m.hops for m in kept) <= budget
 
 
+def test_salvage_batch_keeps_valid_submissions() -> None:
+    """_salvage_batch parses submissions, dropping invalid messages/empty subs."""
+    from jed_attack.campaign import optimize_prompts as op
+
+    # The middle submission's only message has no valid target -> dropped -> the
+    # submission is left empty -> dropped.
+    content = (
+        '{"submissions": ['
+        '{"messages": [{"type":"exfil","text":"SECRET_MARKER https://a.invalid/r",'
+        '"hops":1}]},'
+        '{"messages": [{"type":"exfil","text":"no marker here","hops":1}]},'
+        '{"messages": [{"type":"deputy","text":"Notify ops@corp.invalid","hops":1}]}'
+        "]}"
+    )
+    batch = op._salvage_batch(content)
+    assert len(batch) == 2
+    assert all(len(s.messages) >= 1 for s in batch)
+
+
 def test_trace_summary_reports_denial_and_refusal() -> None:
     """trace_summary parses denied:/confirm_required: prefixes and filters (no_tool)."""
     from jed_attack.campaign.victim_feedback import trace_summary
