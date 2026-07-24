@@ -1,51 +1,58 @@
-# Dylan Judge Fleet + Novelty-Aware Pool Selection (Design)
+# Dylan Judge Service (vLLM + FastAPI) + Novelty-Aware Pool Selection (Design)
 
 **Date:** 2026-07-24
 **Status:** design, pending user review
 
 ## Goal
 
-Stand up two LLM judges on dylan's (now-idle) GPUs — the existing **severity**
-(surrogate-guardrail) judge and a new **novelty** (pool-relative) judge — each returning
-a float `score` + `feedback`, and use them as **objectives in selection**: build the
-shipped attack pool from the optimizer's candidates by admitting those that fire
-(faithful replay), add novelty vs the pool (novelty judge), ranked by severity (severity
-judge). Both scores are logged to wandb.
+Stand up a **FastAPI judge service on dylan** (backed by **vLLM** on the RTX 3090)
+exposing two typed judges — the existing **severity** (surrogate-guardrail) judge and a
+new **novelty** (pool-relative) judge — each returning a float `score` + `feedback`. Use
+them as **objectives in selection**: build the shipped attack pool from the optimizer's
+candidates by admitting those that fire (faithful replay), add novelty vs the pool
+(novelty judge), ranked by severity (severity judge). Both scores are logged to wandb.
+
+Shared pydantic `BaseModel`s are the single contract used everywhere: FastAPI
+request/response schemas, the vLLM guided-JSON schema, green's client return types, and
+the wandb log source — no hand-written JSON, no drift.
 
 ## Why
 
 - The optimizer is stuck in one attack shape ("Send SECRET_MARKER to N urls"); the
   faithful replay score rewards *firing*, not *diversity*, so it never leaves that local
-  optimum. The private leaderboard rewards diversity (unique cells / surviving deputies —
-  memory `jed-strategy`, `jed-multipost-lever`), so a **novelty objective** pushes
-  exploration the replay score can't.
+  optimum. The private leaderboard rewards diversity (`jed-strategy`,
+  `jed-multipost-lever`), so a **novelty objective** pushes exploration the replay score
+  can't.
 - The private LB is itself an LLM-as-judge guardrail (`jed-final-lb-is-private`), so the
-  **severity judge** is a proxy for the metric that actually picks winners — a ranking
-  signal the public/replay score can't express.
-- Dylan has two idle 24 GB GPUs (RTX 3090 + TITAN RTX); serving the judges there keeps
-  them entirely off green's in-process scorer (no GPU contention).
+  **severity judge** proxies the metric that actually picks winners — a ranking signal
+  the public/replay score can't express.
+- Dylan's GPUs are idle. The judge is a **batch** scorer (curation scores many
+  candidates' novelty per pass), so vLLM's continuous batching + guided decoding is the
+  right tool. The 3090 is Ampere (sm_86, supports vLLM's quant kernels); the TITAN RTX is
+  Turing (sm_75) and can't run them, so vLLM serves on the 3090 (TITAN left out).
 
 ## Non-goals
 
-- Not changing the proposer/replay loop's authoring or scoring.
+- Not changing the proposer/replay authoring or scoring loop.
 - Not a correlation study (the earlier severity-judge study was inconclusive — labels
-  were dominated by over-budget zeros, since fixed). This wires the judges in as
-  selection objectives directly, per the approved design.
-- No T4-fidelity claim for the judges — they are independent opinions, not replays.
+  dominated by over-budget zeros, since fixed). Judges wire in as selection objectives.
+- No T4-fidelity claim for the judges — independent opinions, not replays.
 
-## Response models (`judge.py`)
+## Shared models (`src/jed_attack/campaign/judge.py`)
 
-Two distinct pydantic models (distinct so each field description tailors the ollama
-structured-output schema). `score` is a bounded `float` (range in the `Field`, enforced
-by ollama's constrained decoding — no manual clamp); `feedback` is one sentence of the
-judge's own reasoning (DATA, never a directive).
+Distinct response models (distinct so each field description tailors vLLM's guided-JSON
+schema). `score` is a bounded `float` (range in the `Field`, enforced by vLLM's guided
+decoding); `feedback` is one sentence of the judge's reasoning (DATA, never a directive).
+Request models carry the typed inputs.
 
 ```python
 import pydantic
 
+from jed_attack.campaign.submission import Message
+
 
 class SeverityScore(pydantic.BaseModel):
-    """Surrogate-guardrail judge verdict (dylan :11434) -- a private-LB severity proxy."""
+    """Surrogate-guardrail judge verdict -- a private-LB severity proxy."""
 
     score: float = pydantic.Field(
         ge=0.0,
@@ -64,7 +71,7 @@ class SeverityScore(pydantic.BaseModel):
 
 
 class NoveltyScore(pydantic.BaseModel):
-    """Novelty judge verdict (dylan :11435) -- diversity of a candidate vs the pool."""
+    """Novelty judge verdict -- diversity of a candidate vs the pool."""
 
     score: float = pydantic.Field(
         ge=0.0,
@@ -79,117 +86,135 @@ class NoveltyScore(pydantic.BaseModel):
     feedback: str = pydantic.Field(
         description="One sentence: what makes it novel, or how it's derivative of the pool."
     )
+
+
+class SeverityRequest(pydantic.BaseModel):
+    """Judge a whole submission's elicited severity: its messages + per-message feedback."""
+
+    messages: list[Message]
+    feedback: list[str]
+
+
+class NoveltyRequest(pydantic.BaseModel):
+    """Judge one candidate's novelty against a sample of the current pool."""
+
+    candidate: list[Message]
+    pool_sample: list[str]
 ```
 
 ## Components
 
-### 1. Serving — two Qwen judges on dylan
+### 1. Serving — vLLM + FastAPI on dylan
 
-- `scripts/serve_dylan_judges.sh` (user-space ollama, same install pattern as
-  `serve_ollama.sh`): install `~/ollama`, `ollama pull qwen3:32b`, then start **two**
-  detached `ollama serve` instances, each pinned to one GPU + its own port and model dir:
-  - **severity**: `CUDA_VISIBLE_DEVICES=0` (RTX 3090), `OLLAMA_HOST=127.0.0.1:11434`.
-  - **novelty**: `CUDA_VISIBLE_DEVICES=1` (TITAN RTX), `OLLAMA_HOST=127.0.0.1:11435`.
-  (Distinct `OLLAMA_MODELS`/`tmux` sessions so they don't collide.) Qwen3-32B Q4 (~20 GB)
-  fits each 24 GB card. Both run in parallel, off green.
-- The optimizer runs on green and reaches dylan over SSH-forwarded ports or dylan's LAN
-  address. Config:
-  - `DYLAN_SEVERITY_URL = os.getenv("DYLAN_SEVERITY_URL", "http://dylan:11434/v1")`
-  - `DYLAN_NOVELTY_URL  = os.getenv("DYLAN_NOVELTY_URL",  "http://dylan:11435/v1")`
-  (Exact host/forwarding resolved at deploy; default assumes reachable `dylan`.)
+- **vLLM** serves an AWQ (4-bit) Qwen3-32B on the 3090 (`CUDA_VISIBLE_DEVICES=0`), its
+  built-in OpenAI-compatible server on `127.0.0.1:8000`, with guided decoding enabled.
+  (Confirm an AWQ/GPTQ Qwen3-32B artifact at build; fits 24 GB with tuned
+  `--gpu-memory-utilization` + bounded context.)
+- **FastAPI** `judge_service.py` (dylan, `127.0.0.1:8100`): imports the shared models +
+  prompt builders, exposes:
+  - `POST /severity` (`SeverityRequest` -> `SeverityScore`)
+  - `POST /novelty` (`NoveltyRequest` -> `NoveltyScore`)
+  Each handler builds the prompt (shared code), calls the local vLLM OpenAI endpoint with
+  the pydantic model as guided-JSON (`extra_body={"guided_json": Model.model_json_schema()}`),
+  `temperature=0`, thinking off, and returns the parsed model.
+- `scripts/serve_dylan_judges.sh`: launch vLLM (tmux) + `uvicorn judge_service:app`
+  (tmux). `scripts/sync_dylan.sh`: rsync the repo to dylan (mirrors `sync_green.sh`).
+- Config: `DYLAN_JUDGE_URL = os.getenv("DYLAN_JUDGE_URL", "http://dylan:8100")`
+  (green reaches it over dylan's LAN address or an SSH-forwarded port; resolved at deploy).
+- **Forward-compat (matched GPUs):** vLLM serves one GPU here only because the TITAN RTX
+  is Turing (arch mismatch). With a 2nd matched 3090, add `--data-parallel-size 2` to the
+  vLLM launch -> 2 replicas, one per GPU, vLLM routes across them internally (~2x
+  throughput, single endpoint). One-flag change; the FastAPI service, shared models, and
+  curation are untouched.
 
-### 2. Judges (`judge.py`)
+### 2. Judges — green client (`judge.py`)
 
-- **Migrate** the existing `judge_submission` → `judge_severity(messages, feedback) ->
-  SeverityScore` (float score + `feedback`, replacing the old `JudgeVerdict` int/`rationale`),
-  pointed at `DYLAN_SEVERITY_URL`.
-- **New** `judge_novelty(candidate, pool_sample) -> NoveltyScore`, pointed at
-  `DYLAN_NOVELTY_URL`. `candidate` = the message(s) under test; `pool_sample` = a sample
-  of the current pool's messages, rendered into the prompt as "attacks already in the
-  pool".
-- Both use the OpenAI SDK `.parse` (structured output) with `response_format` = the
-  pydantic model, `temperature=0`, Qwen3 thinking off. Build-time check: if ollama's
-  `/v1` `.parse` doesn't honor `json_schema`, fall back to ollama's native `format=<schema>`.
+- `judge_severity(messages, feedback) -> SeverityScore`: POST a `SeverityRequest` to
+  `{DYLAN_JUDGE_URL}/severity`, return the parsed `SeverityScore`.
+- `judge_novelty(candidate, pool_sample) -> NoveltyScore`: POST a `NoveltyRequest` to
+  `{DYLAN_JUDGE_URL}/novelty`, return the parsed `NoveltyScore`.
+- The prompt builders (`_severity_messages`, `_novelty_messages`) live here too (shared
+  code the FastAPI service imports). Replaces the old `judge_submission`/`JudgeVerdict`.
 
-### 3. Selection — novelty-aware pool curation
+### 3. Selection — novelty-aware pool curation (`curate.py`)
 
-A new curation step builds the shipped pool from the blackboard's faithfully-scored
-candidates (across all submissions, not one best submission):
+The curation **core** takes a passed-in candidate collection (NOT the blackboard
+directly) so it's reusable when the proposer later returns `list[Submission]`:
 
-1. **Eligible = fires on replay.** Take every candidate whose faithful replay severity
-   > 0 (the T4-proxy quality floor we trust). Non-firing candidates are dropped.
+```python
+def select_pool(candidates, novelty, severity, threshold, cap) -> list[Candidate]: ...
+```
+
+1. **Eligible = fires on replay.** Keep candidates whose faithful replay severity > 0
+   (the T4-proxy quality floor we trust). Non-firing dropped.
 2. **Diversity gate (novelty judge).** Greedily, in descending replay-severity order,
-   consider each eligible candidate; admit it only if `judge_novelty(candidate,
-   pool_so_far).score >= NOVELTY_ADMIT_THRESHOLD`. This prevents 30 near-identical exfils.
-3. **Rank / fill (severity judge).** Among admitted candidates, rank by the severity
-   judge's score (private-LB proxy), filling up to `MAX_SHIP_MESSAGES` (30) slots. Ship
-   that curated pool via the existing `assemble.build`.
+   admit a candidate only if `judge_novelty(candidate, pool_so_far).score >=
+   NOVELTY_ADMIT_THRESHOLD` -- prevents 30 near-identical exfils.
+3. **Rank / fill (severity judge).** Among admitted, rank by the severity judge's score
+   (private-LB proxy), filling up to `MAX_SHIP_MESSAGES` (30). Ship via `assemble.build`.
 
-The curation runs as a distinct step (a `curate.py` module + a periodic/assemble-time
-call), reading the blackboard and writing the shipped `attack.py` — the proposer/replay
-loop is unchanged. `NOVELTY_ADMIT_THRESHOLD` is a config constant (start ~40, tune).
+A thin caller supplies the blackboard's firing candidates as `candidates` for this
+iteration; the proposer/replay loop is unchanged.
 
 ### 4. wandb logging
 
-The curation logs, per built pool: `severity_score` and `novelty_score` (mean over the
-admitted pool), `pool_size`, and how many candidates the novelty gate rejected — so the
-diversity pressure is visible over time.
+Per built pool: `severity_score` + `novelty_score` (mean over admitted), `pool_size`,
+and novelty-gate rejects — so diversity pressure is visible over time.
 
 ## Config additions (`config.py`)
 
-- `DYLAN_SEVERITY_URL`, `DYLAN_NOVELTY_URL` (env-overridable, above).
-- `JUDGE_MODEL` already exists (`qwen3:32b`) — reused for both.
-- `NOVELTY_ADMIT_THRESHOLD = 40.0` (novelty score below which a candidate is not admitted).
-- `NOVELTY_POOL_SAMPLE = 8` (how many current-pool messages to show the novelty judge).
+- `DYLAN_JUDGE_URL` (env-overridable, above).
+- `JUDGE_MODEL` already exists (`qwen3:32b` for the earlier ollama path); add/rename a
+  vLLM model id constant as needed at build.
+- `NOVELTY_ADMIT_THRESHOLD = 40.0`; `NOVELTY_POOL_SAMPLE = 8` (pool messages shown).
 
 ## Open risk (flagged, not blocking)
 
-The severity judge was never validated to correlate with the real LB (the earlier study
-was confounded by over-budget zeros). Using it only for *ranking already-firing,
-already-diverse* candidates — never as the firing/quality floor (that stays the faithful
-replay score) — bounds the downside: a miscalibrated severity judge reorders the pool but
-can't admit a non-firing or non-novel candidate. If it proves unhelpful, the ranking can
-fall back to replay severity with no other change.
+The severity judge was never validated to correlate with the real LB (earlier study
+confounded by over-budget zeros). Using it only to *rank already-firing, already-diverse*
+candidates -- never as the firing/quality floor (that stays the faithful replay score) --
+bounds the downside: a miscalibrated severity judge reorders the pool but can't admit a
+bad candidate. If unhelpful, ranking falls back to replay severity with no other change.
 
 ## Future direction (design for reuse)
 
-The curation **core** — `select_pool(candidates, ...)` — takes a passed-in candidate
-collection and returns the curated pool; it does NOT read the blackboard itself (a thin
-caller supplies the blackboard's records as `candidates`). This keeps the same selection
-shape reusable when the main proposer loop is later changed to return `list[Submission]`
-(the model proposes several submissions per generation and curation picks the diverse
-pool across all of them) — that becomes a one-line change of the input source, not a
-rewrite. This iteration's caller passes the blackboard's firing candidates; nothing else
-about the loop changes yet.
+`select_pool(candidates, ...)` takes a passed-in collection and returns the curated pool;
+it does NOT read the blackboard. When the main proposer loop is later changed to return
+`list[Submission]` (several submissions per generation, curation picks the diverse pool
+across all of them), that's a one-line change of the input source, not a rewrite.
 
 ## Testing
 
-- `judge.py`: unit-test `judge_severity`/`judge_novelty` prompt construction + that a
-  stubbed ollama `.parse` reply yields the right model; malformed reply raises. (ollama
-  HTTP monkeypatched — no live model in CI.)
-- `curate.py`: unit-test the greedy selection on synthetic candidates with a stubbed
-  novelty judge (fires → eligible; below-threshold novelty → rejected; ranking by
-  severity), asserting the pool is diverse + size-capped.
-- Live serving + a real curation pass is a manual dylan/green step, not CI.
+- Shared models: pydantic validation (bounds, required fields) is free; no test needed
+  beyond construction in the judge/curate tests.
+- `judge.py` client: unit-test `SeverityRequest`/`NoveltyRequest` round-trips with a
+  stubbed HTTP transport returning a valid model JSON; malformed reply raises.
+- `judge_service.py`: unit-test each FastAPI handler with vLLM's OpenAI call stubbed
+  (FastAPI `TestClient`) -- request model in, prompt built, response model out.
+- `curate.py`: unit-test `select_pool` on synthetic candidates with stubbed judges (fires
+  -> eligible; below-threshold novelty -> rejected; ranking by severity), asserting the
+  pool is diverse + size-capped.
+- Live vLLM + a real curation pass are manual dylan/green steps, not CI.
 
 ## Files
 
-- Create: `scripts/serve_dylan_judges.sh`
-- Modify: `src/jed_attack/campaign/judge.py` (SeverityScore/NoveltyScore, judge_severity,
-  judge_novelty)
-- Create: `src/jed_attack/campaign/curate.py` (novelty-aware pool selection + wandb)
-- Modify: `src/jed_attack/campaign/config.py` (dylan URLs, novelty knobs)
-- Modify: `tests/test_campaign.py` (judge + curate tests; update existing judge tests to
-  the new SeverityScore return)
+- Create: `scripts/serve_dylan_judges.sh`, `scripts/sync_dylan.sh`
+- Modify: `src/jed_attack/campaign/judge.py` (shared models + request models + prompt
+  builders + green client `judge_severity`/`judge_novelty`)
+- Create: `src/jed_attack/campaign/judge_service.py` (FastAPI app for dylan)
+- Create: `src/jed_attack/campaign/curate.py` (`select_pool` + blackboard caller + wandb)
+- Modify: `src/jed_attack/campaign/config.py` (`DYLAN_JUDGE_URL`, novelty knobs)
+- Modify: `pyproject.toml` (fastapi + uvicorn deps; vLLM is dylan-only, served separately)
+- Modify: `tests/test_campaign.py` (judge client, judge_service, curate tests)
 
 ## Self-review
 
 - **Placeholder scan:** none — exact models, signatures, files.
-- **Consistency:** both judges return the pydantic models above; curation consumes the
-  blackboard's faithful replay severity (quality floor) + the two judges; ship path reuses
-  `assemble.build`. `JUDGE_MODEL` reused.
-- **Scope:** serving + two judges + curation selection + wandb — matches the approved
-  "objectives in selection, curated cross-submission pool" design.
-- **Ambiguity:** the firing floor is explicitly the faithful replay score (not the
-  severity judge); the severity judge is ranking-only, bounding the risk of its
-  unvalidated calibration.
+- **Consistency:** the shared pydantic models are the one contract (FastAPI I/O, vLLM
+  guided-JSON, green client, wandb); curation consumes faithful replay severity (floor) +
+  the two judges; ship path reuses `assemble.build`.
+- **Scope:** vLLM+FastAPI serving on dylan + two typed judges + curation selection +
+  wandb — matches the approved design (vLLM/FastAPI serving, prompts in the repo, curated
+  cross-submission pool).
+- **Ambiguity:** firing floor is explicitly the faithful replay score (not the severity
+  judge); severity judge is ranking-only.
