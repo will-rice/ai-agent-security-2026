@@ -28,13 +28,21 @@ app = fastapi.FastAPI(title="JED judge service")
 
 
 def _vllm_json(messages: list[dict[str, str]], schema: dict[str, Any]) -> str:
-    """Call the local vLLM OpenAI endpoint with guided-JSON; return the reply."""
+    """Call vLLM with schema-constrained JSON output; return the reply content.
+
+    Uses the OpenAI-standard ``response_format`` json_schema (vLLM 0.25's structured
+    outputs backend enforces it), so the reply is valid JSON for ``schema``. The older
+    ``extra_body={"guided_json": ...}`` is NOT honored by vLLM 0.25 (returns free text).
+    """
     client = OpenAI(base_url=config.VLLM_URL, api_key="vllm")
     completion = client.chat.completions.create(
         model=config.VLLM_MODEL,
         messages=cast(list[ChatCompletionMessageParam], messages),
         temperature=0.0,
-        extra_body={"guided_json": schema},
+        response_format={
+            "type": "json_schema",
+            "json_schema": {"name": "judge", "schema": schema},
+        },
     )
     return completion.choices[0].message.content or ""
 
