@@ -38,14 +38,14 @@ MODEL_GPU: dict[str, int] = {"gpt_oss": 0, "gemma_4": 1}
 # Time-aware objective: the T4 gateway INVALIDATES a submission that exceeds ~9000s/
 # model of wall-clock replay. We replay in-process, so we MEASURE green replay-seconds
 # per model and zero any submission over budget (mirrors T4 INVALID). Budget is in
-# GREEN-seconds. RECALIBRATED 2026-07-24: the 120 value assumed 5.6 green-s/candidate
-# (a ~69x green speedup over T4's ~385s/candidate), but the KV-cache fix made green do
-# full fresh evals -> ~8.5 green-s/candidate for heavy all-firing subs, so the real
-# ratio is ~385/8.5 ≈ 45x and the correct budget is ~9000/45 ≈ 200 green-s. The old 120
-# was zeroing ~60% of the optimizer's (valid) output. 200 is the EDGE of that estimate
-# (≈9000 T4-s, ~no margin) -- a T4 verify (v11, 21-cand/179-green-s sub) is in flight to
-# nail the true ratio; refine this from its measured replay-s. gemma never binds.
-GREEN_REPLAY_BUDGET_S: dict[str, float] = {"gpt_oss": 200.0, "gemma_4": 60.0}
+# GREEN-seconds. CALIBRATED FROM A REAL T4 VERIFY 2026-07-24 (v11): a 21-candidate /
+# 179-green-s submission PASSED T4 in ~5060s gpt_oss (of 9000) -> ~241 T4-s/candidate
+# vs 8.5 green-s/candidate = a ~28x ratio, so 9000 T4-s ≈ 318 green-s. With
+# MAX_SHIP_MESSAGES=25 the largest possible submission is ~212 green-s (~6000 T4-s,
+# 44% T4 headroom), so the count cap -- not time -- binds; 280 sits above any capped
+# submission (never wrongly zeros) yet below the ~318 ceiling (backstop only).
+# Earlier 120/200 were too tight (120 zeroed ~60% of valid output). gemma never binds.
+GREEN_REPLAY_BUDGET_S: dict[str, float] = {"gpt_oss": 280.0, "gemma_4": 60.0}
 
 # The proposer models the async team rotates. optimize_team GROUPS these by API key into
 # one lane per key (one worker per lane), and the lane's worker rotates through its
