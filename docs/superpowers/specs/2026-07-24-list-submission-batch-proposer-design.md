@@ -85,14 +85,16 @@ Per generation:
    gate + severity rank over the blackboard's firing candidates) to rebuild the shipped
    `attack.py`. See the fallback below.
 
-### 4. Curation ship path + fallback
+### 4. Curation ship path
 
-`curate_from_blackboard` calls the dylan judges over HTTP. Make it **best-effort**: on
-any judge/transport error, log and **skip the reship this generation** (the last-good
-`attack.py` stays), so a dylan outage never stalls the optimizer. A `curate_pool`
-config flag (default on) lets us disable curation and fall back to the old
-`blackboard.best()` ship if needed. (The novelty/severity thresholds live in config from
-the dylan feature: `NOVELTY_ADMIT_THRESHOLD`, `MAX_SHIP_MESSAGES` as the pool cap.)
+`curate_from_blackboard` calls the dylan judges over HTTP. **Dylan is always up**, so
+curation is the unconditional ship path — no outage fallback / best-effort skip logic.
+A genuine judge/transport error propagates as a real error (not a designed-around case),
+matching the repo's "raise a concise error, no defensive fallback" philosophy. A
+`CURATE_POOL` config flag remains ONLY as an A/B toggle to compare curated-pool ship vs
+the legacy `blackboard.best()` ship — not for outage handling. (Novelty/severity
+thresholds live in config from the dylan feature: `NOVELTY_ADMIT_THRESHOLD`,
+`MAX_SHIP_MESSAGES` as the pool cap.)
 
 ### 5. wandb
 
@@ -129,7 +131,7 @@ add a diversity term to the refine metric.
   invalid submission drops just that one.
 - `worker_loop` (async, stubbed proposer + `score_submission`): one generation scores all
   submissions, batch-refine appends the kept batch's records, and ships via a stubbed
-  `curate_from_blackboard`; a stubbed curation FAILURE skips reship without crashing.
+  `curate_from_blackboard` (assert it's called with the appended candidates).
 - Live end-to-end is a green step, not CI.
 
 ## Files
@@ -151,5 +153,5 @@ add a diversity term to the refine metric.
 - **Scope:** batch proposer + batch refine + score-all + curation ship — matches the
   locked decisions. Scoring-load optimization explicitly deferred.
 - **Ambiguity:** refine metric = mean public (replay-only, no dylan coupling in the tight
-  loop); diversity handled by prompt + novelty ship gate; curation is best-effort so a
-  dylan outage never stalls the loop.
+  loop); diversity handled by prompt + novelty ship gate; curation is the unconditional
+  ship path (dylan always up — errors propagate, no fallback).
