@@ -27,28 +27,38 @@ if [ ! -x "$VLLM_VENV/bin/vllm" ]; then
   VIRTUAL_ENV="$VLLM_VENV" uv pip install vllm ninja
 fi
 
-# vLLM OpenAI server on the 3090 (device 0), guided decoding on, :8000.
+# Launch each server in tmux via a small launcher SCRIPT (avoids nested-quote fragility
+# in the tmux command) that tees to a log, so a fast startup failure is diagnosable
+# (a bare `tmux new-session -d "..."` that exits immediately loses all its output).
+#
+# vLLM: served id pinned to $MODEL (== config.VLLM_MODEL default, so the FastAPI service
+# requests a name vLLM serves). PATH includes the venv bin so flashinfer's runtime JIT
+# finds `ninja`. CUDA_DEVICE_ORDER=PCI_BUS_ID pins device 0 = the 3090 (Ampere; the TITAN
+# RTX is Turing, can't run awq_marlin). gpu-mem 0.90 leaves KV-cache headroom.
+cat > /tmp/jed_run_vllm.sh <<EOF
+#!/usr/bin/env bash
+export PATH="$VLLM_VENV/bin:\$PATH"
+export CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0
+exec "$VLLM_VENV/bin/vllm" serve "$MODEL" --served-model-name "$MODEL" \\
+  --quantization awq_marlin --gpu-memory-utilization 0.90 --max-model-len 8192 --port 8000
+EOF
+chmod +x /tmp/jed_run_vllm.sh
 tmux kill-session -t vllm 2>/dev/null || true
 sleep 1
-# --served-model-name pins the served id to $MODEL so the FastAPI service (which reads
-# config.VLLM_MODEL, same default) always requests a name vLLM actually serves. Override
-# both by exporting VLLM_MODEL before running (config.VLLM_MODEL reads the same env var).
-# PATH includes the venv bin so flashinfer's runtime JIT finds `ninja`.
-# CUDA_DEVICE_ORDER=PCI_BUS_ID pins device 0 = the 3090 (Ampere; the TITAN RTX is Turing
-# and can't run awq_marlin). gpu-memory-utilization 0.90 leaves KV-cache headroom.
-tmux new-session -d -s vllm \
-  "env PATH=\"$VLLM_VENV/bin:\$PATH\" CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 \
-     \"$VLLM_VENV/bin/vllm\" serve \"$MODEL\" --served-model-name \"$MODEL\" \
-     --quantization awq_marlin --gpu-memory-utilization 0.90 \
-     --max-model-len 8192 --port 8000"
+tmux new-session -d -s vllm "bash -lc '/tmp/jed_run_vllm.sh 2>&1 | tee /tmp/vllm.log'"
 
-# FastAPI judge service from the synced repo (uv run auto-syncs), :8100.
+# FastAPI judge service from the synced repo (uv run auto-syncs its deps; needs the
+# vendored aicomp_sdk wheel present in vendor/ -- it's gitignored so sync excludes it,
+# copy it to dylan manually once: scp vendor/aicomp_sdk-*.whl dylan:projects/.../vendor/).
+cat > /tmp/jed_run_judgesvc.sh <<EOF
+#!/usr/bin/env bash
+cd "$REPO"
+exec uv run uvicorn jed_attack.campaign.judge_service:app --host 0.0.0.0 --port 8100
+EOF
+chmod +x /tmp/jed_run_judgesvc.sh
 tmux kill-session -t judgesvc 2>/dev/null || true
 sleep 1
-tmux new-session -d -s judgesvc -c "$REPO" \
-  "exec bash -lc 'uv run uvicorn jed_attack.campaign.judge_service:app \
-     --host 0.0.0.0 --port 8100'"
+tmux new-session -d -s judgesvc "bash -lc '/tmp/jed_run_judgesvc.sh 2>&1 | tee /tmp/judgesvc.log'"
 
 echo "vLLM (:8000, model=$MODEL) + judge service (:8100) launched on dylan"
-echo "  vLLM logs:  tmux attach -t vllm"
-echo "  svc logs:   tmux attach -t judgesvc"
+echo "  logs: /tmp/vllm.log  /tmp/judgesvc.log  (or tmux attach -t vllm|judgesvc)"
