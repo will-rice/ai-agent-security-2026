@@ -16,11 +16,13 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 VLLM_VENV="$HOME/vllm-venv"
 MODEL="${VLLM_MODEL:-bullerwins/Qwen3-32B-awq}"
 
-# One-time: create the vLLM venv + install vLLM (skipped if already present).
+# One-time: create the vLLM venv + install vLLM (skipped if already present). Use `uv
+# venv` (not `python3 -m venv`) so no system python3-venv package / sudo is needed -- uv
+# provides its own interpreter and pip.
 if [ ! -x "$VLLM_VENV/bin/vllm" ]; then
-  python3 -m venv "$VLLM_VENV"
-  "$VLLM_VENV/bin/pip" install -q --upgrade pip
-  "$VLLM_VENV/bin/pip" install -q vllm
+  rm -rf "$VLLM_VENV"
+  uv venv --python 3.12 "$VLLM_VENV"
+  VIRTUAL_ENV="$VLLM_VENV" uv pip install vllm
 fi
 
 # vLLM OpenAI server on the 3090 (device 0), guided decoding on, :8000.
