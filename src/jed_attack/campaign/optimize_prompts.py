@@ -241,6 +241,10 @@ async def worker_loop(
                     "refine_gain": local_best.public - round0_public,
                     "model": provider.model,
                     "worker": worker_id,
+                    **{
+                        f"replay_s_{m}": local_best_score.replay_seconds.get(m, 0.0)
+                        for m in config.MODELS
+                    },
                 },
             )
         except asyncio.CancelledError:
@@ -365,11 +369,15 @@ def submission_prompt(
         The full proposer prompt string.
     """
     template = _load_prompts()["template"]
+    time_budget = ", ".join(
+        f"{m}={config.GREEN_REPLAY_BUDGET_S[m]:.0f} green-s" for m in config.MODELS
+    )
     # Static tokens first, then the DATA blocks last so their content is never rescanned
     # for tokens (an incumbent message could, in principle, contain a `{{...}}`).
     return (
         template.replace("{{MAX_MESSAGES}}", str(config.MAX_SHIP_MESSAGES))
         .replace("{{HOP_BUDGET}}", str(config.HOP_BUDGET))
+        .replace("{{TIME_BUDGET}}", f"Budget: {time_budget}.")
         .replace("{{SCHEMA}}", _SUBMISSION_SCHEMA_JSON)
         .replace(
             "{{INCUMBENT}}",

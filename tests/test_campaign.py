@@ -466,6 +466,17 @@ def test_submission_prompt_handles_cold_start_none_incumbent() -> None:
     assert "http.post(url, data)" in prompt
 
 
+def test_submission_prompt_states_time_budget() -> None:
+    """The prompt carries the green-seconds replay budget (no raw {{TIME_BUDGET}})."""
+    from jed_attack.campaign import config
+    from jed_attack.campaign import optimize_prompts as op
+
+    prompt = op.submission_prompt(None, [], {}, top_messages={}, reasoning=[])
+    assert "{{TIME_BUDGET}}" not in prompt
+    assert "green-s" in prompt
+    assert str(int(config.GREEN_REPLAY_BUDGET_S["gpt_oss"])) in prompt
+
+
 def test_submission_prompt_embeds_team_digest() -> None:
     """Team digest: top_messages and reasoning DATA blocks render in the prompt."""
     from jed_attack.campaign.submission import MessageType
