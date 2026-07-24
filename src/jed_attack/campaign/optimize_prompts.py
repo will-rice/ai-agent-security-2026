@@ -551,6 +551,66 @@ async def propose_submission_async(
     return _salvage_submission("".join(content)), "".join(reasoning)
 
 
+async def propose_batch_async(
+    prompt: str, provider: providers.Provider, idle_timeout_s: float
+) -> tuple[list[Submission], str]:
+    """Author a batch of submissions on ``provider`` by STREAMING an AsyncOpenAI call.
+
+    A near-copy of :func:`propose_submission_async` (same streaming, idle-timeout
+    reschedule, reasoning gather, and 429-concurrency log), differing only in the
+    completion budget -- ``provider.max_tokens`` (the model's real per-model max,
+    since a batch reply is several submissions long) rather than the single-submission
+    ``_PROPOSER_MAX_TOKENS`` -- and in salvaging a list of submissions instead of one.
+
+    Args:
+        prompt: The batch-proposer prompt text.
+        provider: The proposer lane to call.
+        idle_timeout_s: Max seconds to wait for the next streamed token before aborting.
+
+    Returns:
+        The salvaged submissions (possibly empty) and the backend's reasoning text
+        (empty if none).
+    """
+    client = providers.async_openai_client(provider)
+    messages: list[ChatCompletionMessageParam] = [
+        {"role": "system", "content": _load_prompts()["system"]},
+        {"role": "user", "content": prompt},
+    ]
+    try:
+        stream = await client.chat.completions.create(
+            model=provider.model,
+            messages=messages,
+            max_completion_tokens=provider.max_tokens,
+            temperature=_PROPOSER_TEMPERATURE,
+            stream=True,
+        )
+    except Exception as exc:
+        if "concurrency limit" in str(exc).lower():
+            _log.warning("CI concurrency 429 on %s (experiment signal)", provider.model)
+        raise
+    content: list[str] = []
+    reasoning: list[str] = []
+    loop = asyncio.get_running_loop()
+    try:
+        async with asyncio.timeout(idle_timeout_s) as timer:
+            async for chunk in stream:
+                timer.reschedule(loop.time() + idle_timeout_s)  # a token -> reset idle
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                if delta.content:
+                    content.append(delta.content)
+                piece = getattr(delta, "reasoning_content", None) or getattr(
+                    delta, "reasoning", None
+                )
+                if piece:
+                    reasoning.append(piece)
+    finally:
+        with contextlib.suppress(Exception):
+            await stream.close()
+    return _salvage_batch("".join(content)), "".join(reasoning)
+
+
 def _salvage_submission(content: str) -> Submission:
     """Salvage a valid :class:`Submission` from a raw (schema-ignoring) chat reply.
 
@@ -583,6 +643,46 @@ def _salvage_submission(content: str) -> Submission:
         used_hops += message.hops
     _log.info("salvaged submission: %d kept, %d dropped as invalid", len(kept), dropped)
     return Submission(messages=kept)
+
+
+def _salvage_batch(content: str) -> list[Submission]:
+    """Salvage a list of valid Submissions from a raw SubmissionBatch chat reply.
+
+    Parses the batch JSON (a ``{"submissions": [...]}`` object or a bare list), salvages
+    each submission's messages exactly as :func:`_salvage_submission` does (drop invalid
+    messages; keep the leading messages within the count + hop caps), and drops any
+    submission left empty. Truncation is not relied on (we await the full response); a
+    trailing malformed submission is simply dropped.
+
+    Args:
+        content: Raw chat-completion content.
+
+    Returns:
+        The valid Submissions (possibly empty; the loop skips an empty batch).
+    """
+    raw = _extract_json(content)
+    subs_raw = raw.get("submissions", raw) if isinstance(raw, dict) else raw
+    batch: list[Submission] = []
+    for sub in subs_raw if isinstance(subs_raw, list) else []:
+        messages = sub.get("messages", []) if isinstance(sub, dict) else []
+        kept: list[Message] = []
+        used_hops = 0
+        for obj in messages:
+            try:
+                message = Message(**obj)
+            except (pydantic.ValidationError, TypeError):
+                continue
+            if (
+                len(kept) >= config.MAX_SHIP_MESSAGES
+                or used_hops + message.hops > config.HOP_BUDGET
+            ):
+                break
+            kept.append(message)
+            used_hops += message.hops
+        if kept:
+            batch.append(Submission(messages=kept))
+    _log.info("salvaged batch: %d submissions", len(batch))
+    return batch
 
 
 def _parse_message_objects(text: str) -> list[dict[str, Any]]:
@@ -632,6 +732,41 @@ def _bracket_positions(text: str) -> Iterator[int]:
     while start != -1:
         yield start
         start = text.find("[", start + 1)
+
+
+def _extract_json(content: str) -> dict[str, Any] | list[Any]:
+    """Extract the largest JSON object or array from a raw chat reply.
+
+    Generalizes :func:`_parse_message_objects`'s bracket-scan (tolerant of surrounding
+    prose/``` fences, since decoding starts right at the ``{``/``[`` and ignores
+    anything before or after the matched span) from arrays-of-messages to any
+    ``{...}``/``[...]`` JSON value, picking the longest span that parses so a batch
+    reply's outer object wins over any smaller nested value.
+
+    Args:
+        content: Raw chat-completion content.
+
+    Returns:
+        The parsed JSON object or array.
+
+    Raises:
+        ValueError: No ``{...}`` or ``[...]`` span in ``content`` decodes as JSON.
+    """
+    decoder = json.JSONDecoder()
+    best: dict[str, Any] | list[Any] | None = None
+    best_len = -1
+    for start, char in enumerate(content):
+        if char not in "{[":
+            continue
+        try:
+            data, end = decoder.raw_decode(content, start)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, (dict, list)) and end - start > best_len:
+            best, best_len = data, end - start
+    if best is None:
+        raise ValueError("no JSON object or array found in content")
+    return best
 
 
 def _log_wandb(run: _WandbRun | None, metrics: dict[str, Any]) -> None:
