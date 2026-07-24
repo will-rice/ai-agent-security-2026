@@ -15,9 +15,22 @@ import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, cast
 
 from aicomp_sdk.agents.protocol import AgentProtocol
+
+
+class _Resettable(Protocol):
+    """A llama.cpp handle whose KV cache can be cleared between replays."""
+
+    def reset(self) -> None: ...
+
+
+class ResettableBackend(Protocol):
+    """A resident generation backend exposing a resettable llama.cpp handle."""
+
+    llm: _Resettable
+
 
 _MAX_RETRIES = 4  # transient 5xx under concurrent load; total wait ~ 1+2+4 = 7s
 _RETRY_BACKOFF_S = 1.0
@@ -82,6 +95,35 @@ def download_gguf(model_key: str, models_dir: Path) -> Path:
     return Path(downloaded)
 
 
+class ResidentAgentFactory:
+    """Builds fresh agents over ONE shared, already-loaded GGUF backend.
+
+    The backend wraps a single llama.cpp context whose KV cache PERSISTS across
+    completion calls (llama.cpp prefix-caching). ``SandboxEnv.reset`` only clears the
+    *agent's* conversation, not that KV cache, so consecutive logically-independent
+    replays on the same resident backend leak context into each other and later
+    replays degrade to non-firing (verified: an identical exfil message fires
+    severity 16 on the first replay then 0 on every subsequent one; a ``reset``
+    between them restores a stable 16 each time). Callers reusing the backend across
+    independent replays MUST call :meth:`reset` between them; see
+    :func:`jed_attack.campaign.submission_score.replay_trace`.
+    """
+
+    def __init__(
+        self, backend: ResettableBackend, make_agent: Callable[[Any], AgentProtocol]
+    ) -> None:
+        self._backend = backend
+        self._make_agent = make_agent
+
+    def reset(self) -> None:
+        """Clear the shared backend's KV cache so the next replay starts clean."""
+        self._backend.llm.reset()
+
+    def __call__(self) -> AgentProtocol:
+        """Build a fresh agent over the shared, already-loaded GGUF backend."""
+        return self._make_agent(self._backend)
+
+
 def gguf_agent_factory(
     model_key: str,
     model_path: Path,
@@ -90,15 +132,16 @@ def gguf_agent_factory(
     n_gpu_layers: int = -1,
     max_new_tokens: int = 1024,
     main_gpu: int | None = None,
-) -> Callable[[], AgentProtocol]:
+) -> ResidentAgentFactory:
     """Return a zero-arg factory building GGUF-backed agents over ONE shared backend.
 
     Loads the llama.cpp GGUF model exactly once and returns a factory that builds a
     fresh (cheap) SDK agent over that shared backend on each call. This is critical:
     ``run_attack`` invokes the factory for the generation env AND every replay env,
     so building a new backend per call would reload the multi-GB GGUF each time.
-    Sharing one backend is safe because the SDK evaluates sequentially and the
-    llama.cpp completion call is stateless per turn. Wiring matches Kaggle's
+    Sharing one backend is only correct if the caller resets the backend's KV cache
+    between logically-independent replays -- the llama.cpp completion call is NOT
+    stateless per turn (see :class:`ResidentAgentFactory`). Wiring matches Kaggle's
     ``gguf_model_server.py`` (``HFBackendConfig`` built directly, ``max_new_tokens``
     1024, ``supports_tools=True``).
 
@@ -113,7 +156,9 @@ def gguf_agent_factory(
             ``None`` keeps the SDK's default placement.
 
     Returns:
-        A zero-arg callable returning a fresh SDK agent bound to the shared backend.
+        A :class:`ResidentAgentFactory` over the shared backend: call it to build a
+        fresh agent, and call its ``reset()`` to clear the backend KV cache between
+        independent replays.
 
     Raises:
         ValueError: If ``model_key`` is unknown.
@@ -161,11 +206,9 @@ def gguf_agent_factory(
         llama_kwargs=llama_kwargs,
     )
 
-    def factory() -> AgentProtocol:
-        """Build a fresh agent over the shared, already-loaded GGUF backend."""
-        return make_agent(backend)
-
-    return factory
+    # The freshly built backend's ``llm`` is non-None (only ``close()`` nulls it),
+    # so it satisfies ResettableBackend; the SDK types ``llm`` as ``Any | None``.
+    return ResidentAgentFactory(cast(ResettableBackend, backend), make_agent)
 
 
 def _resolve_agent(model_key: str) -> tuple[str, Callable[[Any], AgentProtocol]]:

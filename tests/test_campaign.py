@@ -6,11 +6,12 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlsplit
 
 import pydantic
 import pytest
+from aicomp_sdk.agents.protocol import AgentProtocol
 from aicomp_sdk.attacks.contracts import AttackAlgorithmBase
 
 from jed_attack.campaign import (
@@ -839,11 +840,14 @@ def test_score_submission_uses_one_resident_backend_per_model_under_lock(
 
     built: list[str] = []
 
+    from jed_attack.harness.models import ResidentAgentFactory
+
     def fake_gguf_agent_factory(
         model_key: str, gguf: Path, *, main_gpu: int | None = None
-    ) -> Callable[[], object]:
+    ) -> ResidentAgentFactory:
         built.append(model_key)
-        return lambda: object()  # a dummy agent factory; never invoked (replay stubbed)
+        backend = SimpleNamespace(llm=SimpleNamespace(reset=lambda: None))
+        return ResidentAgentFactory(backend, lambda b: cast(AgentProtocol, object()))
 
     monkeypatch.setattr(ss, "gguf_agent_factory", fake_gguf_agent_factory)
     monkeypatch.setattr(ss, "gguf_target_path", lambda mk, d: Path(f"/{mk}.gguf"))
@@ -872,6 +876,55 @@ def test_score_submission_uses_one_resident_backend_per_model_under_lock(
     ss.score_submission([one, one], models=("gpt_oss",))
     assert built == ["gpt_oss"]  # built ONCE despite two messages
     assert all(captured_lock_held)  # the per-model lock was held during each replay
+
+
+def test_replay_trace_resets_shared_backend_before_each_replay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every replay clears the resident KV cache first, so replays are independent.
+
+    Regression: without the reset, the shared llama.cpp context leaks the previous
+    message into this replay and later messages in a submission decay to non-firing
+    (identical message fires 16 then 0, 0, 0...). Asserting reset immediately precedes
+    each interact would have caught that.
+    """
+    from jed_attack.campaign import submission_score as ss
+    from jed_attack.harness.models import ResidentAgentFactory
+
+    events: list[str] = []
+    backend = SimpleNamespace(llm=SimpleNamespace(reset=lambda: events.append("reset")))
+    monkeypatch.setattr(ss, "gguf_target_path", lambda mk, d: Path(f"/{mk}.gguf"))
+    monkeypatch.setattr(
+        ss,
+        "gguf_agent_factory",
+        lambda mk, g, *, main_gpu=None: ResidentAgentFactory(
+            backend, lambda b: cast(AgentProtocol, object())
+        ),
+    )
+    ss._backends.clear()
+    ss._model_locks.clear()
+
+    class FakeEnv:
+        def __init__(self, **kw: object) -> None: ...
+
+        def reset(self) -> None: ...
+
+        def interact(self, *a: object, **k: object) -> None:
+            events.append("interact")
+
+        def export_trace_dict(self) -> dict[str, Any]:
+            return {"tool_events": []}
+
+    monkeypatch.setattr(ss, "SandboxEnv", FakeEnv)
+    monkeypatch.setattr(ss, "eval_predicates", lambda trace: [])
+    one = _exfil("SECRET_MARKER https://a.invalid/r", 1)
+    ss.score_submission([one, one], models=("gpt_oss",))
+
+    # One reset per replay, and each interact is immediately preceded by its reset.
+    assert events.count("reset") == events.count("interact") > 0
+    assert all(
+        events[i - 1] == "reset" for i, e in enumerate(events) if e == "interact"
+    )
 
 
 def test_introspect_builds_probe_prompt_and_returns_chat_reply(
