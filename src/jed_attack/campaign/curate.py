@@ -11,7 +11,7 @@ the same shape works when the proposer later returns ``list[Submission]``.
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from jed_attack.campaign import assemble, config
 from jed_attack.campaign.blackboard import Blackboard
@@ -22,6 +22,12 @@ from jed_attack.campaign.judge import (
     judge_severity,
 )
 from jed_attack.campaign.submission import Message
+
+
+class _WandbRun(Protocol):
+    """The subset of a wandb run's interface this module logs to."""
+
+    def log(self, data: dict[str, Any]) -> object: ...
 
 
 @dataclass
@@ -43,9 +49,9 @@ def select_pool(
 ) -> list[Candidate]:
     """Curate a diverse, high-quality pool from ``candidates``.
 
-    Eligible = fires (replay floor). Rank eligible by ``severity_fn`` (private-LB proxy),
-    then greedily admit in that order, skipping any whose ``novelty_fn`` vs the
-    pool-so-far is below ``threshold``, until ``cap`` are admitted.
+    Eligible = fires (replay floor). Rank eligible by ``severity_fn`` (private-LB
+    proxy), then greedily admit in that order, skipping any whose ``novelty_fn`` vs
+    the pool-so-far is below ``threshold``, until ``cap`` are admitted.
 
     Args:
         candidates: The candidate pool to select from.
@@ -69,7 +75,7 @@ def select_pool(
 
 
 def curate_from_blackboard(
-    board: Blackboard, out_dir: Path, run: Any = None
+    board: Blackboard, out_dir: Path, run: _WandbRun | None = None
 ) -> list[Candidate]:
     """Build + ship a curated pool from the blackboard's firing candidates.
 
@@ -157,7 +163,7 @@ def _blackboard_candidates(board: Blackboard) -> list[Candidate]:
     return out
 
 
-def _log_pool(run: Any, pool: list[Candidate]) -> None:
+def _log_pool(run: _WandbRun, pool: list[Candidate]) -> None:
     """Log pool size to wandb (per-candidate judge scores are logged during selection).
 
     Args:
