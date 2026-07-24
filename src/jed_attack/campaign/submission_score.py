@@ -38,7 +38,11 @@ from jed_attack.campaign import config
 from jed_attack.campaign.guardrails import GATE_GUARDRAILS
 from jed_attack.campaign.submission import Message, MessageType
 from jed_attack.campaign.victim_feedback import message_feedback
-from jed_attack.harness.models import gguf_agent_factory, gguf_target_path
+from jed_attack.harness.models import (
+    ResidentAgentFactory,
+    gguf_agent_factory,
+    gguf_target_path,
+)
 
 _SEED = 123  # match the gate / Kaggle env seed
 _HOPS = config.EVAL_HOPS  # match the scored gateway's replay depth
@@ -54,11 +58,11 @@ _SEVERITY_W = {1: 1, 2: 2, 3: 4, 4: 8, 5: 16}
 # team scores lanes concurrently, so each model has its own lock; the two models
 # replay in parallel (separate GPUs).
 _resident_lock = threading.Lock()  # guards the two caches below
-_backends: dict[str, Callable[[], Any]] = {}
+_backends: dict[str, ResidentAgentFactory] = {}
 _model_locks: dict[str, threading.Lock] = {}
 
 
-def _resident_backend(model_key: str) -> Callable[[], Any]:
+def _resident_backend(model_key: str) -> ResidentAgentFactory:
     """Return ``model_key``'s resident agent factory, loading its GGUF once."""
     with _resident_lock:
         if model_key not in _backends:
@@ -115,9 +119,11 @@ def replay_trace(
 ) -> tuple[dict[str, Any], list[dict[str, Any]], float]:
     """Replay one message on ``model_key``'s resident in-process backend.
 
-    Greedy/deterministic (the SDK's ``do_sample=False`` default). Holds the per-model
-    lock across the model-touching steps -- one llama.cpp context is not thread-safe and
-    the async team scores lanes concurrently. ``eval_predicates`` (CPU) runs outside it.
+    Greedy/deterministic (the SDK's ``do_sample=False`` default). Resets the shared
+    backend's KV cache first so each replay is independent (the resident llama.cpp
+    context is stateful across turns). Holds the per-model lock across the
+    model-touching steps -- one llama.cpp context is not thread-safe and the async team
+    scores lanes concurrently. ``eval_predicates`` (CPU) runs outside it.
 
     Args:
         message: The single user message to replay.
@@ -131,6 +137,14 @@ def replay_trace(
     """
     agent_factory = _resident_backend(model_key)
     with _model_locks[model_key]:
+        # Clear the shared llama.cpp KV cache FIRST. The resident context keeps its
+        # cache across completion calls and SandboxEnv.reset() does not touch it, so
+        # without this the previous message's context leaks into this replay and
+        # later messages in a submission degrade to non-firing (verified: identical
+        # message fires 16 then 0, 0, 0...). Resetting makes every replay independent,
+        # matching the T4 gateway's fresh-env-per-candidate scoring. Inside the lock
+        # so a concurrent lane cannot reset mid-generation.
+        agent_factory.reset()
         env = SandboxEnv(
             seed=_SEED,
             fixtures_dir=resolve_fixtures_dir(),
