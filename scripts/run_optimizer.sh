@@ -45,6 +45,7 @@ tmux new-session -d -s "$SESSION" -c "$REPO" \
   "exec bash -lc 'mkdir -p run/logs; \
     export JED_CAMPAIGN_ROOT=\"$REPO/run\" JED_WANDB=1 \
       CUDA_DEVICE_ORDER=PCI_BUS_ID \
+      DYLAN_JUDGE_URL=http://127.0.0.1:8100 \
       LD_LIBRARY_PATH=\"/usr/local/cuda-12.8/lib64:\${LD_LIBRARY_PATH:-}\"; \
     uv run python -m jed_attack.campaign.optimize_prompts 2>&1 \
       | tee -a run/logs/optimizer.log'"
