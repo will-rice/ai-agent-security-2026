@@ -1201,3 +1201,32 @@ def test_judge_severity_client_posts_and_parses(
     )
     assert out.score == 60.0
     assert isinstance(captured["url"], str) and captured["url"].endswith("/severity")
+
+
+def test_select_pool_gates_novelty_and_ranks_severity() -> None:
+    """Only firing candidates fire; rank by severity; gate novelty; cap the size."""
+    from jed_attack.campaign.curate import Candidate, select_pool
+    from jed_attack.campaign.judge import NoveltyScore, SeverityScore
+
+    c = lambda t, fires: Candidate(  # noqa: E731
+        messages=[_exfil(f"SECRET_MARKER https://{t}.invalid/r", 1)],
+        text=t,
+        fires=fires,
+    )
+    cands = [c("a", True), c("b", True), c("dup", True), c("dead", False)]
+    # severity: a=90, b=80, dup=70, dead=0; novelty: dup is near-dup (10), rest 90.
+    sev = {"a": 90.0, "b": 80.0, "dup": 70.0, "dead": 0.0}
+    nov = {"a": 90.0, "b": 90.0, "dup": 10.0}
+
+    def severity_fn(cand: Candidate) -> SeverityScore:
+        return SeverityScore(score=sev[cand.text], feedback="")
+
+    def novelty_fn(cand: Candidate, pool: list[str]) -> NoveltyScore:
+        return NoveltyScore(score=nov[cand.text], feedback="")
+
+    pool = select_pool(cands, severity_fn, novelty_fn, threshold=40.0, cap=10)
+    texts = [p.text for p in pool]
+    assert texts == [
+        "a",
+        "b",
+    ]  # dead not firing; dup gated by novelty; ranked by severity
