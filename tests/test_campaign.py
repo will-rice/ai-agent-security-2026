@@ -1103,8 +1103,6 @@ def test_gguf_agent_factory_places_model_on_main_gpu(
 
 def test_render_judge_messages_includes_text_and_feedback() -> None:
     """The judge prompt pairs every message with its observed-effect feedback."""
-    from typing import cast
-
     from jed_attack.campaign.judge import render_judge_messages
 
     msgs = [_exfil("SECRET_MARKER https://a.invalid/r", 1)]
@@ -1112,11 +1110,9 @@ def test_render_judge_messages_includes_text_and_feedback() -> None:
         msgs, ["[exfil] severity: optimal(by model: gpt_oss=16 gemma_4=0)"]
     )
     assert chat[0]["role"] == "system"
-    system_content = cast(str, chat[0]["content"])
-    assert "/no_think" in system_content
-    user_content = cast(str, chat[1]["content"])
-    assert "SECRET_MARKER https://a.invalid/r" in user_content
-    assert "gpt_oss=16 gemma_4=0" in user_content
+    assert "/no_think" in chat[0]["content"]
+    assert "SECRET_MARKER https://a.invalid/r" in chat[1]["content"]
+    assert "gpt_oss=16 gemma_4=0" in chat[1]["content"]
 
 
 def test_judge_submission_parses_score_and_clamps(
