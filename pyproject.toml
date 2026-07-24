@@ -7,7 +7,12 @@ authors = [{ name = "Will Rice", email = "wrice20@gmail.com" }]
 requires-python = ">=3.12"
 dependencies = [
   "aicomp-sdk",
+  "gitpython>=3.1.55",
   "huggingface-hub>=0.27.0",
+  # GPU scorer, linux-only: a CUDA build from the pinned llama-cuda index (see
+  # [tool.uv.sources]) so `uv sync` installs the CUDA wheel instead of PyPI's CPU one.
+  # macOS (local dev) skips it via the marker -- scoring is green-only.
+  "llama-cpp-python>=0.3.34; sys_platform == 'linux'",
   "openai>=2.45.0",
   "pre-commit>=4.1.0",
   "pydantic>=2.12.2",
@@ -20,9 +25,6 @@ dependencies = [
   "wandb>=0.18.0",
 ]
 
-[project.optional-dependencies]
-gpu = ["llama-cpp-python>=0.3.0"]
-
 [build-system]
 requires = ["uv_build>=0.9.2"]
 build-backend = "uv_build"
@@ -30,8 +32,16 @@ build-backend = "uv_build"
 [tool.uv.build-backend]
 module-name = ["jed_attack"]
 
+# CUDA wheels for llama-cpp-python (green's RTX 3090/Ada, driver 13.x runs cu124).
+# `explicit` = only packages that name it in [tool.uv.sources] resolve from here.
+[[tool.uv.index]]
+name = "llama-cuda"
+url = "https://abetlen.github.io/llama-cpp-python/whl/cu124"
+explicit = true
+
 [tool.uv.sources]
 aicomp-sdk = { path = "vendor/aicomp_sdk-3.1.2-py3-none-any.whl" }
+llama-cpp-python = { index = "llama-cuda" }
 
 [tool.ruff.lint.isort]
 known-first-party = ["jed_attack"]

@@ -38,6 +38,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Protocol
 
+import git
 import pydantic
 from dotenv import load_dotenv
 from openai.types.chat import ChatCompletionMessageParam
@@ -648,6 +649,18 @@ def _log_wandb(run: _WandbRun | None, metrics: dict[str, Any]) -> None:
         _log.warning("wandb logging failed; continuing without it", exc_info=True)
 
 
+def _git_hash() -> str:
+    """Return the current commit's 6-char short hash, or ``nogit`` if unavailable.
+
+    Names the wandb run after the code version it runs, so restarts on different
+    commits are distinguishable at a glance (green has ``.git`` via rsync).
+    """
+    try:
+        return git.Repo(search_parent_directories=True).head.commit.hexsha[:6]
+    except Exception:
+        return "nogit"
+
+
 def _init_wandb(run_name: str) -> _WandbRun | None:
     """Initialize a W&B run, or return ``None`` when disabled or unavailable.
 
@@ -701,7 +714,9 @@ def main() -> None:
     load_dotenv(config.ENV_FILE)  # explicit path: find_dotenv() fails under `python -m`
     config.ensure_dirs()
     _setup_logging()
-    run = _init_wandb(f"team-{int(time.time())}")  # ONE run for the whole team
+    run = _init_wandb(
+        f"team-{_git_hash()}"
+    )  # ONE run for the whole team, tagged by commit
     board = blackboard.Blackboard.load(config.BLACKBOARD_LOG)
     try:
         asyncio.run(_run_team(board, run))
