@@ -116,6 +116,16 @@ NOVELTY_PER_CELL = 2.0
 # extra per-submission inference cost to a fixed count, not O(submission size).
 INTROSPECT_WORST_N = int(os.getenv("JED_INTROSPECT_WORST_N", "3"))
 
+# Offline LLM-judge correlation study (docs/.../2026-07-24-qwen-judge-...). A Qwen3-32B
+# "surrogate guardrail" served by user-space ollama on green's Ada GPU (device 1 under
+# PCI_BUS_ID), scored offline against faithful public labels. Not wired into the live
+# optimizer -- see the study script. OLLAMA_URL is ollama's OpenAI-compatible endpoint.
+JUDGE_MODEL = os.getenv("JUDGE_MODEL", "qwen3:32b")
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/v1")
+JUDGE_GPU = 1
+JUDGE_STUDY_N = 25
+JUDGE_STUDY_DIR = CAMPAIGN_ROOT / "judge_study"
+
 
 def ensure_dirs() -> None:
     """Create the runtime directories the submission pipeline writes to."""
