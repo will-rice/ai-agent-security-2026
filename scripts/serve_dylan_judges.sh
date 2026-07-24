@@ -26,8 +26,12 @@ fi
 # vLLM OpenAI server on the 3090 (device 0), guided decoding on, :8000.
 tmux kill-session -t vllm 2>/dev/null || true
 sleep 1
+# --served-model-name pins the served id to $MODEL so the FastAPI service (which reads
+# config.VLLM_MODEL, same default) always requests a name vLLM actually serves. Override
+# both by exporting VLLM_MODEL before running (config.VLLM_MODEL reads the same env var).
 tmux new-session -d -s vllm \
   "env CUDA_VISIBLE_DEVICES=0 \"$VLLM_VENV/bin/vllm\" serve \"$MODEL\" \
+     --served-model-name \"$MODEL\" \
      --quantization awq_marlin --gpu-memory-utilization 0.92 \
      --max-model-len 8192 --port 8000"
 

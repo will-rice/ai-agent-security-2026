@@ -137,7 +137,7 @@ DYLAN_JUDGE_URL = os.getenv("DYLAN_JUDGE_URL", "http://dylan:8100")
 VLLM_URL = os.getenv(
     "VLLM_URL", "http://127.0.0.1:8000/v1"
 )  # dylan-local, service->vLLM
-VLLM_MODEL = os.getenv("VLLM_MODEL", "Qwen/Qwen3-32B-AWQ")
+VLLM_MODEL = os.getenv("VLLM_MODEL", "bullerwins/Qwen3-32B-awq")
 # Novelty-aware pool curation.
 NOVELTY_ADMIT_THRESHOLD = 40.0  # min novelty score to admit a candidate to the pool
 NOVELTY_POOL_SAMPLE = 8  # current-pool messages shown to the novelty judge
