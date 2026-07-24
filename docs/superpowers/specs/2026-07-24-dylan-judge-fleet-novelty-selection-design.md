@@ -151,6 +151,17 @@ replay score) — bounds the downside: a miscalibrated severity judge reorders t
 can't admit a non-firing or non-novel candidate. If it proves unhelpful, the ranking can
 fall back to replay severity with no other change.
 
+## Future direction (design for reuse)
+
+The curation **core** — `select_pool(candidates, ...)` — takes a passed-in candidate
+collection and returns the curated pool; it does NOT read the blackboard itself (a thin
+caller supplies the blackboard's records as `candidates`). This keeps the same selection
+shape reusable when the main proposer loop is later changed to return `list[Submission]`
+(the model proposes several submissions per generation and curation picks the diverse
+pool across all of them) — that becomes a one-line change of the input source, not a
+rewrite. This iteration's caller passes the blackboard's firing candidates; nothing else
+about the loop changes yet.
+
 ## Testing
 
 - `judge.py`: unit-test `judge_severity`/`judge_novelty` prompt construction + that a
