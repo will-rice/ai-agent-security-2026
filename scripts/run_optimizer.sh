@@ -24,8 +24,18 @@ set -euo pipefail
 SESSION=optimizer
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 
+# Graceful stop, THEN kill the session. The worker catches SIGTERM/SIGINT to cancel
+# cleanly and wandb.finish() its run; `tmux kill-session` sends SIGHUP, which it does
+# NOT catch, so killing the session first strands the wandb run as a zombie "running".
+# So: SIGTERM the worker, wait for it to exit (letting wandb finalize), SIGKILL any
+# straggler, then drop the session.
+pkill -TERM -f jed_attack.campaign.optimize_prompts 2>/dev/null || true
+for _ in $(seq 1 15); do
+  pgrep -f jed_attack.campaign.optimize_prompts >/dev/null || break
+  sleep 1
+done
+pkill -KILL -f jed_attack.campaign.optimize_prompts 2>/dev/null || true
 tmux kill-session -t "$SESSION" 2>/dev/null || true
-pkill -f jed_attack.campaign.optimize_prompts 2>/dev/null || true
 sleep 1
 
 # Env is set inside the pane's login shell: a new-session inherits the tmux
