@@ -242,6 +242,10 @@ async def worker_loop(
                     "model": provider.model,
                     "worker": worker_id,
                     **{
+                        f"{m}_public": local_best_score.public_by_model.get(m, 0.0)
+                        for m in config.MODELS
+                    },
+                    **{
                         f"replay_s_{m}": local_best_score.replay_seconds.get(m, 0.0)
                         for m in config.MODELS
                     },
