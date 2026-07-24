@@ -73,12 +73,32 @@ def trace_summary(trace: dict[str, Any]) -> str:
     return " | ".join(segments)
 
 
-def message_feedback(msg_score: "MessageScore") -> str:
-    """Combine the message type, per-guardrail severity, and failure-mode trace summary.
+def _severity_line(msg_score: "MessageScore") -> str:
+    """Render a message's per-guardrail severity, split per victim model when >1.
 
-    Reports every guardrail's severity, and — for each guardrail that scored the message
-    0 (blocked outright) — appends that guardrail's own :func:`trace_summary` so the
-    proposer sees why, not just that it failed.
+    Single model: ``[exfil] severity: optimal=48`` (unchanged). Multiple models:
+    ``[exfil] severity: optimal(by model: gpt_oss=48 gemma_4=16)`` so the proposer
+    sees which victim a message fails on — a message strong on only one model is
+    fragile on the blind private leaderboard.
+    """
+    parts = []
+    for guardrail, per_model in msg_score.severity_by_model.items():
+        if len(per_model) == 1:
+            (value,) = per_model.values()
+            parts.append(f"{guardrail}={value:g}")
+        else:
+            by_model = " ".join(f"{m}={s:g}" for m, s in per_model.items())
+            parts.append(f"{guardrail}(by model: {by_model})")
+    return f"[{msg_score.type.value}] severity: " + ", ".join(parts)
+
+
+def message_feedback(msg_score: "MessageScore") -> str:
+    """Combine the message type, per-model severity, and failure-mode trace summary.
+
+    Reports every guardrail's severity split per victim model (see
+    :func:`_severity_line`), and — for each guardrail that scored the message 0
+    averaged over models (blocked outright) — appends that guardrail's own
+    :func:`trace_summary` so the proposer sees why, not just that it failed.
 
     Args:
         msg_score: One message's replay result from ``score_submission``.
@@ -86,9 +106,7 @@ def message_feedback(msg_score: "MessageScore") -> str:
     Returns:
         A plain descriptive feedback string; never a directive.
     """
-    severity_line = f"[{msg_score.type.value}] severity: " + ", ".join(
-        f"{guardrail}={value:g}" for guardrail, value in msg_score.severity.items()
-    )
+    severity_line = _severity_line(msg_score)
 
     blocked = [
         guardrail for guardrail, value in msg_score.severity.items() if value == 0
