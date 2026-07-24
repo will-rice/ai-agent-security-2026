@@ -35,6 +35,15 @@ MODELS: tuple[str, ...] = ("gpt_oss", "gemma_4")
 MODELS_DIR = Path(os.getenv("JED_MODELS_DIR", str(_REPO_ROOT / "models")))
 MODEL_GPU: dict[str, int] = {"gpt_oss": 0, "gemma_4": 1}
 
+# Time-aware objective: the T4 gateway INVALIDATES a submission that exceeds ~9000s/
+# model of wall-clock replay. We replay in-process, so we MEASURE green replay-seconds
+# per model and zero any submission over budget (mirrors T4 INVALID). Budget is in
+# GREEN-seconds (green ~69x faster than T4 for gpt_oss); calibrated 2026-07-23:
+# gpt_oss ~5.6 green-s/candidate, T4 fits ~23 -> ~129 green-s; 120 leaves margin
+# (~21 candidates). gemma (~0.54 green-s/candidate) never binds. Tune from the
+# logged replay_seconds vs T4 pass/fail.
+GREEN_REPLAY_BUDGET_S: dict[str, float] = {"gpt_oss": 120.0, "gemma_4": 60.0}
+
 # The proposer models the async team rotates. optimize_team GROUPS these by API key into
 # one lane per key (one worker per lane), and the lane's worker rotates through its
 # models one generation at a time — so only one request per key is ever in flight (the
