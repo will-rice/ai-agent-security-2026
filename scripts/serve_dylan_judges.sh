@@ -22,7 +22,9 @@ MODEL="${VLLM_MODEL:-bullerwins/Qwen3-32B-awq}"
 if [ ! -x "$VLLM_VENV/bin/vllm" ]; then
   rm -rf "$VLLM_VENV"
   uv venv --python 3.12 "$VLLM_VENV"
-  VIRTUAL_ENV="$VLLM_VENV" uv pip install vllm
+  # ninja: vLLM's flashinfer JIT-compiles CUDA kernels at runtime and needs the `ninja`
+  # binary on PATH (no system ninja / sudo on dylan) -- install it into the venv.
+  VIRTUAL_ENV="$VLLM_VENV" uv pip install vllm ninja
 fi
 
 # vLLM OpenAI server on the 3090 (device 0), guided decoding on, :8000.
@@ -31,10 +33,13 @@ sleep 1
 # --served-model-name pins the served id to $MODEL so the FastAPI service (which reads
 # config.VLLM_MODEL, same default) always requests a name vLLM actually serves. Override
 # both by exporting VLLM_MODEL before running (config.VLLM_MODEL reads the same env var).
+# PATH includes the venv bin so flashinfer's runtime JIT finds `ninja`.
+# CUDA_DEVICE_ORDER=PCI_BUS_ID pins device 0 = the 3090 (Ampere; the TITAN RTX is Turing
+# and can't run awq_marlin). gpu-memory-utilization 0.90 leaves KV-cache headroom.
 tmux new-session -d -s vllm \
-  "env CUDA_VISIBLE_DEVICES=0 \"$VLLM_VENV/bin/vllm\" serve \"$MODEL\" \
-     --served-model-name \"$MODEL\" \
-     --quantization awq_marlin --gpu-memory-utilization 0.92 \
+  "env PATH=\"$VLLM_VENV/bin:\$PATH\" CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 \
+     \"$VLLM_VENV/bin/vllm\" serve \"$MODEL\" --served-model-name \"$MODEL\" \
+     --quantization awq_marlin --gpu-memory-utilization 0.90 \
      --max-model-len 8192 --port 8000"
 
 # FastAPI judge service from the synced repo (uv run auto-syncs), :8100.
