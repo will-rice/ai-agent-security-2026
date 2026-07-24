@@ -142,6 +142,11 @@ VLLM_MODEL = os.getenv("VLLM_MODEL", "bullerwins/Qwen3-32B-awq")
 NOVELTY_ADMIT_THRESHOLD = 40.0  # min novelty score to admit a candidate to the pool
 NOVELTY_POOL_SAMPLE = 8  # current-pool messages shown to the novelty judge
 
+# Ship the CURATED pool (novelty gate + severity rank, dylan judges) instead of the
+# single best submission. A/B toggle only -- dylan is always up, so curation never
+# needs an outage fallback. See docs/.../list-submission-batch-proposer-design.md.
+CURATE_POOL = os.getenv("JED_CURATE_POOL", "1") == "1"
+
 
 def ensure_dirs() -> None:
     """Create the runtime directories the submission pipeline writes to."""

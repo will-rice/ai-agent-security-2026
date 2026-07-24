@@ -27,12 +27,15 @@ class Provider:
         model: Model name — the served model key for ``local``, or the API model id.
         base_url: ``api`` only — the OpenAI-compatible base URL.
         key_env: ``api`` only — the env var holding the bearer token (never the token).
+        max_tokens: The model's maximum tokens (default is a high default; a model whose
+            API rejects it gets its real max in this field).
     """
 
     kind: str
     model: str = ""
     base_url: str = ""
     key_env: str = ""
+    max_tokens: int = 65536
 
 
 # z.ai GLM Coding Plan endpoint (subscription weekly quota), NOT the pay-as-you-go
