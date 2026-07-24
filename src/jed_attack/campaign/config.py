@@ -27,6 +27,23 @@ BUILD_NEXT_DIR = (
 # The two target models and their served base URLs (llama-server on green).
 MODELS: tuple[str, ...] = ("gpt_oss", "gemma_4")
 
+# In-process scoring: where the GGUFs live, and which GPU each model loads on (under
+# CUDA_DEVICE_ORDER=PCI_BUS_ID: device 0 = RTX 3090, device 1 = RTX 6000 Ada). The
+# scorer loads each GGUF resident and replays in-process (llama-cpp-python) to match
+# the T4 gateway exactly -- see docs/.../in-process-scoring-design.md and memory
+# jed-t4-replay-time-budget.
+MODELS_DIR = Path(os.getenv("JED_MODELS_DIR", str(_REPO_ROOT / "models")))
+MODEL_GPU: dict[str, int] = {"gpt_oss": 0, "gemma_4": 1}
+
+# Time-aware objective: the T4 gateway INVALIDATES a submission that exceeds ~9000s/
+# model of wall-clock replay. We replay in-process, so we MEASURE green replay-seconds
+# per model and zero any submission over budget (mirrors T4 INVALID). Budget is in
+# GREEN-seconds (green ~69x faster than T4 for gpt_oss); calibrated 2026-07-23:
+# gpt_oss ~5.6 green-s/candidate, T4 fits ~23 -> ~129 green-s; 120 leaves margin
+# (~21 candidates). gemma (~0.54 green-s/candidate) never binds. Tune from the
+# logged replay_seconds vs T4 pass/fail.
+GREEN_REPLAY_BUDGET_S: dict[str, float] = {"gpt_oss": 120.0, "gemma_4": 60.0}
+
 # The proposer models the async team rotates. optimize_team GROUPS these by API key into
 # one lane per key (one worker per lane), and the lane's worker rotates through its
 # models one generation at a time — so only one request per key is ever in flight (the
@@ -70,16 +87,21 @@ PROMPTS_FILE = Path(__file__).resolve().parent / "prompts.toml"
 # in-memory blackboard is rebuilt from it on start (warm restart).
 BLACKBOARD_LOG = CAMPAIGN_ROOT / "blackboard.jsonl"
 
-# Static T4 calibration caps. These are empirical limits of the scored T4 replay -- they
-# don't move once found, so they are plain module constants (like EVAL_HOPS), NOT
-# hot-reloadable: changing one is a worker restart. MAX_SHIP_MESSAGES is a real
-# Field(max_length) on Submission, so it is the JSON schema's maxItems (what the
-# proposer sees) AND the validation rule from one source -- no drift. HOP_BUDGET is a
-# summed-hop constraint with no schema form, enforced in a model_validator.
-#   MAX_SHIP_MESSAGES (80): message-count cap; 80 PASSED on T4, 105/230 BLANKED.
-#   HOP_BUDGET (391): total tool-hop budget = 85% of the observed 460-hop fail point
-#     (safety margin; 80x5 = 400 hops PASSED at 34.315, 460/525 BLANKED).
-MAX_SHIP_MESSAGES = 80
+# Static T4 caps (plain module constants like EVAL_HOPS; NOT hot-reloadable -- changing
+# one is a worker restart). MAX_SHIP_MESSAGES is a real Field(max_length) on Submission,
+# so it is the JSON schema's maxItems (what the proposer sees) AND the validation rule
+# from one source -- no drift. HOP_BUDGET is a summed-hop cap with no schema form,
+# enforced in a model_validator.
+#   MAX_SHIP_MESSAGES (25): message-count STOPGAP. The real T4 limit is a 9000s/model
+#     WALL-CLOCK replay budget, NOT count/hops: gpt_oss spends ~333s per candidate
+#     (even ones that fire nothing), so a 54-candidate submission timed out at candidate
+#     27 -> INVALID_SUBMISSION (0 on the LB; verified 2026-07-23). 25 keeps replay under
+#     budget for slow messages until the scorer models replay time directly. See memory
+#     jed-t4-replay-time-budget.
+#   HOP_BUDGET (391): total tool-hop budget (85% of the 460-hop fail point). NOTE: hops
+#     are NOT the binding constraint -- wall-clock replay time is; this is a loose upper
+#     bound only.
+MAX_SHIP_MESSAGES = 25
 HOP_BUDGET = 391
 
 # The competition's per-cell novelty bonus (raw += 2 * unique_cells). Each rendered copy

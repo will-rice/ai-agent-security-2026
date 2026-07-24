@@ -13,8 +13,12 @@
 # first, then starts fresh. Restarting the worker after a prompt/code change is
 # just: sync the tree, then re-run this script.
 #
-# The worker itself is CPU/network only (it calls the llama-servers over HTTP);
-# GPU serving lives in the sibling `gemma`/`gptoss` tmux sessions.
+# The worker scores IN-PROCESS: it loads the gpt_oss + gemma GGUFs itself via
+# llama-cpp-python (deterministic, matches the T4 gateway), so the old `gemma`/`gptoss`
+# llama-server tmux sessions are NO LONGER needed. Requires llama-cpp-python built with
+# CUDA 12.8 on green (a MANUAL install, not a pyproject dep) -- hence `uv run --no-sync`
+# below, so a sync never clobbers it with a CPU build. CUDA_DEVICE_ORDER=PCI_BUS_ID maps
+# device 0 = 3090, 1 = Ada (config.MODEL_GPU).
 set -euo pipefail
 
 SESSION=optimizer
@@ -30,8 +34,9 @@ sleep 1
 tmux new-session -d -s "$SESSION" -c "$REPO" \
   "exec bash -lc 'mkdir -p run/logs; \
     export JED_CAMPAIGN_ROOT=\"$REPO/run\" JED_WANDB=1 \
+      CUDA_DEVICE_ORDER=PCI_BUS_ID \
       LD_LIBRARY_PATH=\"/usr/local/cuda-12.8/lib64:\${LD_LIBRARY_PATH:-}\"; \
-    uv run python -m jed_attack.campaign.optimize_prompts 2>&1 \
+    uv run --no-sync python -m jed_attack.campaign.optimize_prompts 2>&1 \
       | tee -a run/logs/optimizer.log'"
 
 echo "optimizer worker launched in tmux session '$SESSION'"
