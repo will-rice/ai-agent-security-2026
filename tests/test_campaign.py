@@ -44,6 +44,15 @@ def test_submission_caps_messages_at_config_max() -> None:
         Submission(messages=[one] * (config.MAX_SHIP_MESSAGES + 1))
 
 
+def test_submission_batch_holds_submissions() -> None:
+    """SubmissionBatch validates a list of valid Submissions."""
+    from jed_attack.campaign.submission import Submission, SubmissionBatch
+
+    one = Submission(messages=[_exfil("SECRET_MARKER https://a.invalid/r", 1)])
+    batch = SubmissionBatch(submissions=[one, one])
+    assert len(batch.submissions) == 2
+
+
 def test_message_rejects_bad_hops_and_inconsistent_target_count() -> None:
     """Message: hops in [1,8]; hops must equal the type-appropriate target count."""
     from jed_attack.campaign import config

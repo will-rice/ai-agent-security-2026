@@ -122,6 +122,17 @@ class Submission(BaseModel):
         return self
 
 
+class SubmissionBatch(BaseModel):
+    """A batch of independent candidate submissions authored in one request.
+
+    The proposer emits several complete Submissions per API call (beating the per-key
+    concurrency cap, which limits concurrency not request size); each is scored on its
+    own and all feed the curation candidate pool.
+    """
+
+    submissions: list[Submission]
+
+
 def target_count(text: str) -> int:
     """Count every ``.invalid`` target in a message — its true replay hop cost.
 
