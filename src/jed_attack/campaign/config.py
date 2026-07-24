@@ -41,11 +41,11 @@ MODEL_GPU: dict[str, int] = {"gpt_oss": 0, "gemma_4": 1}
 # GREEN-seconds. CALIBRATED FROM A REAL T4 VERIFY 2026-07-24 (v11): a 21-candidate /
 # 179-green-s submission PASSED T4 in ~5060s gpt_oss (of 9000) -> ~241 T4-s/candidate
 # vs 8.5 green-s/candidate = a ~28x ratio, so 9000 T4-s ≈ 318 green-s. With
-# MAX_SHIP_MESSAGES=25 the largest possible submission is ~212 green-s (~6000 T4-s,
-# 44% T4 headroom), so the count cap -- not time -- binds; 280 sits above any capped
-# submission (never wrongly zeros) yet below the ~318 ceiling (backstop only).
-# Earlier 120/200 were too tight (120 zeroed ~60% of valid output). gemma never binds.
-GREEN_REPLAY_BUDGET_S: dict[str, float] = {"gpt_oss": 280.0, "gemma_4": 60.0}
+# MAX_SHIP_MESSAGES=30 the largest possible submission is ~255 green-s (~7200 T4-s),
+# so the count cap -- not time -- binds; 300 sits above any capped submission (never
+# wrongly zeros) yet below the ~318 ceiling (backstop only). Earlier 120/200/280 were
+# too tight (120 zeroed ~60% of valid output). gemma never binds.
+GREEN_REPLAY_BUDGET_S: dict[str, float] = {"gpt_oss": 300.0, "gemma_4": 60.0}
 
 # The proposer models the async team rotates. optimize_team GROUPS these by API key into
 # one lane per key (one worker per lane), and the lane's worker rotates through its
@@ -95,16 +95,17 @@ BLACKBOARD_LOG = CAMPAIGN_ROOT / "blackboard.jsonl"
 # so it is the JSON schema's maxItems (what the proposer sees) AND the validation rule
 # from one source -- no drift. HOP_BUDGET is a summed-hop cap with no schema form,
 # enforced in a model_validator.
-#   MAX_SHIP_MESSAGES (25): message-count STOPGAP. The real T4 limit is a 9000s/model
-#     WALL-CLOCK replay budget, NOT count/hops: gpt_oss spends ~333s per candidate
-#     (even ones that fire nothing), so a 54-candidate submission timed out at candidate
-#     27 -> INVALID_SUBMISSION (0 on the LB; verified 2026-07-23). 25 keeps replay under
-#     budget for slow messages until the scorer models replay time directly. See memory
-#     jed-t4-replay-time-budget.
+#   MAX_SHIP_MESSAGES (30): candidate count is the BINDING score lever -- scoring has no
+#     dedup, so each firing candidate adds severity + a novelty cell. The real T4 limit
+#     is a 9000s/model WALL-CLOCK replay budget; the v11 verify measured ~241 T4-s per
+#     candidate, so 30 candidates ≈ 7230s ≈ 80% of the budget (~20% margin). Was 25 when
+#     the budget was mis-modeled as too tight; raise further (toward ~33) only after a
+#     verify confirms the larger size, and keep GREEN_REPLAY_BUDGET_S above 30 x ~8.5
+#     green-s = 255. See memory jed-t4-replay-time-budget.
 #   HOP_BUDGET (391): total tool-hop budget (85% of the 460-hop fail point). NOTE: hops
 #     are NOT the binding constraint -- wall-clock replay time is; this is a loose upper
-#     bound only.
-MAX_SHIP_MESSAGES = 25
+#     bound only (30 x 8 = 240 hops, well under).
+MAX_SHIP_MESSAGES = 30
 HOP_BUDGET = 391
 
 # The competition's per-cell novelty bonus (raw += 2 * unique_cells). Each rendered copy
