@@ -38,11 +38,14 @@ MODEL_GPU: dict[str, int] = {"gpt_oss": 0, "gemma_4": 1}
 # Time-aware objective: the T4 gateway INVALIDATES a submission that exceeds ~9000s/
 # model of wall-clock replay. We replay in-process, so we MEASURE green replay-seconds
 # per model and zero any submission over budget (mirrors T4 INVALID). Budget is in
-# GREEN-seconds (green ~69x faster than T4 for gpt_oss); calibrated 2026-07-23:
-# gpt_oss ~5.6 green-s/candidate, T4 fits ~23 -> ~129 green-s; 120 leaves margin
-# (~21 candidates). gemma (~0.54 green-s/candidate) never binds. Tune from the
-# logged replay_seconds vs T4 pass/fail.
-GREEN_REPLAY_BUDGET_S: dict[str, float] = {"gpt_oss": 120.0, "gemma_4": 60.0}
+# GREEN-seconds. RECALIBRATED 2026-07-24: the 120 value assumed 5.6 green-s/candidate
+# (a ~69x green speedup over T4's ~385s/candidate), but the KV-cache fix made green do
+# full fresh evals -> ~8.5 green-s/candidate for heavy all-firing subs, so the real
+# ratio is ~385/8.5 ≈ 45x and the correct budget is ~9000/45 ≈ 200 green-s. The old 120
+# was zeroing ~60% of the optimizer's (valid) output. 200 is the EDGE of that estimate
+# (≈9000 T4-s, ~no margin) -- a T4 verify (v11, 21-cand/179-green-s sub) is in flight to
+# nail the true ratio; refine this from its measured replay-s. gemma never binds.
+GREEN_REPLAY_BUDGET_S: dict[str, float] = {"gpt_oss": 200.0, "gemma_4": 60.0}
 
 # The proposer models the async team rotates. optimize_team GROUPS these by API key into
 # one lane per key (one worker per lane), and the lane's worker rotates through its
