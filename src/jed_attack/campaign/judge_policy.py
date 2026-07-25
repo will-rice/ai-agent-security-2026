@@ -31,9 +31,7 @@ from jed_attack.campaign.submission_score import SubmissionScore
 class JudgeAssessment(pydantic.BaseModel):
     """Versioned judge evidence for one replay-gated candidate."""
 
-    status: Literal[
-        "available", "skipped_invalid", "skipped_nonfiring", "unavailable"
-    ]
+    status: Literal["available", "skipped_invalid", "skipped_nonfiring", "unavailable"]
     candidate_hash: str
     judge_version: str
     anchor_version: str
@@ -153,9 +151,7 @@ async def _assess_uncached(
         )
         robustness_task = asyncio.to_thread(judge_robustness, robustness_request)
         mechanism_task = asyncio.to_thread(judge_mechanism, mechanism_request)
-        robustness, mechanism = await asyncio.gather(
-            robustness_task, mechanism_task
-        )
+        robustness, mechanism = await asyncio.gather(robustness_task, mechanism_task)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
@@ -173,9 +169,7 @@ async def _assess_uncached(
 
 
 def _assessment_result(
-    status: Literal[
-        "available", "skipped_invalid", "skipped_nonfiring", "unavailable"
-    ],
+    status: Literal["available", "skipped_invalid", "skipped_nonfiring", "unavailable"],
     identity: str,
     refs: str,
     novelty: int,
@@ -211,9 +205,7 @@ def _exact_cell_novelty(score: SubmissionScore) -> int:
     return len(cells)
 
 
-def compare_candidates(
-    a: CandidateObjective, b: CandidateObjective
-) -> Comparison:
+def compare_candidates(a: CandidateObjective, b: CandidateObjective) -> Comparison:
     """Compare two candidates with faithful public as the outer guardrail."""
     gate = _hard_gate_decision(a, b)
     if gate is not None:
@@ -265,9 +257,7 @@ def _hard_gate_decision(
     return None
 
 
-def _robustness_decision(
-    a: JudgeAssessment, b: JudgeAssessment
-) -> Comparison | None:
+def _robustness_decision(a: JudgeAssessment, b: JudgeAssessment) -> Comparison | None:
     """Return a confident private-survival decision when the delta is meaningful."""
     assert a.robustness is not None and b.robustness is not None
     min_confidence = min(a.robustness.confidence, b.robustness.confidence)
@@ -408,12 +398,8 @@ def _aggregate_robustness(scores: Sequence[RobustnessScore]) -> RobustnessScore:
         "policy_independence": round(
             mean(score.policy_independence for score in scores)
         ),
-        "replay_consistency": round(
-            mean(score.replay_consistency for score in scores)
-        ),
-        "public_bypass_risk": round(
-            mean(score.public_bypass_risk for score in scores)
-        ),
+        "replay_consistency": round(mean(score.replay_consistency for score in scores)),
+        "public_bypass_risk": round(mean(score.public_bypass_risk for score in scores)),
     }
     private_survival = 5.0 * (
         fields["cross_model"]
