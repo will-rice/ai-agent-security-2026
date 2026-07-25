@@ -72,12 +72,10 @@ EVAL_HOPS = 8
 # Adversarial refinement: max per-generation batch hill-climb rounds. After scoring a
 # batch, the lane re-authors the WHOLE batch against its real per-message scores,
 # re-scores every submission, and keeps the higher-mean-public batch, up to this many
-# rounds. DISABLED (0) for the list[Submission] batch loop: each refine round re-scores
-# the entire batch (~5x the already-heavy per-generation scoring) for low marginal gain
-# -- a batch already supplies diversity + quantity, and scoring is the unbatchable
-# bottleneck (llama-cpp single-sequence; see jed-t4-replay-time-budget). So a generation
-# is propose-batch -> score-all -> curate. Raise only if scoring gets cheaper.
-REFINE_MAX_ROUNDS = 0
+# rounds. Four restores the approved adversarial hill-climb cap: at most five full
+# batch scorings per generation, with early stop on the first non-improving rewrite.
+# Set to 0 to disable refinement when scoring throughput is the binding constraint.
+REFINE_MAX_ROUNDS = 4
 
 # Prompt-optimization orchestrator (optimize_prompts.py): its generation logfile.
 OPTIMIZE_LOG = CAMPAIGN_ROOT / "optimize_prompts.log"

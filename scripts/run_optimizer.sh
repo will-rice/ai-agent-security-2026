@@ -32,12 +32,13 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 # that asyncio cancellation cannot stop and may use the full 300-second replay budget,
 # so the default grace period must exceed that budget.
 STOP_TIMEOUT_S="${JED_OPTIMIZER_STOP_TIMEOUT_S:-330}"
-pkill -TERM -f jed_attack.campaign.optimize_prompts 2>/dev/null || true
+OPTIMIZER_PYTHON_PATTERN='^(.*/)?python([0-9]+([.][0-9]+)?)? -m jed_attack[.]campaign[.]optimize_prompts($| )'
+pkill -TERM -f "$OPTIMIZER_PYTHON_PATTERN" 2>/dev/null || true
 for _ in $(seq 1 "$STOP_TIMEOUT_S"); do
-  pgrep -f jed_attack.campaign.optimize_prompts >/dev/null || break
+  pgrep -f "$OPTIMIZER_PYTHON_PATTERN" >/dev/null || break
   sleep 1
 done
-pkill -KILL -f jed_attack.campaign.optimize_prompts 2>/dev/null || true
+pkill -KILL -f "$OPTIMIZER_PYTHON_PATTERN" 2>/dev/null || true
 tmux kill-session -t "$SESSION" 2>/dev/null || true
 sleep 1
 

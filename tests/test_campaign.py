@@ -407,6 +407,13 @@ def _run_refine_worker(
     return board
 
 
+def test_default_refine_rounds_restores_adversarial_hill_climb() -> None:
+    """The live optimizer runs the approved four adversarial refinement rounds."""
+    from jed_attack.campaign import config
+
+    assert config.REFINE_MAX_ROUNDS == 4
+
+
 def test_refine_runs_to_cap_when_every_round_improves(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

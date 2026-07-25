@@ -238,3 +238,4 @@ models/
 
 # Campaign runtime state
 run/
+wandb/
