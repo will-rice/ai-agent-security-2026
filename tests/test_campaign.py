@@ -262,7 +262,6 @@ def test_worker_loop_appends_then_survives_failure(
 
     monkeypatch.setattr(op, "propose_batch_async", fake_batch)
     monkeypatch.setattr(op, "score_submission", lambda m, models=config.MODELS: score)
-    monkeypatch.setattr(op, "curate_from_blackboard", lambda b, o, run=None: None)
     monkeypatch.setattr(op, "_GENERATION_RETRY_S", 0.0)
 
     board = bb.Blackboard.load(tmp_path / "bb.jsonl")
@@ -280,15 +279,16 @@ def _fake_score(messages: object, sink: list[object]) -> "SubmissionScore":
     return _mk_score(1.0)
 
 
-def test_worker_loop_batches_scores_all_and_ships_curated(
+def test_worker_loop_batches_scores_all_and_stores_flat(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """One generation: propose a 2-submission batch, score both, append both, curate.
+    """One generation: propose a 2-submission batch, score both, store flat, reship.
 
     ``REFINE_MAX_ROUNDS=0`` isolates round 0. The proposer returns a 2-submission batch
     on the first call and cancels on the second (the next generation's round 0), ending
-    the infinite loop. Both submissions must be scored, both appended as their own
-    records, and curation shipped once with the 2-record board.
+    the infinite loop. Both submissions must be scored, both appended to the flat-file
+    blackboard as their own records, and ``attack.py`` reshipped (first append -> new
+    best).
     """
     import asyncio
 
@@ -311,26 +311,21 @@ def test_worker_loop_batches_scores_all_and_ships_curated(
         return [s1, s2], "reasoning"
 
     scored: list[object] = []
-    curated: list[int] = []
     monkeypatch.setattr(op, "propose_batch_async", fake_batch)
     monkeypatch.setattr(
         op, "score_submission", lambda m, models=config.MODELS: _fake_score(m, scored)
     )
-    monkeypatch.setattr(
-        op,
-        "curate_from_blackboard",
-        lambda b, o, run=None: curated.append(len(b._records)),
-    )
     monkeypatch.setattr(config, "REFINE_MAX_ROUNDS", 0)  # isolate round 0
     monkeypatch.setattr(op, "_GENERATION_RETRY_S", 0.0)
 
+    out_dir = tmp_path / "out"
     board = bb.Blackboard.load(tmp_path / "bb.jsonl")
     prov = providers.get("cheapest-kimi")
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(op.worker_loop(0, [prov], board, tmp_path / "out", timeout_s=1.0))
+        asyncio.run(op.worker_loop(0, [prov], board, out_dir, timeout_s=1.0))
     assert len(scored) == 2  # every submission scored
-    assert len(board._records) == 2  # every submission appended as its own record
-    assert curated == [2]  # curation shipped once, over the 2-record board
+    assert len(board._records) == 2  # every submission stored as its own flat record
+    assert (out_dir / "attack.py").exists()  # a new best reshipped attack.py
 
 
 def _mk_score(public: float) -> "SubmissionScore":
@@ -378,8 +373,8 @@ def _run_refine_worker(
     When ``subs`` is exhausted the next propose raises CancelledError, ending the loop.
     Tests assert on ``board._records`` (the append count) -- the observable that
     distinguishes the refine loop (one append per generation, refining within it) from
-    the old propose->score->append-every-generation behavior. Curation is stubbed so the
-    default CURATE_POOL ship path is a no-op.
+    the old propose->score->append-every-generation behavior. Each new best reships
+    ``attack.py`` into ``tmp_path`` (a real but throwaway write).
     """
     import asyncio
 
@@ -403,7 +398,6 @@ def _run_refine_worker(
     monkeypatch.setattr(
         op, "score_submission", lambda m, models=config.MODELS: _mk_score(next(pub_it))
     )
-    monkeypatch.setattr(op, "curate_from_blackboard", lambda b, o, run=None: None)
     monkeypatch.setattr(op, "_GENERATION_RETRY_S", 0.0)
 
     board = bb.Blackboard.load(tmp_path / "bb.jsonl")
@@ -485,7 +479,6 @@ def test_refine_round_failure_keeps_improved_best(
     monkeypatch.setattr(
         op, "score_submission", lambda m, models=config.MODELS: _mk_score(next(pubs))
     )
-    monkeypatch.setattr(op, "curate_from_blackboard", lambda b, o, run=None: None)
     monkeypatch.setattr(op, "_GENERATION_RETRY_S", 0.0)
 
     board = bb.Blackboard.load(tmp_path / "bb.jsonl")

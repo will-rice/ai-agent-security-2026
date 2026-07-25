@@ -135,3 +135,16 @@ class Blackboard:
                 handle.write(json.dumps(record.to_json(), sort_keys=True) + "\n")
             if reship and (prior_best is None or record.public > prior_best.public):
                 assemble.build([m["text"] for m in record.messages], out_dir)
+
+    def reship_best(self, out_dir: Path) -> None:
+        """Rewrite ``attack.py`` from the current best record (no-op if empty).
+
+        Used on warm start so the shipped artifact reflects the flat file's best
+        immediately, rather than lagging until a future generation beats it.
+
+        Args:
+            out_dir: Where :func:`assemble.build` writes ``attack.py``.
+        """
+        best = self.best()
+        if best is not None:
+            assemble.build([m["text"] for m in best.messages], out_dir)

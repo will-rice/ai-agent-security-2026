@@ -16,10 +16,9 @@ blackboard.Blackboard`. Each lane, forever:
    capturing the backend's reasoning;
 4. scores EVERY submission in the batch on the live served models
    (:func:`~jed_attack.campaign.submission_score.score_submission`, off-thread),
-   hill-climbs the batch on its mean public score, appends every submission of the kept
-   batch to the shared blackboard as its own candidate, and ships the curated pool
-   (:func:`~jed_attack.campaign.curate.curate_from_blackboard`) when
-   ``config.CURATE_POOL`` is on (else the append reships ``attack.py`` on a new best).
+   hill-climbs the batch on its mean public score, and appends every submission of the
+   kept batch to the shared flat-file blackboard as its own candidate; a new public best
+   reships ``attack.py`` (:func:`~jed_attack.campaign.assemble.build`).
 
 One :func:`wandb.init` run spans the whole team (one process); every lane logs to it,
 each metric tagged with its ``model`` + ``worker`` so lanes are comparable in one chart.
@@ -46,7 +45,6 @@ from dotenv import load_dotenv
 from openai.types.chat import ChatCompletionMessageParam
 
 from jed_attack.campaign import blackboard, config, providers
-from jed_attack.campaign.curate import curate_from_blackboard
 from jed_attack.campaign.submission import (
     Message,
     MessageType,
@@ -145,9 +143,8 @@ async def worker_loop(
     best-scoring submission + its feedback, re-scoring every submission and keeping the
     batch with the higher MEAN public score, stopping at the first round that doesn't
     strictly improve (or on a refine round's own failure). Every submission of the kept
-    batch is appended to the blackboard as its own candidate; the shipped ``attack.py``
-    is the curated pool (:func:`~jed_attack.campaign.curate.curate_from_blackboard`)
-    when ``config.CURATE_POOL`` is on, else the append reships on a new public best. A
+    batch is appended to the flat-file blackboard as its own candidate; a new public
+    best reships ``attack.py`` (:func:`~jed_attack.campaign.assemble.build`). A
     refine round's failure is caught and the best-so-far batch is still shipped; an
     empty batch skips the generation; a whole generation's failure (proposer blip,
     refusal yielding no JSON, score outage) is caught and backed off so the lane keeps
@@ -202,17 +199,13 @@ async def worker_loop(
             )
             batch_public = mean(sc.public for sc in local_scores)
 
-            # Append EVERY submission of the kept batch as its own candidate. Under
-            # CURATE_POOL the append does NOT reship (curation below is the sole ship);
-            # otherwise the append reships ``attack.py`` on a new public best (legacy).
+            # Store EVERY submission of the kept batch as its own candidate in the
+            # flat-file blackboard; a new public best reships ``attack.py``.
             for submission, score in zip(local_batch, local_scores, strict=True):
                 await board.append(
                     make_record(submission, score, reasoning, model, worker_id),
                     out_dir,
-                    reship=not config.CURATE_POOL,
                 )
-            if config.CURATE_POOL:
-                await asyncio.to_thread(curate_from_blackboard, board, out_dir, run)
 
             best = board.best()
             assert best is not None  # just appended -> the board is non-empty
@@ -650,7 +643,14 @@ def _salvage_batch(content: str) -> list[Submission]:
     Returns:
         The valid Submissions (possibly empty; the loop skips an empty batch).
     """
-    raw = _extract_json(content)
+    try:
+        raw = _extract_json(content)
+    except ValueError:
+        # A proposer reply with no JSON (e.g. a thinking model that spent its whole
+        # token budget on reasoning, or a refusal) yields an empty batch; the loop's
+        # `if not batch: continue` skips the generation cleanly instead of a traceback.
+        _log.info("salvaged batch: 0 submissions (no JSON in reply)")
+        return []
     subs_raw = raw.get("submissions", raw) if isinstance(raw, dict) else raw
     batch: list[Submission] = []
     for sub in subs_raw if isinstance(subs_raw, list) else []:
@@ -793,6 +793,10 @@ def main() -> None:
         f"team-{_git_hash()}"
     )  # ONE run for the whole team, tagged by commit
     board = blackboard.Blackboard.load(config.BLACKBOARD_LOG)
+    # Reship the best-so-far immediately: on a warm restart the flat file already holds
+    # the best submission, but reship-on-new-best only fires when a future generation
+    # beats it -- so without this ``attack.py`` would lag (or stay empty) until then.
+    board.reship_best(config.BUILD_NEXT_DIR)
     try:
         asyncio.run(_run_team(board, run))
     finally:

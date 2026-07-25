@@ -140,14 +140,14 @@ VLLM_URL = os.getenv(
     "VLLM_URL", "http://127.0.0.1:8000/v1"
 )  # dylan-local, service->vLLM
 VLLM_MODEL = os.getenv("VLLM_MODEL", "bullerwins/Qwen3-32B-awq")
-# Novelty-aware pool curation.
-NOVELTY_ADMIT_THRESHOLD = 40.0  # min novelty score to admit a candidate to the pool
+# Judge scales (used by judge.py / curate.py). The per-generation LLM curation pass was
+# retired -- it re-judged the whole growing flat file every generation (~0.7s/call,
+# 49k calls) and shipped empty pools because the novelty judge scored homogeneous exfils
+# below the admit threshold even vs an empty pool. The worker now just stores every
+# scored submission to the flat file and reships the best. Judging is being folded into
+# scoring instead (once per candidate, at birth).
+NOVELTY_ADMIT_THRESHOLD = 40.0  # min novelty score to admit a candidate to a pool
 NOVELTY_POOL_SAMPLE = 8  # current-pool messages shown to the novelty judge
-
-# Ship the CURATED pool (novelty gate + severity rank, dylan judges) instead of the
-# single best submission. A/B toggle only -- dylan is always up, so curation never
-# needs an outage fallback. See docs/.../list-submission-batch-proposer-design.md.
-CURATE_POOL = os.getenv("JED_CURATE_POOL", "1") == "1"
 
 
 def ensure_dirs() -> None:
