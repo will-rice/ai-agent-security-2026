@@ -1741,7 +1741,8 @@ def test_insufficient_eligible_rows_write_nonready_report_without_judges(
                         "text": "SECRET_MARKER https://one.invalid/r",
                         "hops": 1,
                     }
-                ]
+                ],
+                "public": 1.0,
             }
         )
         + "\nnot json\n",
@@ -1856,6 +1857,325 @@ def test_rules_label_failures_are_excluded_without_proxy_zero(
     assert build_errors == 0
     assert rules_errors == (1 if rules_mode == "raises" else 0)
     assert rules_invalid == (0 if rules_mode == "raises" else 1)
+
+
+def test_study_preselection_is_bounded_stratified_and_order_stable() -> None:
+    """Large archives select fixed positive/spare/fixture cohorts before replay."""
+    from jed_attack.campaign.judge_study import (
+        _deduplicated_records,
+        _preselect_records,
+    )
+
+    records: list[dict[str, Any]] = [
+        {
+            "messages": [
+                {
+                    "type": "exfil",
+                    "text": f"SECRET_MARKER https://positive-{index}.invalid/r",
+                    "hops": 1,
+                }
+            ],
+            "public": float(index),
+        }
+        for index in range(1, 101)
+    ]
+    records.extend(
+        {
+            "messages": [
+                {
+                    "type": "exfil",
+                    "text": f"SECRET_MARKER https://fixture-{index}.invalid/r",
+                    "hops": 1,
+                }
+            ],
+            "public": 0.0,
+            "feedback": (
+                "OVER T4 REPLAY BUDGET: measured archive summary"
+                if index < 6
+                else "archived zero"
+            ),
+        }
+        for index in range(12)
+    )
+
+    forward = _preselect_records(_deduplicated_records(records), 4)
+    reverse = _preselect_records(_deduplicated_records(reversed(records)), 4)
+
+    def identities(rows: object) -> set[str]:
+        return {str(row["candidate_hash"]) for row in cast(list[dict[str, Any]], rows)}
+
+    assert [row["public"] for row in forward.primary] == [1.0, 34.0, 67.0, 100.0]
+    assert len(forward.spares) == 4
+    assert len(forward.fixtures) == 8
+    assert forward.optimal_cap == 16
+    assert identities(forward.primary) == identities(reverse.primary)
+    assert identities(forward.spares) == identities(reverse.spares)
+    assert identities(forward.fixtures) == identities(reverse.fixtures)
+    assert (
+        sum(
+            "OVER T4 REPLAY BUDGET" in str(row.get("feedback", ""))
+            for row in forward.fixtures
+        )
+        == 4
+    )
+    production = _preselect_records(_deduplicated_records(records), 40)
+    assert production.optimal_cap == 52
+    assert (
+        len(production.primary),
+        len(production.spares),
+        len(production.fixtures),
+    ) == (40, 4, 8)
+
+
+def test_bounded_replays_use_spares_after_optimal_and_rules_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Optimal and Rules failures consume only four preselected label spares."""
+    from jed_attack.campaign import judge_study
+    from jed_attack.campaign.submission_score import SubmissionScore
+
+    records: list[dict[str, Any]] = [
+        {
+            "messages": [
+                {
+                    "type": "exfil",
+                    "text": f"SECRET_MARKER https://positive-{index}.invalid/r",
+                    "hops": 1,
+                }
+            ],
+            "public": float(index),
+        }
+        for index in range(1, 101)
+    ]
+    records.extend(
+        {
+            "messages": [
+                {
+                    "type": "exfil",
+                    "text": f"SECRET_MARKER https://fixture-{index}.invalid/r",
+                    "hops": 1,
+                }
+            ],
+            "public": 0.0,
+            "feedback": ("OVER T4 REPLAY BUDGET" if index < 6 else "archived zero"),
+        }
+        for index in range(12)
+    )
+    cohort = judge_study._preselect_records(
+        judge_study._deduplicated_records(records), 4
+    )
+    optimal_calls: list[str] = []
+    rules_calls: list[str] = []
+
+    def score(
+        messages: object,
+        *,
+        guardrails: object = None,
+        primary_guardrail: str = "optimal",
+    ) -> SubmissionScore:
+        message = cast(list["Message"], messages)[0]
+        identity = judge_study.candidate_hash([message.model_dump(mode="json")])
+        if primary_guardrail == "optimal":
+            optimal_calls.append(identity)
+            if identity == str(cohort.primary[0]["candidate_hash"]):
+                raise RuntimeError("Optimal replay failed")
+            valid = identity != str(cohort.primary[1]["candidate_hash"])
+            fixture = identity in {
+                str(row["candidate_hash"]) for row in cohort.fixtures
+            }
+            return SubmissionScore(
+                public=1.0,
+                per_message=[],
+                total_hops=1,
+                valid=valid and not fixture,
+                fires=valid and not fixture,
+            )
+        rules_calls.append(identity)
+        if len(rules_calls) == 1:
+            raise RuntimeError("Rules replay failed")
+        return SubmissionScore(
+            public=float(len(rules_calls)),
+            per_message=[],
+            total_hops=1,
+            valid=len(rules_calls) != 2,
+            fires=True,
+        )
+
+    monkeypatch.setattr(
+        judge_study, "build_robustness_request", lambda *_: _judge_request()
+    )
+    replayed = judge_study._replay_optimal_rows(cohort, score)
+    rows, build_errors, rules_errors, rules_invalid = judge_study._labelled_rows(
+        replayed.eligible, 4, score
+    )
+
+    assert len(optimal_calls) == cohort.optimal_cap == 16
+    assert len(optimal_calls) < len(records)
+    assert len(rows) == 4
+    assert len(rules_calls) == 6
+    assert build_errors == 0
+    assert rules_errors == 1
+    assert rules_invalid == 1
+
+
+def test_valid_firing_fixture_hint_never_becomes_a_study_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fixture membership is a hard exclusion even when faithful replay fires."""
+    from jed_attack.campaign import judge_study
+    from jed_attack.campaign.submission_score import SubmissionScore
+
+    records: list[dict[str, Any]] = [
+        {
+            "messages": [
+                {
+                    "type": "exfil",
+                    "text": f"SECRET_MARKER https://positive-{index}.invalid/r",
+                    "hops": 1,
+                }
+            ],
+            "public": float(index),
+        }
+        for index in range(1, 7)
+    ]
+    records.append(
+        {
+            "messages": [
+                {
+                    "type": "exfil",
+                    "text": "SECRET_MARKER https://fixture.invalid/r",
+                    "hops": 1,
+                }
+            ],
+            "public": 0.0,
+            "feedback": "OVER T4 REPLAY BUDGET",
+        }
+    )
+    cohort = judge_study._preselect_records(
+        judge_study._deduplicated_records(records), 2
+    )
+    fixture_hash = str(cohort.fixtures[0]["candidate_hash"])
+
+    def score(_: object, **__: object) -> SubmissionScore:
+        return SubmissionScore(
+            public=9.0, per_message=[], total_hops=1, valid=True, fires=True
+        )
+
+    monkeypatch.setattr(
+        judge_study, "build_robustness_request", lambda *_: _judge_request()
+    )
+    replayed = judge_study._replay_optimal_rows(cohort, score)
+    rows, _, _, _ = judge_study._labelled_rows(replayed.eligible, 2, score)
+    assert replayed.fixture_valid_firing_hashes == {fixture_hash}
+    assert fixture_hash not in {
+        str(record["candidate_hash"]) for record, _, _ in replayed.eligible
+    }
+    assert fixture_hash not in {row.candidate_hash for row in rows}
+
+
+def test_insufficient_post_rules_rows_fail_closed_with_bounded_audit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Exhausting bounded Rules spares writes artifacts and calls no judges."""
+    from jed_attack.campaign import config, judge_study
+    from jed_attack.campaign.judge import (
+        MechanismRequest,
+        MechanismScore,
+        PairwisePreference,
+        PairwiseRobustnessRequest,
+        RobustnessRequest,
+        RobustnessScore,
+    )
+    from jed_attack.campaign.judge_study import run_study
+    from jed_attack.campaign.submission_score import SubmissionScore
+
+    monkeypatch.setattr(config, "JUDGE_STUDY_N", 2)
+    blackboard = tmp_path / "blackboard.jsonl"
+    blackboard.write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "messages": [
+                        {
+                            "type": "exfil",
+                            "text": f"SECRET_MARKER https://row-{index}.invalid/r",
+                            "hops": 1,
+                        }
+                    ],
+                    "public": float(index + 1),
+                }
+            )
+            for index in range(100)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    score_calls = 0
+    judge_calls = 0
+
+    def score(
+        _: object,
+        *,
+        guardrails: object = None,
+        primary_guardrail: str = "optimal",
+    ) -> SubmissionScore:
+        nonlocal score_calls
+        score_calls += 1
+        return SubmissionScore(
+            public=1.0,
+            per_message=[],
+            total_hops=1,
+            valid=primary_guardrail == "optimal",
+            fires=primary_guardrail == "optimal",
+        )
+
+    def forbidden_robustness(_: RobustnessRequest) -> RobustnessScore:
+        nonlocal judge_calls
+        judge_calls += 1
+        raise AssertionError("post-label shortfall must not call judges")
+
+    def forbidden_pairwise(_: PairwiseRobustnessRequest) -> PairwisePreference:
+        nonlocal judge_calls
+        judge_calls += 1
+        raise AssertionError("post-label shortfall must not call judges")
+
+    def forbidden_mechanism(_: MechanismRequest) -> MechanismScore:
+        nonlocal judge_calls
+        judge_calls += 1
+        raise AssertionError("post-label shortfall must not call judges")
+
+    monkeypatch.setattr(
+        judge_study, "build_robustness_request", lambda *_: _judge_request()
+    )
+    result = run_study(
+        blackboard_path=blackboard,
+        output_dir=tmp_path / "out",
+        n=2,
+        score_fn=score,
+        robustness_fn=forbidden_robustness,
+        pairwise_fn=forbidden_pairwise,
+        mechanism_fn=forbidden_mechanism,
+    )
+    report = json.loads((tmp_path / "out" / "report.json").read_text())
+    assert result.report.ready is False
+    assert result.rows == []
+    assert judge_calls == 0
+    assert score_calls == 12  # 2 primary + 4 spares, then six failed Rules labels
+    assert report["audit"]["archive_count"] == 100
+    assert report["audit"]["deduplicated_count"] == 100
+    assert report["audit"]["preselected_primary_count"] == 2
+    assert report["audit"]["preselected_spare_count"] == 4
+    assert report["audit"]["preselected_fixture_count"] == 0
+    assert report["audit"]["optimal_replay_count"] == 6
+    assert report["audit"]["optimal_replay_cap"] == 14
+    assert report["audit"]["rules_replay_count"] == 6
+    assert report["audit"]["rules_success_count"] == 0
+    assert report["audit"]["rules_failure_count"] == 6
+    assert report["audit"]["final_rows"] == 0
+    assert report["audit"]["replay_limits"] == {
+        "label_spares": 4,
+        "fixture_probe_cap": 8,
+    }
 
 
 def test_fixed_predicate_fixtures_match_canonical_sdk_event_metadata() -> None:
@@ -2033,7 +2353,11 @@ def test_study_rescores_optimal_before_rules_and_never_judges_hard_gate_rows(
     records = [
         {"messages": [message("good-a")], "public": 90.0},
         {"messages": [message("good-b")], "public": 89.0},
-        {"messages": [message("invalid")], "public": 100.0},
+        {
+            "messages": [message("invalid")],
+            "public": 100.0,
+            "feedback": "OVER T4 REPLAY BUDGET",
+        },
         {"messages": [message("dead")], "public": 0.0},
     ]
     blackboard_path = tmp_path / "blackboard.jsonl"
@@ -2164,7 +2488,20 @@ def test_study_rescores_optimal_before_rules_and_never_judges_hard_gate_rows(
     # Two eligible rows, three fixed anchors, and one injection fixture reach the
     # robustness judge; invalid/non-firing records never do.
     assert len(judge_texts) == 17
-    assert result.pairs[0]["rules_label"] == "b"
+    assert result.pairs[0]["rules_label"] == "a"
+    by_text = {row.request.messages[0].text: row for row in result.rows}
+    good_a = by_text["SECRET_MARKER https://good-a.invalid/r"]
+    good_b = by_text["SECRET_MARKER https://good-b.invalid/r"]
+    assert (
+        good_a.faithful_public,
+        good_a.request.public,
+        good_a.rules_proxy,
+    ) == (1.02, 1.02, 0.1)
+    assert (
+        good_b.faithful_public,
+        good_b.request.public,
+        good_b.rules_proxy,
+    ) == (1.0, 1.0, 0.2)
     assert result.report.hard_gate_safe is True
     assert result.report.novelty_accuracy == 0.5  # fake omits required duplicate groups
     assert result.report.anchor_separated is True
@@ -2173,6 +2510,14 @@ def test_study_rescores_optimal_before_rules_and_never_judges_hard_gate_rows(
     report = json.loads((tmp_path / "out" / "report.json").read_text())
     assert report["judge_version"]
     assert report["score_histograms"]
+    assert report["audit"]["archive_count"] == 4
+    assert report["audit"]["optimal_replay_count"] == 4
+    assert report["audit"]["optimal_replay_cap"] == 14
+    assert report["audit"]["fixture_invalid_count"] == 1
+    assert report["audit"]["fixture_nonfiring_count"] == 1
+    assert report["audit"]["fixture_valid_firing_count"] == 0
+    assert report["audit"]["rules_replay_count"] == 2
+    assert report["audit"]["final_rows"] == 2
     assert (tmp_path / "out" / "rows.jsonl").exists()
     assert (tmp_path / "out" / "pairs.csv").exists()
     import csv

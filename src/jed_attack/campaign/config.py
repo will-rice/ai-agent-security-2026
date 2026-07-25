@@ -126,6 +126,8 @@ JUDGE_VERSION = "robustness-v1"
 JUDGE_ANCHOR_VERSION = "anchors-v1"
 JUDGE_PUBLIC_BAND_RATIO = 0.05
 JUDGE_STUDY_N = 40
+JUDGE_STUDY_LABEL_SPARES = 4
+JUDGE_STUDY_FIXTURE_PROBES = 8
 JUDGE_STUDY_DIR = CAMPAIGN_ROOT / "judge_study_v1"
 
 # Dylan judge service (FastAPI + vLLM). The green optimizer POSTs typed judge requests

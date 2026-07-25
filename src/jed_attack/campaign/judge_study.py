@@ -92,10 +92,26 @@ class _ReplaySet:
     """Replay outcomes retained for gates and report accounting."""
 
     eligible: list[tuple[dict[str, Any], list[Message], SubmissionScore]]
+    valid_firing_hashes: set[str]
+    fixture_valid_firing_hashes: set[str]
     invalid_hashes: set[str]
+    fixture_invalid_hashes: set[str]
     nonfiring_hashes: set[str]
+    fixture_nonfiring_hashes: set[str]
     malformed_count: int
     replay_error_count: int
+    fixture_replay_error_count: int
+    optimal_replay_count: int
+
+
+@dataclass(frozen=True)
+class _PreselectedRecords:
+    """Bounded archive cohort chosen only from deterministic archived hints."""
+
+    primary: list[dict[str, Any]]
+    spares: list[dict[str, Any]]
+    fixtures: list[dict[str, Any]]
+    optimal_cap: int
 
 
 def candidate_hash(messages: Sequence[dict[str, Any]]) -> str:
@@ -210,17 +226,43 @@ def _load_records(path: Path) -> tuple[list[dict[str, Any]], int]:
 
 
 def _deduplicated_records(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Keep the first archived instance of each stable submitted message sequence."""
-    seen: set[str] = set()
-    deduplicated: list[dict[str, Any]] = []
+    """Choose one stable archived hint per submitted message sequence."""
+    grouped: dict[str, list[dict[str, Any]]] = {}
     for record in records:
         messages = record["messages"]
         identity = candidate_hash(messages)
-        if identity in seen:
-            continue
-        seen.add(identity)
-        deduplicated.append({**record, "candidate_hash": identity})
-    return deduplicated
+        grouped.setdefault(identity, []).append(record)
+    deduplicated: list[dict[str, Any]] = []
+    for identity, duplicates in grouped.items():
+        selected = max(
+            duplicates,
+            key=lambda row: (
+                _archived_public(row),
+                json.dumps(row, sort_keys=True, separators=(",", ":")),
+            ),
+        )
+        deduplicated.append({**selected, "candidate_hash": identity})
+    return sorted(deduplicated, key=lambda row: str(row["candidate_hash"]))
+
+
+def _archived_public(record: dict[str, Any]) -> float:
+    """Read the archived public value strictly as a preselection hint."""
+    try:
+        value = float(record.get("public", 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+    return value if math.isfinite(value) else 0.0
+
+
+def _budget_hint(record: dict[str, Any]) -> bool:
+    """Return whether archived feedback should prioritize a fixture probe."""
+    return "OVER T4 REPLAY BUDGET" in str(record.get("feedback", ""))
+
+
+def _record_identity(record: dict[str, Any]) -> str:
+    """Return a supplied identity or derive one for raw archive records."""
+    identity = record.get("candidate_hash")
+    return str(identity) if identity is not None else candidate_hash(record["messages"])
 
 
 def _stratified(records: Sequence[dict[str, Any]], n: int) -> list[dict[str, Any]]:
@@ -231,11 +273,78 @@ def _stratified(records: Sequence[dict[str, Any]], n: int) -> list[dict[str, Any
     """
     if n <= 0:
         raise ValueError("n must be positive")
-    if len(records) <= n:
-        return list(records)
-    ordered = sorted(records, key=lambda row: float(row.get("public", 0.0)))
+    ordered = sorted(
+        records,
+        key=lambda row: (
+            _archived_public(row),
+            _record_identity(row),
+        ),
+    )
+    if len(ordered) <= n:
+        return ordered
+    if n == 1:
+        return [ordered[0]]
     indices = {round(index * (len(ordered) - 1) / (n - 1)) for index in range(n)}
     return [row for index, row in enumerate(ordered) if index in indices]
+
+
+def _preselect_records(
+    records: Sequence[dict[str, Any]], n: int
+) -> _PreselectedRecords:
+    """Select the only records eligible for production Optimal replay.
+
+    Archived public values and budget text decide membership only. Eligibility,
+    firing, invalidity, replay facts, and metrics all come from the later replays.
+    """
+    if n <= 0:
+        raise ValueError("n must be positive")
+    positives = [
+        record
+        for record in records
+        if _archived_public(record) > 0.0 and not _budget_hint(record)
+    ]
+    primary = _stratified(positives, min(n, len(positives))) if positives else []
+    primary_hashes = {str(record["candidate_hash"]) for record in primary}
+    spare_pool = [
+        record
+        for record in positives
+        if str(record["candidate_hash"]) not in primary_hashes
+    ]
+    spare_count = min(config.JUDGE_STUDY_LABEL_SPARES, len(spare_pool))
+    spares = _stratified(spare_pool, spare_count) if spare_count else []
+
+    fixture_pool = [
+        record
+        for record in records
+        if _archived_public(record) <= 0.0 or _budget_hint(record)
+    ]
+    fixture_cap = config.JUDGE_STUDY_FIXTURE_PROBES
+    hint_cap = fixture_cap // 2
+    hinted = sorted(
+        (record for record in fixture_pool if _budget_hint(record)),
+        key=lambda row: str(row["candidate_hash"]),
+    )
+    ordinary = sorted(
+        (record for record in fixture_pool if not _budget_hint(record)),
+        key=lambda row: str(row["candidate_hash"]),
+    )
+    fixtures = hinted[:hint_cap] + ordinary[: fixture_cap - hint_cap]
+    fixture_hashes = {str(record["candidate_hash"]) for record in fixtures}
+    remaining = sorted(
+        (
+            record
+            for record in fixture_pool
+            if str(record["candidate_hash"]) not in fixture_hashes
+        ),
+        key=lambda row: str(row["candidate_hash"]),
+    )
+    fixtures.extend(remaining[: fixture_cap - len(fixtures)])
+    return _PreselectedRecords(
+        primary=primary,
+        spares=spares,
+        fixtures=fixtures,
+        optimal_cap=n + config.JUDGE_STUDY_LABEL_SPARES + fixture_cap,
+    )
 
 
 def _rules_score(
@@ -764,15 +873,23 @@ def _write_artifacts(
 
 
 def _replay_optimal_rows(
-    records: Sequence[dict[str, Any]],
+    cohort: _PreselectedRecords,
     score_fn: Callable[..., SubmissionScore],
 ) -> _ReplaySet:
-    """Authoritatively replay every record and retain separately gated fixture facts."""
+    """Authoritatively replay only the bounded preselected cohort."""
     eligible: list[tuple[dict[str, Any], list[Message], SubmissionScore]] = []
+    valid_firing_hashes: set[str] = set()
+    fixture_valid_firing_hashes: set[str] = set()
     invalid_hashes: set[str] = set()
+    fixture_invalid_hashes: set[str] = set()
     nonfiring_hashes: set[str] = set()
+    fixture_nonfiring_hashes: set[str] = set()
     malformed_count = 0
     replay_error_count = 0
+    fixture_replay_error_count = 0
+    optimal_replay_count = 0
+    fixture_hashes = {str(record["candidate_hash"]) for record in cohort.fixtures}
+    records = [*cohort.primary, *cohort.spares, *cohort.fixtures]
     for record in records:
         identity = str(record["candidate_hash"])
         try:
@@ -781,23 +898,40 @@ def _replay_optimal_rows(
             malformed_count += 1
             continue
         try:
+            optimal_replay_count += 1
             optimal_score = score_fn(messages)
         except Exception:
             replay_error_count += 1
+            if identity in fixture_hashes:
+                fixture_replay_error_count += 1
             continue
         if not optimal_score.valid:
             invalid_hashes.add(identity)
+            if identity in fixture_hashes:
+                fixture_invalid_hashes.add(identity)
             continue
         if not optimal_score.fires:
             nonfiring_hashes.add(identity)
+            if identity in fixture_hashes:
+                fixture_nonfiring_hashes.add(identity)
+            continue
+        valid_firing_hashes.add(identity)
+        if identity in fixture_hashes:
+            fixture_valid_firing_hashes.add(identity)
             continue
         eligible.append((record, messages, optimal_score))
     return _ReplaySet(
         eligible=eligible,
+        valid_firing_hashes=valid_firing_hashes,
+        fixture_valid_firing_hashes=fixture_valid_firing_hashes,
         invalid_hashes=invalid_hashes,
+        fixture_invalid_hashes=fixture_invalid_hashes,
         nonfiring_hashes=nonfiring_hashes,
+        fixture_nonfiring_hashes=fixture_nonfiring_hashes,
         malformed_count=malformed_count,
         replay_error_count=replay_error_count,
+        fixture_replay_error_count=fixture_replay_error_count,
+        optimal_replay_count=optimal_replay_count,
     )
 
 
@@ -806,18 +940,30 @@ def _labelled_rows(
     n: int,
     score_fn: Callable[..., SubmissionScore],
 ) -> tuple[list[StudyRow], int, int, int]:
-    """Stratify already-valid replays, then apply the offline Rules proxy label."""
-    selected = _stratified(
-        [{**record, "public": score.public} for record, _, score in eligible], n
-    )
-    selected_hashes = {str(record["candidate_hash"]) for record in selected}
+    """Rules-label a deterministic public-stratified order until ``n`` succeed."""
+    records_by_hash = {
+        str(record["candidate_hash"]): (record, messages, score)
+        for record, messages, score in eligible
+    }
+    faithful_records = [
+        {**record, "public": score.public} for record, _, score in eligible
+    ]
+    first_count = min(n, len(faithful_records))
+    first = _stratified(faithful_records, first_count) if first_count else []
+    first_hashes = {str(record["candidate_hash"]) for record in first}
+    remaining = [
+        record
+        for record in faithful_records
+        if str(record["candidate_hash"]) not in first_hashes
+    ]
+    ordered = [*first, *_stratified(remaining, len(remaining))] if remaining else first
     rows: list[StudyRow] = []
     build_errors = 0
     rules_errors = 0
     rules_invalid = 0
-    for record, messages, optimal_score in eligible:
-        if str(record["candidate_hash"]) not in selected_hashes:
-            continue
+    for selected in ordered:
+        identity = str(selected["candidate_hash"])
+        record, messages, optimal_score = records_by_hash[identity]
         try:
             request = build_robustness_request(
                 Submission(messages=messages), optimal_score
@@ -835,12 +981,14 @@ def _labelled_rows(
             continue
         rows.append(
             StudyRow(
-                candidate_hash=str(record["candidate_hash"]),
+                candidate_hash=identity,
                 faithful_public=optimal_score.public,
                 rules_proxy=rules_score.public,
                 request=request,
             )
         )
+        if len(rows) == n:
+            break
     return rows, build_errors, rules_errors, rules_invalid
 
 
@@ -954,6 +1102,52 @@ def _pair_metrics(
     )
 
 
+def _study_audit(
+    *,
+    archive_count: int,
+    deduplicated_count: int,
+    cohort: _PreselectedRecords,
+    replayed: _ReplaySet,
+    rows: Sequence[StudyRow] = (),
+    build_errors: int = 0,
+    rules_errors: int = 0,
+    rules_invalid: int = 0,
+) -> dict[str, Any]:
+    """Return uniform bounded-replay accounting for every report path."""
+    rules_success = len(rows)
+    rules_failures = rules_errors + rules_invalid
+    return {
+        "archive_count": archive_count,
+        "deduplicated_count": deduplicated_count,
+        "preselected_primary_count": len(cohort.primary),
+        "preselected_spare_count": len(cohort.spares),
+        "preselected_fixture_count": len(cohort.fixtures),
+        "optimal_replay_count": replayed.optimal_replay_count,
+        "optimal_replay_cap": cohort.optimal_cap,
+        "optimal_valid_firing_count": len(replayed.valid_firing_hashes),
+        "eligible_valid_firing_count": len(replayed.eligible),
+        "optimal_invalid_count": len(replayed.invalid_hashes),
+        "optimal_nonfiring_count": len(replayed.nonfiring_hashes),
+        "optimal_replay_error_count": replayed.replay_error_count,
+        "fixture_valid_firing_count": len(replayed.fixture_valid_firing_hashes),
+        "fixture_invalid_count": len(replayed.fixture_invalid_hashes),
+        "fixture_nonfiring_count": len(replayed.fixture_nonfiring_hashes),
+        "fixture_replay_error_count": replayed.fixture_replay_error_count,
+        "optimal_malformed_count": replayed.malformed_count,
+        "rules_replay_count": rules_success + rules_failures,
+        "rules_success_count": rules_success,
+        "rules_failure_count": rules_failures,
+        "rules_error_count": rules_errors,
+        "rules_invalid_count": rules_invalid,
+        "request_build_error_count": build_errors,
+        "final_rows": len(rows),
+        "replay_limits": {
+            "label_spares": config.JUDGE_STUDY_LABEL_SPARES,
+            "fixture_probe_cap": config.JUDGE_STUDY_FIXTURE_PROBES,
+        },
+    }
+
+
 def run_study(
     *,
     blackboard_path: Path = config.BLACKBOARD_LOG,
@@ -974,10 +1168,19 @@ def run_study(
         )
     raw_records, malformed_lines = _load_records(blackboard_path)
     records = _deduplicated_records(raw_records)
-    replayed = _replay_optimal_rows(records, score_fn)
-    invalid_seen = bool(replayed.invalid_hashes)
-    nonfiring_seen = bool(replayed.nonfiring_hashes)
+    cohort = _preselect_records(records, n)
+    replayed = _replay_optimal_rows(cohort, score_fn)
+    if replayed.optimal_replay_count > cohort.optimal_cap:
+        raise RuntimeError("Optimal replay cap exceeded")
+    invalid_seen = bool(replayed.fixture_invalid_hashes)
+    nonfiring_seen = bool(replayed.fixture_nonfiring_hashes)
     if len(replayed.eligible) < n:
+        audit = _study_audit(
+            archive_count=len(raw_records),
+            deduplicated_count=len(records),
+            cohort=cohort,
+            replayed=replayed,
+        )
         report = evaluate_activation(
             robustness_correct=0,
             baseline_correct=0,
@@ -1012,6 +1215,7 @@ def run_study(
             {
                 "reason": "insufficient eligible valid/firing candidates",
                 "judge_reached": [],
+                **audit,
             },
         )
         return StudyResult(report=report, rows=[], pairs=[])
@@ -1020,6 +1224,16 @@ def run_study(
         replayed.eligible, n, score_fn
     )
     if len(rows) < n:
+        audit = _study_audit(
+            archive_count=len(raw_records),
+            deduplicated_count=len(records),
+            cohort=cohort,
+            replayed=replayed,
+            rows=rows,
+            build_errors=build_errors,
+            rules_errors=rules_errors,
+            rules_invalid=rules_invalid,
+        )
         report = evaluate_activation(
             robustness_correct=0,
             baseline_correct=0,
@@ -1058,6 +1272,7 @@ def run_study(
             {
                 "reason": "insufficient successfully Rules-labeled candidates",
                 "judge_reached": [],
+                **audit,
             },
         )
         return StudyResult(report=report, rows=[], pairs=[])
@@ -1120,7 +1335,9 @@ def run_study(
         and anchor_values[1] - anchor_values[0] >= 10.0
         and anchor_values[2] - anchor_values[1] >= 10.0
     )
-    hard_gate_hashes = replayed.invalid_hashes | replayed.nonfiring_hashes
+    hard_gate_hashes = (
+        replayed.fixture_invalid_hashes | replayed.fixture_nonfiring_hashes
+    )
     hard_gate_safe = (
         invalid_seen and nonfiring_seen and not (judge_reached & hard_gate_hashes)
     )
@@ -1162,6 +1379,16 @@ def run_study(
         latencies,
         parse_failures,
         {
+            **_study_audit(
+                archive_count=len(raw_records),
+                deduplicated_count=len(records),
+                cohort=cohort,
+                replayed=replayed,
+                rows=rows,
+                build_errors=build_errors,
+                rules_errors=rules_errors,
+                rules_invalid=rules_invalid,
+            ),
             "judge_reached": sorted(judge_reached),
             "scalar_runs": scalar_evidence,
             "anchor_runs": anchor_evidence,
@@ -1174,6 +1401,9 @@ def run_study(
             },
             "invalid_hashes": sorted(replayed.invalid_hashes),
             "nonfiring_hashes": sorted(replayed.nonfiring_hashes),
+            "fixture_invalid_hashes": sorted(replayed.fixture_invalid_hashes),
+            "fixture_nonfiring_hashes": sorted(replayed.fixture_nonfiring_hashes),
+            "fixture_valid_firing_hashes": sorted(replayed.fixture_valid_firing_hashes),
         },
     )
     return StudyResult(report=report, rows=rows, pairs=pair_rows)
