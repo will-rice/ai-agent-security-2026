@@ -15,6 +15,12 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 VLLM_VENV="$HOME/vllm-venv"
 MODEL="${VLLM_MODEL:-bullerwins/Qwen3-32B-awq}"
+RUNTIME_DIR="${TMPDIR:-/tmp}"
+VLLM_LAUNCHER="$RUNTIME_DIR/jed_run_vllm.sh"
+JUDGESVC_LAUNCHER="$RUNTIME_DIR/jed_run_judgesvc.sh"
+VLLM_LOG="$RUNTIME_DIR/vllm.log"
+JUDGESVC_LOG="$RUNTIME_DIR/judgesvc.log"
+mkdir -p "$RUNTIME_DIR"
 
 # One-time: create the vLLM venv + install vLLM (skipped if already present). Use `uv
 # venv` (not `python3 -m venv`) so no system python3-venv package / sudo is needed -- uv
@@ -35,30 +41,33 @@ fi
 # requests a name vLLM serves). PATH includes the venv bin so flashinfer's runtime JIT
 # finds `ninja`. CUDA_DEVICE_ORDER=PCI_BUS_ID pins device 0 = the 3090 (Ampere; the TITAN
 # RTX is Turing, can't run awq_marlin). gpu-mem 0.90 leaves KV-cache headroom.
-cat > /tmp/jed_run_vllm.sh <<EOF
+cat > "$VLLM_LAUNCHER" <<EOF
 #!/usr/bin/env bash
 export PATH="$VLLM_VENV/bin:\$PATH"
 export CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0
 exec "$VLLM_VENV/bin/vllm" serve "$MODEL" --served-model-name "$MODEL" \\
   --quantization awq_marlin --gpu-memory-utilization 0.90 --max-model-len 8192 --port 8000
 EOF
-chmod +x /tmp/jed_run_vllm.sh
+chmod +x "$VLLM_LAUNCHER"
 tmux kill-session -t vllm 2>/dev/null || true
 sleep 1
-tmux new-session -d -s vllm "bash -lc '/tmp/jed_run_vllm.sh 2>&1 | tee /tmp/vllm.log'"
+tmux new-session -d -s vllm \
+  "bash -lc '$VLLM_LAUNCHER 2>&1 | tee $VLLM_LOG'"
 
 # FastAPI judge service from the synced repo (uv run auto-syncs its deps; needs the
 # vendored aicomp_sdk wheel present in vendor/ -- it's gitignored so sync excludes it,
 # copy it to dylan manually once: scp vendor/aicomp_sdk-*.whl dylan:projects/.../vendor/).
-cat > /tmp/jed_run_judgesvc.sh <<EOF
+cat > "$JUDGESVC_LAUNCHER" <<EOF
 #!/usr/bin/env bash
 cd "$REPO"
+export VLLM_MODEL="$MODEL"
 exec uv run uvicorn jed_attack.campaign.judge_service:app --host 0.0.0.0 --port 8100
 EOF
-chmod +x /tmp/jed_run_judgesvc.sh
+chmod +x "$JUDGESVC_LAUNCHER"
 tmux kill-session -t judgesvc 2>/dev/null || true
 sleep 1
-tmux new-session -d -s judgesvc "bash -lc '/tmp/jed_run_judgesvc.sh 2>&1 | tee /tmp/judgesvc.log'"
+tmux new-session -d -s judgesvc \
+  "bash -lc '$JUDGESVC_LAUNCHER 2>&1 | tee $JUDGESVC_LOG'"
 
 echo "vLLM (:8000, model=$MODEL) + judge service (:8100) launched on dylan"
-echo "  logs: /tmp/vllm.log  /tmp/judgesvc.log  (or tmux attach -t vllm|judgesvc)"
+echo "  logs: $VLLM_LOG  $JUDGESVC_LOG  (or tmux attach -t vllm|judgesvc)"

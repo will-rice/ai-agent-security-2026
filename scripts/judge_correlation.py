@@ -16,12 +16,16 @@ Per-model correlation is not reported: the blackboard persists only the aggregat
 
 import argparse
 import csv
+import importlib
 import json
 import logging
 from collections.abc import Sequence
-from typing import Any, cast
+from os import PathLike
+from pathlib import Path
+from typing import Protocol, cast
 
 from openai import OpenAI
+from openai.types.chat import ChatCompletionMessageParam
 from scipy.stats import spearmanr
 
 from jed_attack.campaign import config
@@ -30,6 +34,35 @@ from jed_attack.campaign.submission import Message
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 _log = logging.getLogger("judge_correlation")
+
+
+class _MatplotlibModule(Protocol):
+    """The optional matplotlib surface used by this script."""
+
+    def use(self, backend: str) -> object:
+        """Select a rendering backend."""
+
+
+class _PyplotModule(Protocol):
+    """The optional pyplot surface used by this script."""
+
+    def figure(self) -> object:
+        """Create a figure."""
+
+    def scatter(self, x: Sequence[float], y: Sequence[float]) -> object:
+        """Plot paired samples."""
+
+    def xlabel(self, label: str) -> object:
+        """Label the x axis."""
+
+    def ylabel(self, label: str) -> object:
+        """Label the y axis."""
+
+    def title(self, label: str) -> object:
+        """Set the plot title."""
+
+    def savefig(self, filename: str | PathLike[str], *, dpi: int) -> object:
+        """Save the current figure."""
 
 
 def _judge_severity(
@@ -47,16 +80,27 @@ def _judge_severity(
         base_url: The vLLM OpenAI-compatible base URL.
 
     Returns:
-        The judge's :class:`SeverityScore` (guided-JSON, so always schema-valid).
+        The judge's :class:`SeverityScore` (schema-constrained JSON).
     """
     client = OpenAI(base_url=base_url, api_key="dylan")
     completion = client.chat.completions.create(
         model=model,
-        messages=cast(Any, severity_messages(list(messages), list(feedback))),
+        messages=cast(
+            list[ChatCompletionMessageParam],
+            severity_messages(list(messages), list(feedback)),
+        ),
         temperature=0.0,
-        extra_body={"guided_json": SeverityScore.model_json_schema()},
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "judge",
+                "schema": SeverityScore.model_json_schema(),
+            },
+        },
     )
-    return SeverityScore.model_validate_json(completion.choices[0].message.content or "{}")
+    return SeverityScore.model_validate_json(
+        completion.choices[0].message.content or "{}"
+    )
 
 
 def main() -> None:
@@ -66,7 +110,8 @@ def main() -> None:
     parser.add_argument("--n", type=int, default=config.JUDGE_STUDY_N)
     args = parser.parse_args()
 
-    rows = [json.loads(line) for line in open(args.blackboard)]
+    with Path(args.blackboard).open(encoding="utf-8") as blackboard_file:
+        rows = [json.loads(line) for line in blackboard_file]
     sample = rows if len(rows) <= args.n else stratified_sample(rows, args.n)
     _log.info("judging %d of %d blackboard submissions", len(sample), len(rows))
 
@@ -84,7 +129,13 @@ def main() -> None:
                 "n_messages": len(messages),
             }
         )
-        _log.info("[%d/%d] public=%.3f judge=%.1f", i + 1, len(sample), public, verdict.score)
+        _log.info(
+            "[%d/%d] public=%.3f judge=%.1f",
+            i + 1,
+            len(sample),
+            public,
+            verdict.score,
+        )
 
     judge_scores: list[float] = [float(r["judge_score"]) for r in results]
     public_scores: list[float] = [float(r["faithful_public"]) for r in results]
@@ -114,7 +165,8 @@ def stratified_sample(rows: list[dict], n: int) -> list[dict]:
     the sorted non-zero range (the maximum is always retained).
 
     Args:
-        rows: Parsed blackboard records (each has ``public``, ``messages``, ``feedback``).
+        rows: Parsed blackboard records (each has ``public``, ``messages``,
+            ``feedback``).
         n: Target sample size.
 
     Returns:
@@ -134,10 +186,9 @@ def stratified_sample(rows: list[dict], n: int) -> list[dict]:
 def _write_scatter(judge: list[float], public: list[float], rho: float) -> None:
     """Write a judge-vs-public scatter PNG if matplotlib is available (optional)."""
     try:
-        import matplotlib  # type: ignore
-
+        matplotlib = cast(_MatplotlibModule, importlib.import_module("matplotlib"))
         matplotlib.use("Agg")  # headless backend BEFORE importing pyplot
-        import matplotlib.pyplot as plt  # type: ignore
+        plt = cast(_PyplotModule, importlib.import_module("matplotlib.pyplot"))
     except ImportError:
         _log.info("matplotlib absent; skipping scatter (pairs.csv has the data)")
         return
