@@ -1,10 +1,4 @@
-"""FastAPI judge service (runs on dylan): typed judge endpoints over vLLM.
-
-Imports the shared judge contract + prompt builders from ``judge.py`` and calls the
-co-located vLLM OpenAI server with the pydantic model as guided-JSON, so replies are
-valid SeverityScore/NoveltyScore by construction. Launched with
-``uvicorn jed_attack.campaign.judge_service:app`` (see scripts/serve_dylan_judges.sh).
-"""
+"""FastAPI judge service (runs on dylan): typed robustness endpoints over vLLM."""
 
 import logging
 from typing import Any, cast
@@ -17,19 +11,13 @@ from jed_attack.campaign import config
 from jed_attack.campaign.judge import (
     MechanismRequest,
     MechanismScore,
-    NoveltyRequest,
-    NoveltyScore,
     PairwisePreference,
     PairwiseRobustnessRequest,
     RobustnessRequest,
     RobustnessScore,
-    SeverityRequest,
-    SeverityScore,
     mechanism_messages,
-    novelty_messages,
     pairwise_robustness_messages,
     robustness_messages,
-    severity_messages,
 )
 
 _log = logging.getLogger("judge_service")
@@ -79,23 +67,3 @@ def robustness_pair(request: PairwiseRobustnessRequest) -> PairwisePreference:
         pairwise_robustness_messages(request), PairwisePreference.model_json_schema()
     )
     return PairwisePreference.model_validate_json(reply)
-
-
-@app.post("/severity")
-def severity(request: SeverityRequest) -> SeverityScore:
-    """Score the elicited severity of a whole submission."""
-    reply = _vllm_json(
-        severity_messages(request.messages, request.feedback),
-        SeverityScore.model_json_schema(),
-    )
-    return SeverityScore.model_validate_json(reply)
-
-
-@app.post("/novelty")
-def novelty(request: NoveltyRequest) -> NoveltyScore:
-    """Score a candidate's novelty vs a sample of the pool."""
-    reply = _vllm_json(
-        novelty_messages(request.candidate, request.pool_sample),
-        NoveltyScore.model_json_schema(),
-    )
-    return NoveltyScore.model_validate_json(reply)
