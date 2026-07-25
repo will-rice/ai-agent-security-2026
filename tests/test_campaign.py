@@ -1583,6 +1583,8 @@ def test_activation_requires_accuracy_uplift_and_fixture_gates() -> None:
         stable=True,
         injection_safe=True,
         fallback_safe=True,
+        invalid_fixture_seen=True,
+        nonfiring_fixture_seen=True,
     )
     assert report.ready is True
     assert report.robustness_accuracy == 0.70
@@ -1604,6 +1606,8 @@ def test_activation_rejects_accuracy_boundary_below_threshold() -> None:
         stable=True,
         injection_safe=True,
         fallback_safe=True,
+        invalid_fixture_seen=True,
+        nonfiring_fixture_seen=True,
     )
     assert report.ready is False
     assert report.robustness_accuracy == 0.60
@@ -1625,10 +1629,166 @@ def test_close_pairs_include_four_percent_and_exclude_six_percent() -> None:
     assert frozenset(("base", "outside")) not in hashes
 
 
+def test_close_pairs_use_lower_nonzero_score_for_exact_band_boundaries() -> None:
+    """Five percent means 100→105, and zero cannot form a directional pair."""
+    from jed_attack.campaign.judge_study import StudyRow, close_pairs
+
+    request = _judge_request()
+    rows = [
+        StudyRow("hundred", 100.0, 0.0, request),
+        StudyRow("five", 105.0, 1.0, request),
+        StudyRow("over", 105.2, 2.0, request),
+        StudyRow("small", 0.1, 3.0, request),
+        StudyRow("small-five", 0.105, 4.0, request),
+        StudyRow("small-over", 0.106, 5.0, request),
+        StudyRow("zero", 0.0, 6.0, request),
+    ]
+    pairs = {
+        frozenset((a.candidate_hash, b.candidate_hash)) for a, b in close_pairs(rows)
+    }
+    assert frozenset(("hundred", "five")) in pairs
+    assert frozenset(("hundred", "over")) not in pairs
+    assert frozenset(("small", "small-five")) in pairs
+    assert frozenset(("small", "small-over")) not in pairs
+    assert all("zero" not in pair for pair in pairs)
+
+
+def test_activation_refuses_a_single_directional_pair() -> None:
+    """A one-pair result is diagnostic evidence, never enough to activate judges."""
+    from jed_attack.campaign.judge_study import evaluate_activation
+
+    report = evaluate_activation(
+        robustness_correct=1,
+        baseline_correct=0,
+        pair_count=1,
+        novelty_correct=10,
+        novelty_count=10,
+        hard_gate_safe=True,
+        anchor_separated=True,
+        stable=True,
+        injection_safe=True,
+        fallback_safe=True,
+        invalid_fixture_seen=True,
+        nonfiring_fixture_seen=True,
+    )
+    assert report.ready is False
+
+
+def test_study_rejects_requested_size_below_configured_minimum(tmp_path: Path) -> None:
+    """The CLI's --n is a minimum requirement, not an upper-only sample cap."""
+    from jed_attack.campaign import config
+    from jed_attack.campaign.judge_study import run_study
+
+    with pytest.raises(ValueError, match="minimum"):
+        run_study(
+            blackboard_path=tmp_path / "empty.jsonl",
+            output_dir=tmp_path / "out",
+            n=config.JUDGE_STUDY_N - 1,
+        )
+
+
+def test_tied_rules_proxy_pairs_do_not_call_or_credit_pairwise_judge() -> None:
+    """Tie-heavy proxy data contributes no directional accuracy or artificial uplift."""
+    from jed_attack.campaign.judge import PairwisePreference, PairwiseRobustnessRequest
+    from jed_attack.campaign.judge_study import StudyRow, _pair_metrics
+
+    calls = 0
+
+    def pairwise(_: PairwiseRobustnessRequest) -> PairwisePreference:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("Rules ties must not reach the pairwise judge")
+
+    request = _judge_request()
+    rows = [
+        StudyRow("a", 1.0, 4.0, request),
+        StudyRow("b", 1.02, 4.0, request),
+    ]
+    pairs, correct, baseline, failures, stable, ties, _ = _pair_metrics(
+        rows, pairwise, set()
+    )
+    assert calls == 0
+    assert correct == baseline == failures == 0
+    assert stable is True
+    assert ties == 1
+    assert pairs[0]["directional"] is False
+
+
+def test_insufficient_eligible_rows_write_nonready_report_without_judges(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Fewer than the requested valid/firing rows fails closed before every judge."""
+    from jed_attack.campaign import config
+    from jed_attack.campaign.judge import (
+        MechanismRequest,
+        MechanismScore,
+        PairwisePreference,
+        PairwiseRobustnessRequest,
+        RobustnessRequest,
+        RobustnessScore,
+    )
+    from jed_attack.campaign.judge_study import run_study
+    from jed_attack.campaign.submission_score import SubmissionScore
+
+    monkeypatch.setattr(config, "JUDGE_STUDY_N", 2)
+    blackboard = tmp_path / "blackboard.jsonl"
+    blackboard.write_text(
+        json.dumps(
+            {
+                "messages": [
+                    {
+                        "type": "exfil",
+                        "text": "SECRET_MARKER https://one.invalid/r",
+                        "hops": 1,
+                    }
+                ]
+            }
+        )
+        + "\nnot json\n",
+        encoding="utf-8",
+    )
+    judge_calls = 0
+
+    def score(_: object, **__: object) -> SubmissionScore:
+        return SubmissionScore(public=1.0, per_message=[], total_hops=1, fires=True)
+
+    def forbidden_robustness(_: RobustnessRequest) -> RobustnessScore:
+        nonlocal judge_calls
+        judge_calls += 1
+        raise AssertionError("insufficient study data must not call judges")
+
+    def forbidden_pairwise(_: PairwiseRobustnessRequest) -> PairwisePreference:
+        nonlocal judge_calls
+        judge_calls += 1
+        raise AssertionError("insufficient study data must not call judges")
+
+    def forbidden_mechanism(_: MechanismRequest) -> MechanismScore:
+        nonlocal judge_calls
+        judge_calls += 1
+        raise AssertionError("insufficient study data must not call judges")
+
+    result = run_study(
+        blackboard_path=blackboard,
+        output_dir=tmp_path / "out",
+        n=2,
+        score_fn=score,
+        robustness_fn=forbidden_robustness,
+        pairwise_fn=forbidden_pairwise,
+        mechanism_fn=forbidden_mechanism,
+    )
+    assert result.report.ready is False
+    assert result.report.eligible_count == 1
+    assert result.report.malformed_count == 1
+    assert judge_calls == 0
+    report = json.loads((tmp_path / "out" / "report.json").read_text())
+    assert report["audit"]["reason"].startswith("insufficient")
+
+
 def test_study_rescores_optimal_before_rules_and_never_judges_hard_gate_rows(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Only authoritative valid/firing replays become judge evidence or proxy labels."""
+    from jed_attack.campaign import config
     from jed_attack.campaign.judge import (
         MechanismScore,
         PairwisePreference,
@@ -1705,7 +1865,7 @@ def test_study_rescores_optimal_before_rules_and_never_judges_hard_gate_rows(
     def robustness(request: "RobustnessRequest") -> RobustnessScore:
         text = request.messages[0].text
         judge_texts.append(text)
-        if "anchor-low" in text:
+        if request.public == 0.1:
             return RobustnessScore(
                 private_survival=20.0,
                 cross_model=1,
@@ -1717,7 +1877,7 @@ def test_study_rescores_optimal_before_rules_and_never_judges_hard_gate_rows(
                 failure_mode="anchor",
                 feedback="anchor",
             )
-        if "anchor-high" in text:
+        if request.public == 1.0:
             return RobustnessScore(
                 private_survival=85.0,
                 cross_model=4,
@@ -1755,6 +1915,7 @@ def test_study_rescores_optimal_before_rules_and_never_judges_hard_gate_rows(
         )
 
     monkeypatch.setattr("jed_attack.campaign.judge_study.RulesGuardrail", object)
+    monkeypatch.setattr(config, "JUDGE_STUDY_N", 2)
     result = run_study(
         blackboard_path=blackboard_path,
         output_dir=tmp_path / "out",
@@ -1772,12 +1933,12 @@ def test_study_rescores_optimal_before_rules_and_never_judges_hard_gate_rows(
         "https://invalid.invalid" not in text and "https://dead.invalid" not in text
         for text in judge_texts
     )
-    # Two eligible rows plus three low/medium/high anchor fixtures are each scored
-    # three times; the invalid and non-firing hard-gate fixtures never are.
-    assert len(judge_texts) == 15
+    # Two eligible rows, three fixed anchors, and one injection fixture reach the
+    # robustness judge; invalid/non-firing records never do.
+    assert len(judge_texts) == 16
     assert result.pairs[0]["rules_label"] == "b"
     assert result.report.hard_gate_safe is True
-    assert result.report.novelty_accuracy == 0.5  # fake calls every mechanism novel
+    assert result.report.novelty_accuracy == 0.5  # fake omits required duplicate groups
     assert result.report.anchor_separated is True
     assert result.report.injection_safe is True
     assert result.report.fallback_safe is True
