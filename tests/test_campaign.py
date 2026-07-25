@@ -509,6 +509,72 @@ def test_refine_disabled_when_max_rounds_zero(
     assert best is not None and best.public == 5.0
 
 
+def test_refine_prompt_contains_entire_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Refinement sees every current submission and its observed feedback."""
+    import asyncio
+
+    from jed_attack.campaign import config
+    from jed_attack.campaign import optimize_prompts as op
+    from jed_attack.campaign.submission_score import MessageScore, SubmissionScore
+
+    first = _mk_sub("batch-first")
+    second = _mk_sub("batch-second")
+
+    def score_for(
+        submission: "Submission", public: float, feedback: str
+    ) -> SubmissionScore:
+        message = submission.messages[0]
+        return SubmissionScore(
+            public=public,
+            total_hops=message.hops,
+            per_message=[
+                MessageScore(
+                    message=message.text,
+                    type=message.type,
+                    severity={"optimal": public},
+                    severity_by_model={"optimal": {"gpt_oss": public}},
+                    trace={},
+                    feedback=feedback,
+                )
+            ],
+        )
+
+    captured: dict[str, str] = {}
+
+    async def capture_prompt(
+        prompt: str, provider: object, timeout_s: float
+    ) -> tuple[list["Submission"], str]:
+        captured["prompt"] = prompt
+        return [], ""
+
+    monkeypatch.setattr(config, "REFINE_MAX_ROUNDS", 1)
+    monkeypatch.setattr(op, "propose_batch_async", capture_prompt)
+    asyncio.run(
+        op._refine_batch(
+            [first, second],
+            [
+                score_for(first, 1.0, "feedback-first"),
+                score_for(second, 2.0, "feedback-second"),
+            ],
+            providers.get("cheapest-kimi"),
+            {},
+            [],
+            "reasoning",
+            "test-model",
+            0,
+            1.0,
+        )
+    )
+
+    prompt = captured["prompt"]
+    assert "batch-first@h.invalid" in prompt
+    assert "feedback-first" in prompt
+    assert "batch-second@h.invalid" in prompt
+    assert "feedback-second" in prompt
+
+
 def test_optimize_team_raises_when_no_usable_lanes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1232,6 +1298,55 @@ def test_stratified_sample_spans_range_and_size() -> None:
     assert min(publics) == 0.0 and max(publics) >= 40.0  # low anchor + top of range
 
 
+def test_correlation_judge_uses_vllm_json_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The direct study client requests vLLM's supported JSON-schema output."""
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "judge_correlation_schema_test",
+        Path(__file__).resolve().parents[1] / "scripts" / "judge_correlation.py",
+    )
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    captured: dict[str, object] = {}
+
+    class FakeCompletions:
+        def create(self, **kwargs: object) -> SimpleNamespace:
+            captured.update(kwargs)
+            message = SimpleNamespace(
+                content='{"score": 48.0, "feedback": "structured"}'
+            )
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeClient:
+        chat = FakeChat()
+
+    monkeypatch.setattr(mod, "OpenAI", lambda **kwargs: FakeClient())
+    verdict = mod._judge_severity(
+        [_exfil("SECRET_MARKER https://a.invalid/r", 1)],
+        ["optimal: gpt_oss=16"],
+    )
+
+    from jed_attack.campaign.judge import SeverityScore
+
+    assert captured["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "judge",
+            "schema": SeverityScore.model_json_schema(),
+        },
+    }
+    assert "extra_body" not in captured
+    assert verdict.score == 48.0
+
+
 def test_judge_service_severity_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
     """POST /severity builds the prompt, calls vLLM (stubbed), returns SeverityScore."""
     from fastapi.testclient import TestClient
@@ -1291,12 +1406,19 @@ def test_select_pool_gates_novelty_and_ranks_severity() -> None:
     from jed_attack.campaign.curate import Candidate, select_pool
     from jed_attack.campaign.judge import NoveltyScore, SeverityScore
 
-    c = lambda t, fires: Candidate(  # noqa: E731
-        messages=[_exfil(f"SECRET_MARKER https://{t}.invalid/r", 1)],
-        text=t,
-        fires=fires,
-    )
-    cands = [c("a", True), c("b", True), c("dup", True), c("dead", False)]
+    def candidate(text: str, fires: bool) -> Candidate:
+        return Candidate(
+            messages=[_exfil(f"SECRET_MARKER https://{text}.invalid/r", 1)],
+            text=text,
+            fires=fires,
+        )
+
+    cands = [
+        candidate("a", True),
+        candidate("b", True),
+        candidate("dup", True),
+        candidate("dead", False),
+    ]
     # severity: a=90, b=80, dup=70, dead=0; novelty: dup is near-dup (10), rest 90.
     sev = {"a": 90.0, "b": 80.0, "dup": 70.0, "dead": 0.0}
     nov = {"a": 90.0, "b": 90.0, "dup": 10.0}
