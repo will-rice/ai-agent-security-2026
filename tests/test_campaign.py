@@ -368,6 +368,7 @@ def _run_refine_worker(
     tmp_path: Path,
     subs: list["Submission"],
     publics: list[float],
+    max_rounds: int = 4,
 ) -> "blackboard.Blackboard":
     """Drive one worker with a scripted batch/score sequence; return the board.
 
@@ -397,6 +398,7 @@ def _run_refine_worker(
         except StopIteration:
             raise asyncio.CancelledError from None
 
+    monkeypatch.setattr(config, "REFINE_MAX_ROUNDS", max_rounds)
     monkeypatch.setattr(op, "propose_batch_async", fake_batch)
     monkeypatch.setattr(
         op, "score_submission", lambda m, models=config.MODELS: _mk_score(next(pub_it))
@@ -478,6 +480,7 @@ def test_refine_round_failure_keeps_improved_best(
         except StopIteration:
             raise asyncio.CancelledError from None  # gen1 round 0 -> end the loop
 
+    monkeypatch.setattr(config, "REFINE_MAX_ROUNDS", 4)
     monkeypatch.setattr(op, "propose_batch_async", fake_batch)
     monkeypatch.setattr(
         op, "score_submission", lambda m, models=config.MODELS: _mk_score(next(pubs))
@@ -505,11 +508,8 @@ def test_refine_disabled_when_max_rounds_zero(
     With refinement enabled these two scores would be one generation (round 0 + one
     refine), so asserting TWO appends proves the flag actually disables the loop.
     """
-    from jed_attack.campaign import config
-
-    monkeypatch.setattr(config, "REFINE_MAX_ROUNDS", 0)
     board = _run_refine_worker(
-        monkeypatch, tmp_path, [_mk_sub("s0"), _mk_sub("s1")], [3.0, 5.0]
+        monkeypatch, tmp_path, [_mk_sub("s0"), _mk_sub("s1")], [3.0, 5.0], max_rounds=0
     )
     assert len(board._records) == 2  # two generations, no refinement (enabled: <2)
     best = board.best()

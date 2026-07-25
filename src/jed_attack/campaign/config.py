@@ -69,13 +69,15 @@ TEAM_PROPOSERS: tuple[str, ...] = (
 # under-counted locally and wrongly gated out. Single-post scores are unchanged.
 EVAL_HOPS = 8
 
-# Adversarial refinement: max per-generation hill-climb rounds. After proposing and
-# scoring a draft, the lane re-authors the whole submission against its own real
-# per-message score + guardrail trace, re-scores, and repeats while the public score
-# strictly improves, up to this many rounds (=> at most REFINE_MAX_ROUNDS + 1 scorings
-# per generation). A static calibration knob (like EVAL_HOPS), not hot-reloadable.
-# Set to 0 to disable refinement entirely (propose -> score -> record).
-REFINE_MAX_ROUNDS = 4
+# Adversarial refinement: max per-generation batch hill-climb rounds. After scoring a
+# batch, the lane re-authors the WHOLE batch against its real per-message scores,
+# re-scores every submission, and keeps the higher-mean-public batch, up to this many
+# rounds. DISABLED (0) for the list[Submission] batch loop: each refine round re-scores
+# the entire batch (~5x the already-heavy per-generation scoring) for low marginal gain
+# -- a batch already supplies diversity + quantity, and scoring is the unbatchable
+# bottleneck (llama-cpp single-sequence; see jed-t4-replay-time-budget). So a generation
+# is propose-batch -> score-all -> curate. Raise only if scoring gets cheaper.
+REFINE_MAX_ROUNDS = 0
 
 # Prompt-optimization orchestrator (optimize_prompts.py): its generation logfile.
 OPTIMIZE_LOG = CAMPAIGN_ROOT / "optimize_prompts.log"
