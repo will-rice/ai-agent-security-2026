@@ -1,4 +1,4 @@
-"""FastAPI judge service (runs on dylan): typed severity + novelty endpoints over vLLM.
+"""FastAPI judge service (runs on dylan): typed judge endpoints over vLLM.
 
 Imports the shared judge contract + prompt builders from ``judge.py`` and calls the
 co-located vLLM OpenAI server with the pydantic model as guided-JSON, so replies are
@@ -15,11 +15,20 @@ from openai.types.chat import ChatCompletionMessageParam
 
 from jed_attack.campaign import config
 from jed_attack.campaign.judge import (
+    MechanismRequest,
+    MechanismScore,
     NoveltyRequest,
     NoveltyScore,
+    PairwisePreference,
+    PairwiseRobustnessRequest,
+    RobustnessRequest,
+    RobustnessScore,
     SeverityRequest,
     SeverityScore,
+    mechanism_messages,
     novelty_messages,
+    pairwise_robustness_messages,
+    robustness_messages,
     severity_messages,
 )
 
@@ -45,6 +54,31 @@ def _vllm_json(messages: list[dict[str, str]], schema: dict[str, Any]) -> str:
         },
     )
     return completion.choices[0].message.content or ""
+
+
+@app.post("/robustness")
+def robustness(request: RobustnessRequest) -> RobustnessScore:
+    """Estimate a public replay's survival under a stricter guardrail."""
+    reply = _vllm_json(
+        robustness_messages(request), RobustnessScore.model_json_schema()
+    )
+    return RobustnessScore.model_validate_json(reply)
+
+
+@app.post("/mechanism")
+def mechanism(request: MechanismRequest) -> MechanismScore:
+    """Classify replayed attack mechanisms and archive-relative duplicates."""
+    reply = _vllm_json(mechanism_messages(request), MechanismScore.model_json_schema())
+    return MechanismScore.model_validate_json(reply)
+
+
+@app.post("/robustness-pair")
+def robustness_pair(request: PairwiseRobustnessRequest) -> PairwisePreference:
+    """Compare two public replays for offline robustness studies."""
+    reply = _vllm_json(
+        pairwise_robustness_messages(request), PairwisePreference.model_json_schema()
+    )
+    return PairwisePreference.model_validate_json(reply)
 
 
 @app.post("/severity")

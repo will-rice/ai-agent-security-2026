@@ -127,8 +127,11 @@ INTROSPECT_WORST_N = int(os.getenv("JED_INTROSPECT_WORST_N", "3"))
 JUDGE_MODEL = os.getenv("JUDGE_MODEL", "qwen3:32b")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/v1")
 JUDGE_GPU = 1
-JUDGE_STUDY_N = 25
-JUDGE_STUDY_DIR = CAMPAIGN_ROOT / "judge_study"
+JUDGE_VERSION = "robustness-v1"
+JUDGE_ANCHOR_VERSION = "anchors-v1"
+JUDGE_PUBLIC_BAND_RATIO = 0.05
+JUDGE_STUDY_N = 40
+JUDGE_STUDY_DIR = CAMPAIGN_ROOT / "judge_study_v1"
 
 # Dylan judge service (FastAPI + vLLM). The green optimizer POSTs typed judge requests
 # to this one endpoint; the service calls the co-located vLLM OpenAI server. See
