@@ -25,6 +25,7 @@ replay seconds per model (:func:`replay_trace`'s timed ``env.interact``) and zer
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from statistics import mean
 from typing import Any
@@ -258,64 +259,86 @@ def score_submission(
     }
     replay_seconds: dict[str, float] = dict.fromkeys(models, 0.0)
     per_message: list[MessageScore] = []
+    executor = ThreadPoolExecutor(max_workers=len(models)) if len(models) > 1 else None
     # Replay EVERY message on its own -- no shape dedup. The shipped submission replays
     # one candidate per authored message on the gateway, so the local score must do the
     # same: each message pays its own replay and scores on its own firing and own cell,
     # never a shape representative's. Dedup made domain-copies free score locally while
     # each is a full-time candidate on T4 -- the loophole that produced locally-huge,
     # gateway-INVALID submissions. See memory jed-t4-replay-time-budget.
-    for message in messages:
-        msg_trace: dict[str, dict[str, dict[str, Any]]] = {
-            guardrail: {} for guardrail in guardrails
-        }
-        msg_severity: dict[str, dict[str, int]] = {
-            guardrail: {} for guardrail in guardrails
-        }
-        msg_cell_hashes: dict[str, dict[str, str]] = {
-            guardrail: {} for guardrail in guardrails
-        }
-        msg_actions: dict[str, dict[str, list[ActionFact]]] = {
-            guardrail: {} for guardrail in guardrails
-        }
-        for guardrail_name, guardrail_factory in guardrails.items():
-            for model in models:
-                trace, predicates, elapsed = replay_trace(
-                    message.text, model, guardrail_factory
-                )
-                replay_seconds[model] += elapsed
-                msg_severity[guardrail_name][model] = _severity(predicates)
-                msg_trace[guardrail_name][model] = trace
-                msg_cell_hashes[guardrail_name][model] = cell_signature(
-                    trace.get("tool_events", [])
-                )["hash"]
-                msg_actions[guardrail_name][model] = _action_facts(trace, predicates)
-                raw[model][guardrail_name] += msg_severity[guardrail_name][model]
-                cells[model][guardrail_name].add(msg_cell_hashes[guardrail_name][model])
-        message_severity: dict[str, float] = {
-            guardrail_name: mean(msg_severity[guardrail_name][m] for m in models)
-            for guardrail_name in guardrails
-        }
-        msg_score = MessageScore(
-            message=message.text,
-            type=message.type,
-            severity=message_severity,
-            severity_by_model={
-                guardrail_name: {
-                    model: float(sev)
-                    for model, sev in msg_severity[guardrail_name].items()
-                }
+    try:
+        for message in messages:
+            msg_trace: dict[str, dict[str, dict[str, Any]]] = {
+                guardrail: {} for guardrail in guardrails
+            }
+            msg_severity: dict[str, dict[str, int]] = {
+                guardrail: {} for guardrail in guardrails
+            }
+            msg_cell_hashes: dict[str, dict[str, str]] = {
+                guardrail: {} for guardrail in guardrails
+            }
+            msg_actions: dict[str, dict[str, list[ActionFact]]] = {
+                guardrail: {} for guardrail in guardrails
+            }
+            for guardrail_name, guardrail_factory in guardrails.items():
+                if executor is None:
+                    replays = [
+                        (model, replay_trace(message.text, model, guardrail_factory))
+                        for model in models
+                    ]
+                else:
+                    futures = [
+                        (
+                            model,
+                            executor.submit(
+                                replay_trace, message.text, model, guardrail_factory
+                            ),
+                        )
+                        for model in models
+                    ]
+                    replays = [(model, future.result()) for model, future in futures]
+                for model, (trace, predicates, elapsed) in replays:
+                    replay_seconds[model] += elapsed
+                    msg_severity[guardrail_name][model] = _severity(predicates)
+                    msg_trace[guardrail_name][model] = trace
+                    msg_cell_hashes[guardrail_name][model] = cell_signature(
+                        trace.get("tool_events", [])
+                    )["hash"]
+                    msg_actions[guardrail_name][model] = _action_facts(
+                        trace, predicates
+                    )
+                    raw[model][guardrail_name] += msg_severity[guardrail_name][model]
+                    cells[model][guardrail_name].add(
+                        msg_cell_hashes[guardrail_name][model]
+                    )
+            message_severity: dict[str, float] = {
+                guardrail_name: mean(msg_severity[guardrail_name][m] for m in models)
                 for guardrail_name in guardrails
-            },
-            trace={
-                guardrail_name: msg_trace[guardrail_name][feedback_model]
-                for guardrail_name in guardrails
-            },
-            feedback="",
-            cell_hashes=msg_cell_hashes,
-            actions=msg_actions,
-        )
-        msg_score.feedback = message_feedback(msg_score)
-        per_message.append(msg_score)
+            }
+            msg_score = MessageScore(
+                message=message.text,
+                type=message.type,
+                severity=message_severity,
+                severity_by_model={
+                    guardrail_name: {
+                        model: float(sev)
+                        for model, sev in msg_severity[guardrail_name].items()
+                    }
+                    for guardrail_name in guardrails
+                },
+                trace={
+                    guardrail_name: msg_trace[guardrail_name][feedback_model]
+                    for guardrail_name in guardrails
+                },
+                feedback="",
+                cell_hashes=msg_cell_hashes,
+                actions=msg_actions,
+            )
+            msg_score.feedback = message_feedback(msg_score)
+            per_message.append(msg_score)
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=True)
 
     boards = {
         model: {
