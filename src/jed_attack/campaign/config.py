@@ -23,6 +23,7 @@ ENV_FILE = _REPO_ROOT / ".env"
 BUILD_NEXT_DIR = (
     CAMPAIGN_ROOT / "build_next"
 )  # assembled attack.py + build_next_status.json
+BUILD_ROBUST_DIR = CAMPAIGN_ROOT / "build_robust"
 
 # The two target models and their served base URLs (llama-server on green).
 MODELS: tuple[str, ...] = ("gpt_oss", "gemma_4")
@@ -125,6 +126,12 @@ INTROSPECT_WORST_N = int(os.getenv("JED_INTROSPECT_WORST_N", "3"))
 JUDGE_VERSION = "robustness-v1"
 JUDGE_ANCHOR_VERSION = "anchors-v1"
 JUDGE_PUBLIC_BAND_RATIO = 0.05
+JUDGE_MODE = os.getenv("JED_JUDGE_MODE", "shadow")
+if JUDGE_MODE not in {"off", "shadow", "active"}:
+    raise ValueError("JED_JUDGE_MODE must be one of: off, shadow, active")
+JUDGE_ROBUSTNESS_TIE_POINTS = 5.0
+JUDGE_MIN_CONFIDENCE = 0.60
+NOVELTY_POOL_SAMPLE = 8
 JUDGE_STUDY_N = 40
 JUDGE_STUDY_LABEL_SPARES = 4
 JUDGE_STUDY_FIXTURE_PROBES = 8
@@ -142,5 +149,5 @@ VLLM_MODEL = os.getenv("VLLM_MODEL", "bullerwins/Qwen3-32B-awq")
 
 def ensure_dirs() -> None:
     """Create the runtime directories the submission pipeline writes to."""
-    for path in (BUILD_NEXT_DIR, CAMPAIGN_ROOT / "logs"):
+    for path in (BUILD_NEXT_DIR, BUILD_ROBUST_DIR, CAMPAIGN_ROOT / "logs"):
         path.mkdir(parents=True, exist_ok=True)

@@ -45,6 +45,12 @@ from dotenv import load_dotenv
 from openai.types.chat import ChatCompletionMessageParam
 
 from jed_attack.campaign import blackboard, config, providers
+from jed_attack.campaign.judge_policy import (
+    Comparison,
+    JudgeAssessment,
+    assess_submission,
+    compare_batches,
+)
 from jed_attack.campaign.submission import (
     Message,
     MessageType,
@@ -90,6 +96,7 @@ def make_record(
     reasoning: str,
     model: str,
     worker: int,
+    assessment: JudgeAssessment | None = None,
 ) -> blackboard.Record:
     """Build a :class:`~jed_attack.campaign.blackboard.Record` from a scored submission.
 
@@ -99,6 +106,7 @@ def make_record(
         reasoning: The authoring backend's reasoning text (empty if none).
         model: The lane's model id (the record's provenance tag).
         worker: The lane's worker id.
+        assessment: Optional replay-gated judge assessment to persist with the record.
 
     Returns:
         The blackboard record ready to append.
@@ -120,6 +128,12 @@ def make_record(
         model=model,
         worker=worker,
         ts=time.time(),
+        valid=score.valid,
+        invalid_reason=score.invalid_reason,
+        fires=score.fires,
+        assessment=(
+            assessment.model_dump(mode="json") if assessment is not None else None
+        ),
     )
 
 
@@ -166,10 +180,17 @@ async def worker_loop(
         try:
             team = {t: board.top_messages(t, k=_TEAM_TOP_K) for t in MessageType}
             reasoning_digest = board.recent_reasoning(k=_TEAM_REASONING_K)
+            reference_mechanisms = board.mechanism_references(
+                config.NOVELTY_POOL_SAMPLE
+            )
             model = provider.model or provider.kind
 
             # Round 0: author a BATCH from the GLOBAL incumbent; score every submission.
-            incumbent = board.best()
+            incumbent = (
+                board.best_robust()
+                if config.JUDGE_MODE == "active"
+                else board.best_public()
+            )
             prompt = submission_prompt(
                 incumbent,
                 incumbent.feedback if incumbent else [],
@@ -183,10 +204,18 @@ async def worker_loop(
                 gen += 1
                 continue
             scores = await _score_batch(batch)
+            assessments = await _assess_batch(batch, scores, reference_mechanisms)
             round0_public = mean(sc.public for sc in scores)
 
             # Hill-climb the whole batch on its MEAN public score (see _refine_batch).
-            local_batch, local_scores, reasoning, refine_rounds = await _refine_batch(
+            (
+                local_batch,
+                local_scores,
+                local_assessments,
+                reasoning,
+                refine_rounds,
+                shadow_decision,
+            ) = await _refine_batch(
                 batch,
                 scores,
                 provider,
@@ -196,14 +225,25 @@ async def worker_loop(
                 model,
                 worker_id,
                 timeout_s,
+                assessments=assessments,
+                reference_mechanisms=reference_mechanisms,
             )
             batch_public = mean(sc.public for sc in local_scores)
 
             # Store EVERY submission of the kept batch as its own candidate in the
             # flat-file blackboard; a new public best reships ``attack.py``.
-            for submission, score in zip(local_batch, local_scores, strict=True):
+            for submission, score, assessment in zip(
+                local_batch, local_scores, local_assessments, strict=True
+            ):
                 await board.append(
-                    make_record(submission, score, reasoning, model, worker_id),
+                    make_record(
+                        submission,
+                        score,
+                        reasoning,
+                        model,
+                        worker_id,
+                        assessment=assessment,
+                    ),
                     out_dir,
                 )
 
@@ -230,6 +270,11 @@ async def worker_loop(
                     "total_hops": float(best_score.total_hops),
                     "refine_rounds": refine_rounds,
                     "refine_gain": batch_public - round0_public,
+                    "judge_mode": config.JUDGE_MODE,
+                    "judge_available_rate": _judge_available_rate(local_assessments),
+                    "shadow_winner": shadow_decision.winner,
+                    "shadow_reason": shadow_decision.reason,
+                    **_judge_summary_metrics(local_assessments),
                     "model": provider.model,
                     "worker": worker_id,
                     **{
@@ -262,6 +307,24 @@ async def _score_batch(batch: list[Submission]) -> list[SubmissionScore]:
     return [await asyncio.to_thread(score_submission, s.messages) for s in batch]
 
 
+async def _assess_batch(
+    batch: list[Submission],
+    scores: list[SubmissionScore],
+    reference_mechanisms: list[str],
+) -> list[JudgeAssessment | None]:
+    """Assess a scored batch once per candidate when judge mode is enabled."""
+    if config.JUDGE_MODE == "off":
+        return [None] * len(batch)
+    return list(
+        await asyncio.gather(
+            *(
+                assess_submission(submission, score, reference_mechanisms)
+                for submission, score in zip(batch, scores, strict=True)
+            )
+        )
+    )
+
+
 async def _refine_batch(
     batch: list[Submission],
     scores: list[SubmissionScore],
@@ -272,7 +335,17 @@ async def _refine_batch(
     model: str,
     worker_id: int,
     timeout_s: float,
-) -> tuple[list[Submission], list[SubmissionScore], str, int]:
+    *,
+    assessments: list[JudgeAssessment | None] | None = None,
+    reference_mechanisms: list[str] | None = None,
+) -> tuple[
+    list[Submission],
+    list[SubmissionScore],
+    list[JudgeAssessment | None],
+    str,
+    int,
+    Comparison,
+]:
     """Hill-climb a scored batch on its MEAN public score; return the kept batch.
 
     Up to ``config.REFINE_MAX_ROUNDS`` rounds: each round re-authors a fresh batch from
@@ -291,17 +364,32 @@ async def _refine_batch(
         model: The lane's model id (record provenance tag).
         worker_id: The lane's worker id.
         timeout_s: Per-generation proposer timeout.
+        assessments: Optional judge assessments aligned with ``batch``/``scores``.
+        reference_mechanisms: Mechanism labels used for archive-relative judging.
 
     Returns:
-        ``(batch, scores, reasoning, refine_rounds)`` for the kept (best-mean) batch.
+        ``(batch, scores, assessments, reasoning, refine_rounds, shadow_decision)``
+        for the kept batch.
     """
     batch_public = mean(sc.public for sc in scores)
+    local_assessments = assessments or [None] * len(batch)
+    references = reference_mechanisms or []
     refine_rounds = 0
+    shadow_decision = Comparison("tie", "not_compared")
     for _ in range(config.REFINE_MAX_ROUNDS):
         try:
             incumbent_batch = [
-                make_record(submission, score, reasoning, model, worker_id)
-                for submission, score in zip(batch, scores, strict=True)
+                make_record(
+                    submission,
+                    score,
+                    reasoning,
+                    model,
+                    worker_id,
+                    assessment=assessment,
+                )
+                for submission, score, assessment in zip(
+                    batch, scores, local_assessments, strict=True
+                )
             ]
             prompt = submission_prompt(
                 None,
@@ -317,6 +405,9 @@ async def _refine_batch(
             if not refined:
                 break  # empty refine reply -> stop the climb, keep the best
             refined_scores = await _score_batch(refined)
+            refined_assessments = await _assess_batch(
+                refined, refined_scores, references
+            )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -324,13 +415,26 @@ async def _refine_batch(
                 "worker %d refine round failed; keeping best", worker_id, exc_info=True
             )
             break
-        if mean(sc.public for sc in refined_scores) <= batch_public:
+        refined_public = mean(sc.public for sc in refined_scores)
+        shadow_decision = compare_batches(
+            scores, local_assessments, refined_scores, refined_assessments
+        )
+        accept = (
+            shadow_decision.winner == "b"
+            if config.JUDGE_MODE == "active"
+            else refined_public > batch_public
+        )
+        if not accept:
             break  # no improvement -> stop the climb
-        batch, scores = refined, refined_scores
-        batch_public = mean(sc.public for sc in refined_scores)
+        batch, scores, local_assessments = (
+            refined,
+            refined_scores,
+            refined_assessments,
+        )
+        batch_public = refined_public
         reasoning = refined_reasoning
         refine_rounds += 1
-    return batch, scores, reasoning, refine_rounds
+    return batch, scores, local_assessments, reasoning, refine_rounds, shadow_decision
 
 
 async def optimize_team(
@@ -605,6 +709,41 @@ def _feedback_table(
             row += f" | victim suggestion (data): {suggestion}"
         rows.append(row)
     return rows
+
+
+def _judge_available_rate(assessments: list[JudgeAssessment | None]) -> float:
+    """Fraction of a batch with complete judge assessments."""
+    if not assessments:
+        return 0.0
+    available = sum(
+        assessment is not None and assessment.status == "available"
+        for assessment in assessments
+    )
+    return available / len(assessments)
+
+
+def _judge_summary_metrics(
+    assessments: list[JudgeAssessment | None],
+) -> dict[str, float]:
+    """Mean judge metrics for W&B; absent assessments contribute no values."""
+    survival = [
+        assessment.robustness.private_survival
+        for assessment in assessments
+        if assessment is not None
+        and assessment.status == "available"
+        and assessment.robustness is not None
+    ]
+    novelty = [
+        assessment.mechanism.semantic_novelty
+        for assessment in assessments
+        if assessment is not None
+        and assessment.status == "available"
+        and assessment.mechanism is not None
+    ]
+    return {
+        "batch_mean_survival": mean(survival) if survival else 0.0,
+        "batch_mean_semantic_novelty": mean(novelty) if novelty else 0.0,
+    }
 
 
 async def propose_batch_async(
