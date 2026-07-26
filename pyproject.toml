@@ -60,4 +60,4 @@ convention = "google"
 filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.ty.src]
-exclude = ["docs/**", ".superpowers/**", "vendor/**"]
+exclude = ["docs/**", ".superpowers/**", "vendor/**", "data/**"]

@@ -240,5 +240,8 @@ models/
 run/
 wandb/
 
+# Kaggle skill research/cache downloads
+data/
+
 # Isolated agent worktrees
 .worktrees/
