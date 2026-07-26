@@ -1,10 +1,4 @@
-"""FastAPI judge service (runs on dylan): typed severity + novelty endpoints over vLLM.
-
-Imports the shared judge contract + prompt builders from ``judge.py`` and calls the
-co-located vLLM OpenAI server with the pydantic model as guided-JSON, so replies are
-valid SeverityScore/NoveltyScore by construction. Launched with
-``uvicorn jed_attack.campaign.judge_service:app`` (see scripts/serve_dylan_judges.sh).
-"""
+"""FastAPI judge service (runs on dylan): typed robustness endpoints over vLLM."""
 
 import logging
 from typing import Any, cast
@@ -15,12 +9,15 @@ from openai.types.chat import ChatCompletionMessageParam
 
 from jed_attack.campaign import config
 from jed_attack.campaign.judge import (
-    NoveltyRequest,
-    NoveltyScore,
-    SeverityRequest,
-    SeverityScore,
-    novelty_messages,
-    severity_messages,
+    MechanismRequest,
+    MechanismScore,
+    PairwisePreference,
+    PairwiseRobustnessRequest,
+    RobustnessRequest,
+    RobustnessScore,
+    mechanism_messages,
+    pairwise_robustness_messages,
+    robustness_messages,
 )
 
 _log = logging.getLogger("judge_service")
@@ -47,21 +44,26 @@ def _vllm_json(messages: list[dict[str, str]], schema: dict[str, Any]) -> str:
     return completion.choices[0].message.content or ""
 
 
-@app.post("/severity")
-def severity(request: SeverityRequest) -> SeverityScore:
-    """Score the elicited severity of a whole submission."""
+@app.post("/robustness")
+def robustness(request: RobustnessRequest) -> RobustnessScore:
+    """Estimate a public replay's survival under a stricter guardrail."""
     reply = _vllm_json(
-        severity_messages(request.messages, request.feedback),
-        SeverityScore.model_json_schema(),
+        robustness_messages(request), RobustnessScore.model_json_schema()
     )
-    return SeverityScore.model_validate_json(reply)
+    return RobustnessScore.model_validate_json(reply)
 
 
-@app.post("/novelty")
-def novelty(request: NoveltyRequest) -> NoveltyScore:
-    """Score a candidate's novelty vs a sample of the pool."""
+@app.post("/mechanism")
+def mechanism(request: MechanismRequest) -> MechanismScore:
+    """Classify replayed attack mechanisms and archive-relative duplicates."""
+    reply = _vllm_json(mechanism_messages(request), MechanismScore.model_json_schema())
+    return MechanismScore.model_validate_json(reply)
+
+
+@app.post("/robustness-pair")
+def robustness_pair(request: PairwiseRobustnessRequest) -> PairwisePreference:
+    """Compare two public replays for offline robustness studies."""
     reply = _vllm_json(
-        novelty_messages(request.candidate, request.pool_sample),
-        NoveltyScore.model_json_schema(),
+        pairwise_robustness_messages(request), PairwisePreference.model_json_schema()
     )
-    return NoveltyScore.model_validate_json(reply)
+    return PairwisePreference.model_validate_json(reply)

@@ -238,3 +238,7 @@ models/
 
 # Campaign runtime state
 run/
+wandb/
+
+# Isolated agent worktrees
+.worktrees/

@@ -1,6 +1,7 @@
 """Behavioral tests for the campaign's operational shell launchers."""
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -14,7 +15,7 @@ def _write_executable(path: Path, source: str) -> None:
 
 
 def test_optimizer_waits_for_inflight_score_before_kill(tmp_path: Path) -> None:
-    """A scoring process that exits after 16 seconds is not force-killed."""
+    """Shutdown targets only Python and lets an in-flight score exit gracefully."""
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     command_log = tmp_path / "pkill.log"
@@ -68,7 +69,20 @@ exit 1
     )
 
     signals = command_log.read_text(encoding="utf-8").splitlines()
-    assert any("-TERM" in signal for signal in signals)
+    term_signal = next(signal for signal in signals if "-TERM" in signal)
+    process_pattern = term_signal.split("-f ", maxsplit=1)[1]
+    assert re.search(
+        process_pattern,
+        "/repo/.venv/bin/python3 -m jed_attack.campaign.optimize_prompts",
+    )
+    assert not re.search(
+        process_pattern,
+        "uv run python -m jed_attack.campaign.optimize_prompts",
+    )
+    assert not re.search(
+        process_pattern,
+        "bash -lc 'uv run python -m jed_attack.campaign.optimize_prompts'",
+    )
     assert "forced-while-active" not in signals
 
 

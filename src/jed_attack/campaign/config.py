@@ -23,6 +23,7 @@ ENV_FILE = _REPO_ROOT / ".env"
 BUILD_NEXT_DIR = (
     CAMPAIGN_ROOT / "build_next"
 )  # assembled attack.py + build_next_status.json
+BUILD_ROBUST_DIR = CAMPAIGN_ROOT / "build_robust"
 
 # The two target models and their served base URLs (llama-server on green).
 MODELS: tuple[str, ...] = ("gpt_oss", "gemma_4")
@@ -72,12 +73,10 @@ EVAL_HOPS = 8
 # Adversarial refinement: max per-generation batch hill-climb rounds. After scoring a
 # batch, the lane re-authors the WHOLE batch against its real per-message scores,
 # re-scores every submission, and keeps the higher-mean-public batch, up to this many
-# rounds. DISABLED (0) for the list[Submission] batch loop: each refine round re-scores
-# the entire batch (~5x the already-heavy per-generation scoring) for low marginal gain
-# -- a batch already supplies diversity + quantity, and scoring is the unbatchable
-# bottleneck (llama-cpp single-sequence; see jed-t4-replay-time-budget). So a generation
-# is propose-batch -> score-all -> curate. Raise only if scoring gets cheaper.
-REFINE_MAX_ROUNDS = 0
+# rounds. Four restores the approved adversarial hill-climb cap: at most five full
+# batch scorings per generation, with early stop on the first non-improving rewrite.
+# Set to 0 to disable refinement when scoring throughput is the binding constraint.
+REFINE_MAX_ROUNDS = 4
 
 # Prompt-optimization orchestrator (optimize_prompts.py): its generation logfile.
 OPTIMIZE_LOG = CAMPAIGN_ROOT / "optimize_prompts.log"
@@ -122,15 +121,21 @@ NOVELTY_PER_CELL = 2.0
 # extra per-submission inference cost to a fixed count, not O(submission size).
 INTROSPECT_WORST_N = int(os.getenv("JED_INTROSPECT_WORST_N", "3"))
 
-# Offline LLM-judge correlation study (docs/.../2026-07-24-qwen-judge-...). A Qwen3-32B
-# "surrogate guardrail" served by user-space ollama on green's Ada GPU (device 1 under
-# PCI_BUS_ID), scored offline against faithful public labels. Not wired into the live
-# optimizer -- see the study script. OLLAMA_URL is ollama's OpenAI-compatible endpoint.
-JUDGE_MODEL = os.getenv("JUDGE_MODEL", "qwen3:32b")
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/v1")
-JUDGE_GPU = 1
-JUDGE_STUDY_N = 25
-JUDGE_STUDY_DIR = CAMPAIGN_ROOT / "judge_study"
+# Held-out offline proxy study. RulesGuardrail is passed only by judge_study.py and is
+# never inserted into GATE_GUARDRAILS or the live scoring path.
+JUDGE_VERSION = "robustness-v1"
+JUDGE_ANCHOR_VERSION = "anchors-v1"
+JUDGE_PUBLIC_BAND_RATIO = 0.05
+JUDGE_MODE = os.getenv("JED_JUDGE_MODE", "shadow")
+if JUDGE_MODE not in {"off", "shadow", "active"}:
+    raise ValueError("JED_JUDGE_MODE must be one of: off, shadow, active")
+JUDGE_ROBUSTNESS_TIE_POINTS = 5.0
+JUDGE_MIN_CONFIDENCE = 0.60
+NOVELTY_POOL_SAMPLE = 8
+JUDGE_STUDY_N = 40
+JUDGE_STUDY_LABEL_SPARES = 4
+JUDGE_STUDY_FIXTURE_PROBES = 8
+JUDGE_STUDY_DIR = CAMPAIGN_ROOT / "judge_study_v1"
 
 # Dylan judge service (FastAPI + vLLM). The green optimizer POSTs typed judge requests
 # to this one endpoint; the service calls the co-located vLLM OpenAI server. See
@@ -140,17 +145,9 @@ VLLM_URL = os.getenv(
     "VLLM_URL", "http://127.0.0.1:8000/v1"
 )  # dylan-local, service->vLLM
 VLLM_MODEL = os.getenv("VLLM_MODEL", "bullerwins/Qwen3-32B-awq")
-# Judge scales (used by judge.py / curate.py). The per-generation LLM curation pass was
-# retired -- it re-judged the whole growing flat file every generation (~0.7s/call,
-# 49k calls) and shipped empty pools because the novelty judge scored homogeneous exfils
-# below the admit threshold even vs an empty pool. The worker now just stores every
-# scored submission to the flat file and reships the best. Judging is being folded into
-# scoring instead (once per candidate, at birth).
-NOVELTY_ADMIT_THRESHOLD = 40.0  # min novelty score to admit a candidate to a pool
-NOVELTY_POOL_SAMPLE = 8  # current-pool messages shown to the novelty judge
 
 
 def ensure_dirs() -> None:
     """Create the runtime directories the submission pipeline writes to."""
-    for path in (BUILD_NEXT_DIR, CAMPAIGN_ROOT / "logs"):
+    for path in (BUILD_NEXT_DIR, BUILD_ROBUST_DIR, CAMPAIGN_ROOT / "logs"):
         path.mkdir(parents=True, exist_ok=True)

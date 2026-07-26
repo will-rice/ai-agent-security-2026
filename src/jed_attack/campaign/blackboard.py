@@ -9,12 +9,18 @@ never lags the best.
 """
 
 import asyncio
+import functools
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from jed_attack.campaign import assemble
+from jed_attack.campaign import assemble, config
+from jed_attack.campaign.judge_policy import (
+    CandidateObjective,
+    JudgeAssessment,
+    compare_candidates,
+)
 from jed_attack.campaign.submission import MessageType
 
 
@@ -29,6 +35,10 @@ class Record:
     model: str
     worker: int
     ts: float
+    valid: bool = True
+    invalid_reason: str | None = None
+    fires: bool = False
+    assessment: dict[str, Any] | None = None
 
     def to_json(self) -> dict[str, Any]:
         """Return a JSON-serializable dict for this record."""
@@ -45,12 +55,54 @@ class Record:
             model=str(data.get("model", "")),
             worker=int(data.get("worker", 0)),
             ts=float(data["ts"]),
+            valid=bool(data.get("valid", True)),
+            invalid_reason=(
+                str(data["invalid_reason"])
+                if data.get("invalid_reason") is not None
+                else None
+            ),
+            fires=bool(data.get("fires", _feedback_fires(list(data["feedback"])))),
+            assessment=(
+                dict(data["assessment"])
+                if isinstance(data.get("assessment"), dict)
+                else None
+            ),
         )
 
 
 def _severity_sum(entry: dict) -> float:
     """Total severity of one feedback entry across guardrails."""
     return float(sum(entry.get("severity", {}).values()))
+
+
+def _feedback_fires(feedback: list[dict]) -> bool:
+    """Infer old-row firing status from persisted per-message severity."""
+    return any(_severity_sum(entry) > 0.0 for entry in feedback)
+
+
+def _assessment_objective(record: Record) -> CandidateObjective:
+    """Convert a record's persisted assessment into policy comparison input."""
+    return CandidateObjective(
+        valid=record.valid,
+        firing=record.fires,
+        public=record.public,
+        replay_seconds=0.0,
+        assessment=(
+            JudgeAssessment.model_validate(record.assessment)
+            if record.assessment is not None
+            else None
+        ),
+    )
+
+
+def _more_robust_record(left: Record, right: Record) -> Record:
+    """Return the record preferred by the judge-aware policy."""
+    decision = compare_candidates(
+        _assessment_objective(left), _assessment_objective(right)
+    )
+    if decision.winner == "b":
+        return right
+    return left
 
 
 class Blackboard:
@@ -76,11 +128,50 @@ class Blackboard:
                     continue
         return cls(path, records)
 
-    def best(self) -> Record | None:
+    def best_public(self) -> Record | None:
         """The highest-``public`` record, or ``None`` if empty."""
         if not self._records:
             return None
         return max(self._records, key=lambda r: r.public)
+
+    def best(self) -> Record | None:
+        """Compatibility alias for the exact-public champion."""
+        return self.best_public()
+
+    def best_robust(self) -> Record | None:
+        """The judge-robust champion within the public-regression band."""
+        public_best = self.best_public()
+        if public_best is None:
+            return None
+        floor = public_best.public * (1.0 - config.JUDGE_PUBLIC_BAND_RATIO)
+        candidates = [
+            record
+            for record in self._records
+            if record.valid
+            and record.fires
+            and record.public >= floor
+            and record.assessment is not None
+            and record.assessment.get("status") == "available"
+        ]
+        if not candidates:
+            return public_best
+        return functools.reduce(_more_robust_record, candidates)
+
+    def mechanism_references(self, k: int) -> list[str]:
+        """Distinct high-public mechanism labels for archive-relative judge context."""
+        labels: list[str] = []
+        for record in sorted(self._records, key=lambda item: item.public, reverse=True):
+            if record.assessment is None:
+                continue
+            assessment = JudgeAssessment.model_validate(record.assessment)
+            if assessment.status != "available" or assessment.mechanism is None:
+                continue
+            for label in assessment.mechanism.mechanism_labels:
+                if label not in labels:
+                    labels.append(label)
+                if len(labels) == k:
+                    return labels
+        return labels
 
     def top_messages(self, mtype: MessageType, k: int) -> list[tuple[str, str, float]]:
         """Best-scoring individual messages of a shape: ``(text, model, severity)``.
@@ -148,3 +239,12 @@ class Blackboard:
         best = self.best()
         if best is not None:
             assemble.build([m["text"] for m in best.messages], out_dir)
+
+    def reship_champions(self, public_out_dir: Path, robust_out_dir: Path) -> None:
+        """Rewrite exact-public and robust champion artifacts independently."""
+        public = self.best_public()
+        robust = self.best_robust()
+        if public is not None:
+            assemble.build([m["text"] for m in public.messages], public_out_dir)
+        if robust is not None:
+            assemble.build([m["text"] for m in robust.messages], robust_out_dir)
