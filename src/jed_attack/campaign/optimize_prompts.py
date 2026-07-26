@@ -355,13 +355,13 @@ async def _refine_batch(
     int,
     Comparison,
 ]:
-    """Hill-climb a scored batch on its MEAN public score; return the kept batch.
+    """Hill-climb a scored batch on public raw per replay second; return the kept.
 
     Up to ``config.REFINE_MAX_ROUNDS`` rounds: each round re-authors a fresh batch from
     every submission in the current batch + their real feedback, re-scores every
-    submission, and keeps the batch with the higher mean public; stops at the first
-    non-improving round, an empty re-author, or a round's own proposer/score failure (a
-    cancellation propagates so the team shuts down cleanly).
+    submission, and keeps the batch with the higher public-throughput objective; stops
+    at the first non-improving round, an empty re-author, or a round's own
+    proposer/score failure (a cancellation propagates so the team shuts down cleanly).
 
     Args:
         batch: The round-0 batch to refine.
@@ -380,7 +380,7 @@ async def _refine_batch(
         ``(batch, scores, assessments, reasoning, refine_rounds, shadow_decision)``
         for the kept batch.
     """
-    batch_public = mean(sc.public for sc in scores)
+    batch_objective = _batch_refine_objective(scores)
     local_assessments = assessments or [None] * len(batch)
     references = reference_mechanisms or []
     refine_rounds = 0
@@ -424,14 +424,14 @@ async def _refine_batch(
                 "worker %d refine round failed; keeping best", worker_id, exc_info=True
             )
             break
-        refined_public = mean(sc.public for sc in refined_scores)
+        refined_objective = _batch_refine_objective(refined_scores)
         shadow_decision = compare_batches(
             scores, local_assessments, refined_scores, refined_assessments
         )
         accept = (
             shadow_decision.winner == "b"
             if config.JUDGE_MODE == "active"
-            else refined_public > batch_public
+            else refined_objective > batch_objective
         )
         if not accept:
             break  # no improvement -> stop the climb
@@ -440,7 +440,7 @@ async def _refine_batch(
             refined_scores,
             refined_assessments,
         )
-        batch_public = refined_public
+        batch_objective = refined_objective
         reasoning = refined_reasoning
         refine_rounds += 1
     return batch, scores, local_assessments, reasoning, refine_rounds, shadow_decision
@@ -837,6 +837,23 @@ def _batch_score_metrics(scores: list[SubmissionScore]) -> dict[str, float]:
             predicate_counts.get(predicate, 0)
         )
     return metrics
+
+
+def _batch_refine_objective(scores: list[SubmissionScore]) -> tuple[float, float]:
+    """Return the optimizer's public-throughput objective.
+
+    Public raw per replay second is the primary signal because the public surface is
+    replay-time-limited: a lower absolute score can be the better candidate family when
+    it scores much faster. Mean public remains a secondary tie-breaker so equal-rate
+    batches keep the higher board value.
+    """
+    if not scores:
+        return (0.0, 0.0)
+    total_replay = sum(_total_replay_seconds(score) for score in scores)
+    public_raw_per_replay_s = _safe_div(
+        sum(score.public * 200.0 for score in scores), total_replay
+    )
+    return (public_raw_per_replay_s, mean(score.public for score in scores))
 
 
 def _empty_batch_score_metrics() -> dict[str, float]:
