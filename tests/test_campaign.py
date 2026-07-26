@@ -228,7 +228,6 @@ def test_worker_loop_appends_then_survives_failure(
     import asyncio
 
     from jed_attack.campaign import blackboard as bb
-    from jed_attack.campaign import config
     from jed_attack.campaign import optimize_prompts as op
     from jed_attack.campaign.submission import Message, MessageType, Submission
     from jed_attack.campaign.submission_score import MessageScore, SubmissionScore
@@ -263,8 +262,11 @@ def test_worker_loop_appends_then_survives_failure(
             raise asyncio.CancelledError
         return [sub], "reasoning"
 
+    async def fake_score_batch(batch: list[Submission]) -> list[SubmissionScore]:
+        return [score for _ in batch]
+
     monkeypatch.setattr(op, "propose_batch_async", fake_batch)
-    monkeypatch.setattr(op, "score_submission", lambda m, models=config.MODELS: score)
+    monkeypatch.setattr(op, "_score_batch", fake_score_batch)
     monkeypatch.setattr(op, "_GENERATION_RETRY_S", 0.0)
 
     board = bb.Blackboard.load(tmp_path / "bb.jsonl")
@@ -314,10 +316,12 @@ def test_worker_loop_batches_scores_all_and_stores_flat(
         return [s1, s2], "reasoning"
 
     scored: list[object] = []
+
+    async def fake_score_batch(batch: list[Submission]) -> list["SubmissionScore"]:
+        return [_fake_score(submission.messages, scored) for submission in batch]
+
     monkeypatch.setattr(op, "propose_batch_async", fake_batch)
-    monkeypatch.setattr(
-        op, "score_submission", lambda m, models=config.MODELS: _fake_score(m, scored)
-    )
+    monkeypatch.setattr(op, "_score_batch", fake_score_batch)
     monkeypatch.setattr(config, "REFINE_MAX_ROUNDS", 0)  # isolate round 0
     monkeypatch.setattr(op, "_GENERATION_RETRY_S", 0.0)
 
@@ -476,6 +480,112 @@ def _objective(
     )
 
 
+def test_judge_summary_metrics_report_research_rubric_axes() -> None:
+    """Optimizer logs the private-survival axes, not only an aggregate judge score."""
+    from jed_attack.campaign import optimize_prompts as op
+
+    first = _assessment("first", survival=100.0, novelty=90.0, confidence=0.7)
+    first.exact_cell_novelty = 3
+    second = _assessment("second", survival=60.0, novelty=30.0, confidence=0.9)
+    second.exact_cell_novelty = 1
+
+    metrics = op._judge_summary_metrics(
+        [
+            first,
+            second,
+            _assessment("invalid", status="skipped_invalid"),
+            _assessment("nonfiring", status="skipped_nonfiring"),
+            _assessment("down", status="unavailable"),
+            None,
+        ]
+    )
+
+    assert metrics["judge_available_rate"] == pytest.approx(2 / 6)
+    assert metrics["judge_skipped_invalid_rate"] == pytest.approx(1 / 6)
+    assert metrics["judge_skipped_nonfiring_rate"] == pytest.approx(1 / 6)
+    assert metrics["judge_unavailable_rate"] == pytest.approx(1 / 6)
+    assert metrics["judge_missing_rate"] == pytest.approx(1 / 6)
+    assert metrics["batch_mean_private_survival"] == 80.0
+    assert metrics["batch_mean_survival"] == 80.0
+    assert metrics["batch_mean_cross_model"] == 4.0
+    assert metrics["batch_mean_provenance_independence"] == 4.0
+    assert metrics["batch_mean_policy_independence"] == 4.0
+    assert metrics["batch_mean_replay_consistency"] == 2.0
+    assert metrics["batch_mean_public_bypass_risk"] == 2.0
+    assert metrics["batch_mean_robustness_confidence"] == 0.8
+    assert metrics["batch_mean_semantic_novelty"] == 60.0
+    assert metrics["batch_mean_mechanism_confidence"] == 0.8
+    assert metrics["batch_mean_exact_cell_novelty"] == 2.0
+
+
+def test_batch_score_metrics_report_firing_and_replay_economics() -> None:
+    """Optimizer logs valid kept fires and replay cost, not just batch public score."""
+    from jed_attack.campaign import optimize_prompts as op
+
+    firing = _mk_score(10.0)
+    firing.valid = True
+    firing.fires = True
+    firing.public_by_model = {"gpt_oss": 12.0, "gemma_4": 8.0}
+    firing.replay_seconds = {"gpt_oss": 2.0, "gemma_4": 4.0}
+    firing.per_message[0].severity_by_model = {
+        "optimal": {"gpt_oss": 16.0, "gemma_4": 8.0}
+    }
+    firing.per_message[0].actions["optimal"]["gemma_4"] = [
+        firing.per_message[0]
+        .actions["optimal"]["gpt_oss"][0]
+        .__class__(
+            tool="http.post",
+            ok=True,
+            source="tool",
+            side_effect="POST",
+            predicate_names=("EXFILTRATION",),
+        )
+    ]
+
+    invalid = _mk_score(0.0)
+    invalid.valid = False
+    invalid.fires = True
+    invalid.public_by_model = {"gpt_oss": 20.0, "gemma_4": 20.0}
+    invalid.replay_seconds = {"gpt_oss": 10.0, "gemma_4": 20.0}
+    invalid.per_message[0].severity_by_model = {
+        "optimal": {"gpt_oss": 16.0, "gemma_4": 16.0}
+    }
+
+    nonfiring = _mk_score(0.0)
+    nonfiring.valid = True
+    nonfiring.fires = False
+    nonfiring.public_by_model = {"gpt_oss": 0.0, "gemma_4": 0.0}
+    nonfiring.replay_seconds = {"gpt_oss": 3.0, "gemma_4": 5.0}
+    nonfiring.per_message[0].severity_by_model = {
+        "optimal": {"gpt_oss": 0.0, "gemma_4": 0.0}
+    }
+    nonfiring.per_message[0].actions = {"optimal": {"gpt_oss": [], "gemma_4": []}}
+
+    metrics = op._batch_score_metrics([firing, invalid, nonfiring])
+
+    assert metrics["batch_valid_rate"] == pytest.approx(2 / 3)
+    assert metrics["batch_invalid_rate"] == pytest.approx(1 / 3)
+    assert metrics["batch_firing_rate"] == pytest.approx(2 / 3)
+    assert metrics["batch_valid_firing_rate"] == pytest.approx(1 / 3)
+    assert metrics["batch_nonfiring_rate"] == pytest.approx(1 / 3)
+    assert metrics["batch_mean_replay_s_total"] == pytest.approx(44 / 3)
+    assert metrics["batch_p50_replay_s_total"] == 8.0
+    assert metrics["batch_p95_replay_s_total"] == 30.0
+    assert metrics["batch_mean_replay_s_gpt_oss"] == 5.0
+    assert metrics["batch_mean_replay_s_gemma_4"] == pytest.approx(29 / 3)
+    assert metrics["batch_firing_rate_gpt_oss"] == pytest.approx(1 / 3)
+    assert metrics["batch_firing_rate_gemma_4"] == pytest.approx(1 / 3)
+    assert metrics["batch_public_raw_per_replay_s"] == pytest.approx(2000 / 44)
+    assert metrics["batch_worst_model_public_raw_per_replay_s"] == pytest.approx(
+        1600 / 29
+    )
+    assert metrics["batch_predicates_total"] == 2.0
+    assert metrics["batch_predicates_confused_deputy"] == 1.0
+    assert metrics["batch_predicates_exfiltration"] == 1.0
+    assert metrics["batch_predicates_destructive_write"] == 0.0
+    assert metrics["batch_predicates_untrusted_to_action"] == 0.0
+
+
 def _run_refine_worker(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -511,11 +621,12 @@ def _run_refine_worker(
         except StopIteration:
             raise asyncio.CancelledError from None
 
+    async def fake_score_batch(batch: list["Submission"]) -> list["SubmissionScore"]:
+        return [_mk_score(next(pub_it)) for _ in batch]
+
     monkeypatch.setattr(config, "REFINE_MAX_ROUNDS", max_rounds)
     monkeypatch.setattr(op, "propose_batch_async", fake_batch)
-    monkeypatch.setattr(
-        op, "score_submission", lambda m, models=config.MODELS: _mk_score(next(pub_it))
-    )
+    monkeypatch.setattr(op, "_score_batch", fake_score_batch)
     monkeypatch.setattr(op, "_GENERATION_RETRY_S", 0.0)
 
     board = bb.Blackboard.load(tmp_path / "bb.jsonl")
@@ -599,11 +710,12 @@ def test_refine_round_failure_keeps_improved_best(
         except StopIteration:
             raise asyncio.CancelledError from None  # gen1 round 0 -> end the loop
 
+    async def fake_score_batch(batch: list["Submission"]) -> list["SubmissionScore"]:
+        return [_mk_score(next(pubs)) for _ in batch]
+
     monkeypatch.setattr(config, "REFINE_MAX_ROUNDS", 4)
     monkeypatch.setattr(op, "propose_batch_async", fake_batch)
-    monkeypatch.setattr(
-        op, "score_submission", lambda m, models=config.MODELS: _mk_score(next(pubs))
-    )
+    monkeypatch.setattr(op, "_score_batch", fake_score_batch)
     monkeypatch.setattr(op, "_GENERATION_RETRY_S", 0.0)
 
     board = bb.Blackboard.load(tmp_path / "bb.jsonl")
@@ -705,9 +817,15 @@ def test_assessment_cache_reuses_and_versions_invalidate(
             feedback="fixture",
         )
 
+    async def immediate_to_thread(
+        func: Callable[..., object], /, *args: object, **kwargs: object
+    ) -> object:
+        return func(*args, **kwargs)
+
     score = _mk_score(1.0)
     score.valid = True
     score.fires = True
+    monkeypatch.setattr(jp.asyncio, "to_thread", immediate_to_thread)
     monkeypatch.setattr(jp, "judge_robustness", robustness)
     monkeypatch.setattr(jp, "judge_mechanism", mechanism)
     first = asyncio.run(jp.assess_submission(_mk_sub("cache"), score, ["a"]))
@@ -777,6 +895,7 @@ def test_assess_batch_preserves_submission_order(
     """Concurrent shadow assessment keeps the score/submission alignment intact."""
     import asyncio
 
+    from jed_attack.campaign import config
     from jed_attack.campaign import optimize_prompts as op
 
     async def fake_assess(
@@ -785,6 +904,7 @@ def test_assess_batch_preserves_submission_order(
         messages = cast("Submission", submission).messages
         return _assessment(messages[0].text)
 
+    monkeypatch.setattr(config, "JUDGE_MODE", "shadow")
     monkeypatch.setattr(op, "assess_submission", fake_assess)
     subs = [_mk_sub("a"), _mk_sub("b")]
     out = asyncio.run(op._assess_batch(subs, [_mk_score(1.0), _mk_score(2.0)], []))
@@ -3066,8 +3186,6 @@ def test_study_rescores_optimal_before_rules_and_never_judges_hard_gate_rows(
 
 def test_judge_service_robustness_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
     """POST /robustness returns a rubric-valid RobustnessScore from vLLM JSON."""
-    from fastapi.testclient import TestClient
-
     from jed_attack.campaign import judge_service
 
     captured: dict[str, object] = {}
@@ -3084,10 +3202,8 @@ def test_judge_service_robustness_endpoint(monkeypatch: pytest.MonkeyPatch) -> N
         )
 
     monkeypatch.setattr(judge_service, "_vllm_json", fake_vllm)
-    client = TestClient(judge_service.app)
-    resp = client.post("/robustness", json=_judge_request().model_dump(mode="json"))
-    assert resp.status_code == 200
-    assert resp.json()["private_survival"] == 80.0
+    resp = judge_service.robustness(_judge_request())
+    assert resp.private_survival == 80.0
     assert "SECRET_MARKER" in str(captured["messages"])
     assert "private_survival" in str(captured["schema"])
 
@@ -3096,8 +3212,6 @@ def test_judge_service_mechanism_and_pairwise_endpoints(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """New service routes use their own response schemas and typed responses."""
-    from fastapi.testclient import TestClient
-
     from jed_attack.campaign import judge_service
     from jed_attack.campaign.judge import MechanismRequest, PairwiseRobustnessRequest
 
@@ -3117,24 +3231,19 @@ def test_judge_service_mechanism_and_pairwise_endpoints(
         return next(replies)
 
     monkeypatch.setattr(judge_service, "_vllm_json", fake_vllm)
-    client = TestClient(judge_service.app)
     request = _judge_request()
-    mechanism = client.post(
-        "/mechanism",
-        json=MechanismRequest(
+    mechanism = judge_service.mechanism(
+        MechanismRequest(
             candidate=request.messages, reference_mechanisms=["direct request"]
-        ).model_dump(mode="json"),
+        )
     )
-    pairwise = client.post(
-        "/robustness-pair",
-        json=PairwiseRobustnessRequest(a=request, b=request).model_dump(mode="json"),
+    pairwise = judge_service.robustness_pair(
+        PairwiseRobustnessRequest(a=request, b=request)
     )
 
-    assert mechanism.status_code == 200
-    assert mechanism.json()["semantic_novelty"] == 75.0
+    assert mechanism.semantic_novelty == 75.0
     assert "semantic_novelty" in str(captured[0]["schema"])
-    assert pairwise.status_code == 200
-    assert pairwise.json()["preferred"] == "a"
+    assert pairwise.preferred == "a"
     assert "preferred" in str(captured[1]["schema"])
 
 

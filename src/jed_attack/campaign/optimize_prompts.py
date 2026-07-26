@@ -31,6 +31,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import os
 import signal
 import time
@@ -78,6 +79,12 @@ _PROPOSER_TEMPERATURE = 1.0  # high temp + random seed => successive calls explo
 # Backoff after a whole generation raises, so a persistently-failing lane (a refusal
 # yielding no JSON, a proposer/score outage) retries without busy-spinning the process.
 _GENERATION_RETRY_S = float(os.getenv("JED_GENERATION_RETRY_S", "10"))
+_PREDICATE_METRIC_SUFFIX = {
+    "CONFUSED_DEPUTY": "confused_deputy",
+    "DESTRUCTIVE_WRITE": "destructive_write",
+    "EXFILTRATION": "exfiltration",
+    "UNTRUSTED_TO_ACTION": "untrusted_to_action",
+}
 # Streaming proposer IDLE timeout: max seconds to wait for the NEXT streamed token
 # before abandoning the call as stalled. NOT a wall-clock cap — an actively streaming
 # model is never cut off however long it takes, so a slow thinking model finishes; only
@@ -274,6 +281,8 @@ async def worker_loop(
                     "judge_available_rate": _judge_available_rate(local_assessments),
                     "shadow_winner": shadow_decision.winner,
                     "shadow_reason": shadow_decision.reason,
+                    "shadow_prefers_refined": float(shadow_decision.winner == "b"),
+                    **_batch_score_metrics(local_scores),
                     **_judge_summary_metrics(local_assessments),
                     "model": provider.model,
                     "worker": worker_id,
@@ -713,37 +722,222 @@ def _feedback_table(
 
 def _judge_available_rate(assessments: list[JudgeAssessment | None]) -> float:
     """Fraction of a batch with complete judge assessments."""
-    if not assessments:
-        return 0.0
-    available = sum(
-        assessment is not None and assessment.status == "available"
-        for assessment in assessments
-    )
-    return available / len(assessments)
+    return _judge_status_rate(assessments, "available")
 
 
 def _judge_summary_metrics(
     assessments: list[JudgeAssessment | None],
 ) -> dict[str, float]:
-    """Mean judge metrics for W&B; absent assessments contribute no values."""
-    survival = [
-        assessment.robustness.private_survival
-        for assessment in assessments
-        if assessment is not None
-        and assessment.status == "available"
-        and assessment.robustness is not None
+    """Mean judge metrics for W&B; invalid/missing statuses remain visible."""
+    available = _available_assessments(assessments)
+    robustness = [
+        assessment.robustness
+        for assessment in available
+        if assessment.robustness is not None
     ]
-    novelty = [
-        assessment.mechanism.semantic_novelty
-        for assessment in assessments
-        if assessment is not None
-        and assessment.status == "available"
-        and assessment.mechanism is not None
+    mechanisms = [
+        assessment.mechanism
+        for assessment in available
+        if assessment.mechanism is not None
     ]
+    private_survival = _mean_or_zero([score.private_survival for score in robustness])
     return {
-        "batch_mean_survival": mean(survival) if survival else 0.0,
-        "batch_mean_semantic_novelty": mean(novelty) if novelty else 0.0,
+        "judge_available_rate": _judge_status_rate(assessments, "available"),
+        "judge_skipped_invalid_rate": _judge_status_rate(
+            assessments, "skipped_invalid"
+        ),
+        "judge_skipped_nonfiring_rate": _judge_status_rate(
+            assessments, "skipped_nonfiring"
+        ),
+        "judge_unavailable_rate": _judge_status_rate(assessments, "unavailable"),
+        "judge_missing_rate": _judge_missing_rate(assessments),
+        "batch_mean_private_survival": private_survival,
+        "batch_mean_survival": private_survival,
+        "batch_mean_cross_model": _mean_or_zero(
+            [score.cross_model for score in robustness]
+        ),
+        "batch_mean_provenance_independence": _mean_or_zero(
+            [score.provenance_independence for score in robustness]
+        ),
+        "batch_mean_policy_independence": _mean_or_zero(
+            [score.policy_independence for score in robustness]
+        ),
+        "batch_mean_replay_consistency": _mean_or_zero(
+            [score.replay_consistency for score in robustness]
+        ),
+        "batch_mean_public_bypass_risk": _mean_or_zero(
+            [score.public_bypass_risk for score in robustness]
+        ),
+        "batch_mean_robustness_confidence": _mean_or_zero(
+            [score.confidence for score in robustness]
+        ),
+        "batch_mean_semantic_novelty": _mean_or_zero(
+            [score.semantic_novelty for score in mechanisms]
+        ),
+        "batch_mean_mechanism_confidence": _mean_or_zero(
+            [score.confidence for score in mechanisms]
+        ),
+        "batch_mean_exact_cell_novelty": _mean_or_zero(
+            [assessment.exact_cell_novelty for assessment in available]
+        ),
     }
+
+
+def _batch_score_metrics(scores: list[SubmissionScore]) -> dict[str, float]:
+    """Replay, firing, and predicate economics for optimizer observability."""
+    if not scores:
+        return _empty_batch_score_metrics()
+
+    totals = [_total_replay_seconds(score) for score in scores]
+    total_replay = sum(totals)
+    metrics = {
+        "batch_valid_rate": _rate(sum(score.valid for score in scores), len(scores)),
+        "batch_invalid_rate": _rate(
+            sum(not score.valid for score in scores), len(scores)
+        ),
+        "batch_firing_rate": _rate(sum(score.fires for score in scores), len(scores)),
+        "batch_valid_firing_rate": _rate(
+            sum(score.valid and score.fires for score in scores), len(scores)
+        ),
+        "batch_nonfiring_rate": _rate(
+            sum(score.valid and not score.fires for score in scores), len(scores)
+        ),
+        "batch_mean_replay_s_total": _mean_or_zero(totals),
+        "batch_p50_replay_s_total": _nearest_percentile(totals, 50),
+        "batch_p95_replay_s_total": _nearest_percentile(totals, 95),
+        "batch_public_raw_per_replay_s": _safe_div(
+            sum(score.public * 200.0 for score in scores), total_replay
+        ),
+    }
+    model_rates: list[float] = []
+    for model in config.MODELS:
+        model_times = [score.replay_seconds.get(model, 0.0) for score in scores]
+        model_replay = sum(model_times)
+        model_rates.append(
+            _safe_div(
+                sum(
+                    (score.public_by_model.get(model, 0.0) if score.valid else 0.0)
+                    * 200.0
+                    for score in scores
+                ),
+                model_replay,
+            )
+        )
+        metrics[f"batch_mean_replay_s_{model}"] = _mean_or_zero(model_times)
+        metrics[f"batch_firing_rate_{model}"] = _rate(
+            sum(_score_fires_model(score, model) for score in scores), len(scores)
+        )
+    metrics["batch_worst_model_public_raw_per_replay_s"] = (
+        min(model_rates) if model_rates else 0.0
+    )
+    predicate_counts = _batch_predicate_counts(scores)
+    metrics["batch_predicates_total"] = float(sum(predicate_counts.values()))
+    for predicate, suffix in _PREDICATE_METRIC_SUFFIX.items():
+        metrics[f"batch_predicates_{suffix}"] = float(
+            predicate_counts.get(predicate, 0)
+        )
+    return metrics
+
+
+def _empty_batch_score_metrics() -> dict[str, float]:
+    metrics = {
+        "batch_valid_rate": 0.0,
+        "batch_invalid_rate": 0.0,
+        "batch_firing_rate": 0.0,
+        "batch_valid_firing_rate": 0.0,
+        "batch_nonfiring_rate": 0.0,
+        "batch_mean_replay_s_total": 0.0,
+        "batch_p50_replay_s_total": 0.0,
+        "batch_p95_replay_s_total": 0.0,
+        "batch_public_raw_per_replay_s": 0.0,
+        "batch_worst_model_public_raw_per_replay_s": 0.0,
+        "batch_predicates_total": 0.0,
+    }
+    for model in config.MODELS:
+        metrics[f"batch_mean_replay_s_{model}"] = 0.0
+        metrics[f"batch_firing_rate_{model}"] = 0.0
+    for suffix in _PREDICATE_METRIC_SUFFIX.values():
+        metrics[f"batch_predicates_{suffix}"] = 0.0
+    return metrics
+
+
+def _judge_status_rate(assessments: list[JudgeAssessment | None], status: str) -> float:
+    return _rate(
+        sum(
+            assessment is not None and assessment.status == status
+            for assessment in assessments
+        ),
+        len(assessments),
+    )
+
+
+def _judge_missing_rate(assessments: list[JudgeAssessment | None]) -> float:
+    return _rate(
+        sum(assessment is None for assessment in assessments), len(assessments)
+    )
+
+
+def _available_assessments(
+    assessments: list[JudgeAssessment | None],
+) -> list[JudgeAssessment]:
+    return [
+        assessment
+        for assessment in assessments
+        if assessment is not None and assessment.status == "available"
+    ]
+
+
+def _mean_or_zero(values: list[float | int]) -> float:
+    return mean(values) if values else 0.0
+
+
+def _rate(count: int, total: int) -> float:
+    return count / total if total else 0.0
+
+
+def _safe_div(numerator: float, denominator: float) -> float:
+    return numerator / denominator if denominator else 0.0
+
+
+def _nearest_percentile(values: list[float], percentile: int) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    index = max(0, math.ceil((percentile / 100) * len(ordered)) - 1)
+    return ordered[min(index, len(ordered) - 1)]
+
+
+def _total_replay_seconds(score: SubmissionScore) -> float:
+    return sum(score.replay_seconds.values())
+
+
+def _score_fires_model(score: SubmissionScore, model: str) -> bool:
+    if not score.valid:
+        return False
+    return any(
+        message.severity_by_model.get("optimal", {}).get(model, 0.0) > 0.0
+        for message in score.per_message
+    )
+
+
+def _batch_predicate_counts(scores: list[SubmissionScore]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for score in scores:
+        if not score.valid:
+            continue
+        for message_index, message in enumerate(score.per_message):
+            seen: set[tuple[int, str, str]] = set()
+            for model, actions in message.actions.get("optimal", {}).items():
+                for action in actions:
+                    if not action.ok:
+                        continue
+                    for predicate in action.predicate_names:
+                        key = (message_index, model, predicate)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        counts[predicate] = counts.get(predicate, 0) + 1
+    return counts
 
 
 async def propose_batch_async(

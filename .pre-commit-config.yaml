@@ -34,6 +34,6 @@ repos:
       - id: pytest
         name: pytest
         language: system
-        entry: uv run python -m pytest
+        entry: env JED_JUDGE_MODE=off uv run python -m pytest
         pass_filenames: false
         always_run: true
