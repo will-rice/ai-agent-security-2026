@@ -3,9 +3,9 @@
 One async process owns it, so appends are serialized with an ``asyncio.Lock`` (no
 fcntl). Every scored submission is one JSONL line; the in-memory views (best submission,
 best individual messages per shape, recent cross-model reasoning) are rebuilt on load
-and updated on append. When an append sets a new public best, the shipped
-``attack.py`` is rewritten immediately via :func:`assemble.build`, so the artifact
-never lags the best.
+and updated on append. When an append sets a new optimizer-objective best, the
+shipped ``attack.py`` is rewritten immediately via :func:`assemble.build`, so the
+artifact never lags the campaign champion.
 """
 
 import asyncio
@@ -39,6 +39,9 @@ class Record:
     invalid_reason: str | None = None
     fires: bool = False
     assessment: dict[str, Any] | None = None
+    objective: float = 0.0
+    objective_tiebreaker: float = 0.0
+    objective_name: str = "legacy_public"
 
     def to_json(self) -> dict[str, Any]:
         """Return a JSON-serializable dict for this record."""
@@ -67,6 +70,9 @@ class Record:
                 if isinstance(data.get("assessment"), dict)
                 else None
             ),
+            objective=float(data.get("objective", 0.0)),
+            objective_tiebreaker=float(data.get("objective_tiebreaker", 0.0)),
+            objective_name=str(data.get("objective_name", "legacy_public")),
         )
 
 
@@ -105,6 +111,20 @@ def _more_robust_record(left: Record, right: Record) -> Record:
     return left
 
 
+def _objective_key(record: Record) -> tuple[bool, float, float, float]:
+    """Ranking key for campaign objective champions.
+
+    Legacy rows do not have replay-time objective fields, so their objective defaults
+    to 0 and they only win by public score when no measured-throughput records exist.
+    """
+    return (
+        record.valid and record.fires,
+        record.objective,
+        record.objective_tiebreaker,
+        record.public,
+    )
+
+
 class Blackboard:
     """In-memory team memory backed by an append-only JSONL file."""
 
@@ -133,6 +153,12 @@ class Blackboard:
         if not self._records:
             return None
         return max(self._records, key=lambda r: r.public)
+
+    def best_objective(self) -> Record | None:
+        """The highest optimizer-objective record, or ``None`` if empty."""
+        if not self._records:
+            return None
+        return max(self._records, key=_objective_key)
 
     def best(self) -> Record | None:
         """Compatibility alias for the exact-public champion."""
@@ -213,22 +239,22 @@ class Blackboard:
         Args:
             record: The scored record to append and persist.
             out_dir: Where a new-best reship writes ``attack.py``.
-            reship: Whether a new public best reships ``attack.py`` via
+            reship: Whether a new optimizer-objective best reships ``attack.py`` via
                 :func:`assemble.build`. The default preserves the legacy
                 best-submission ship path; the curated-pool loop passes ``False`` so
                 append only records candidates and curation is the sole ship path (no
                 double ship).
         """
         async with self._lock:
-            prior_best = self.best()
+            prior_best = self.best_objective()
             self._records.append(record)
             with self._path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record.to_json(), sort_keys=True) + "\n")
-            if reship and (prior_best is None or record.public > prior_best.public):
+            if reship and self.best_objective() is record and record is not prior_best:
                 assemble.build([m["text"] for m in record.messages], out_dir)
 
     def reship_best(self, out_dir: Path) -> None:
-        """Rewrite ``attack.py`` from the current best record (no-op if empty).
+        """Rewrite ``attack.py`` from the current objective champion (no-op if empty).
 
         Used on warm start so the shipped artifact reflects the flat file's best
         immediately, rather than lagging until a future generation beats it.
@@ -236,7 +262,7 @@ class Blackboard:
         Args:
             out_dir: Where :func:`assemble.build` writes ``attack.py``.
         """
-        best = self.best()
+        best = self.best_objective()
         if best is not None:
             assemble.build([m["text"] for m in best.messages], out_dir)
 

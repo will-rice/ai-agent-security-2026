@@ -1,9 +1,10 @@
 """FastAPI judge service (runs on dylan): typed robustness endpoints over vLLM."""
 
 import logging
-from typing import Any, cast
+from typing import Any, TypeVar, cast
 
 import fastapi
+import pydantic
 from openai import OpenAI
 from openai.types.chat import ChatCompletionMessageParam
 
@@ -14,6 +15,7 @@ from jed_attack.campaign.judge import (
     PairwisePreference,
     PairwiseRobustnessRequest,
     RobustnessRequest,
+    RobustnessRubricScore,
     RobustnessScore,
     mechanism_messages,
     pairwise_robustness_messages,
@@ -22,6 +24,8 @@ from jed_attack.campaign.judge import (
 
 _log = logging.getLogger("judge_service")
 app = fastapi.FastAPI(title="JED judge service")
+_JudgeModelT = TypeVar("_JudgeModelT", bound=pydantic.BaseModel)
+_VLLM_PARSE_ATTEMPTS = 2
 
 
 def _vllm_json(messages: list[dict[str, str]], schema: dict[str, Any]) -> str:
@@ -44,26 +48,46 @@ def _vllm_json(messages: list[dict[str, str]], schema: dict[str, Any]) -> str:
     return completion.choices[0].message.content or ""
 
 
+def _vllm_parsed_json(
+    messages: list[dict[str, str]], model_type: type[_JudgeModelT]
+) -> _JudgeModelT:
+    """Call vLLM and parse a typed JSON response, retrying malformed output once."""
+    last_error: pydantic.ValidationError | None = None
+    for attempt in range(_VLLM_PARSE_ATTEMPTS):
+        reply = _vllm_json(messages, model_type.model_json_schema())
+        try:
+            return model_type.model_validate_json(reply)
+        except pydantic.ValidationError as exc:
+            last_error = exc
+            _log.warning(
+                "invalid judge model output for %s on attempt %d/%d: %s",
+                model_type.__name__,
+                attempt + 1,
+                _VLLM_PARSE_ATTEMPTS,
+                str(exc).splitlines()[0],
+            )
+    detail = (
+        f"invalid judge model output for {model_type.__name__}: "
+        f"{str(last_error).splitlines()[0] if last_error is not None else 'unknown'}"
+    )
+    raise fastapi.HTTPException(status_code=503, detail=detail)
+
+
 @app.post("/robustness")
 def robustness(request: RobustnessRequest) -> RobustnessScore:
     """Estimate a public replay's survival under a stricter guardrail."""
-    reply = _vllm_json(
-        robustness_messages(request), RobustnessScore.model_json_schema()
-    )
-    return RobustnessScore.model_validate_json(reply)
+    return _vllm_parsed_json(
+        robustness_messages(request), RobustnessRubricScore
+    ).to_robustness_score()
 
 
 @app.post("/mechanism")
 def mechanism(request: MechanismRequest) -> MechanismScore:
     """Classify replayed attack mechanisms and archive-relative duplicates."""
-    reply = _vllm_json(mechanism_messages(request), MechanismScore.model_json_schema())
-    return MechanismScore.model_validate_json(reply)
+    return _vllm_parsed_json(mechanism_messages(request), MechanismScore)
 
 
 @app.post("/robustness-pair")
 def robustness_pair(request: PairwiseRobustnessRequest) -> PairwisePreference:
     """Compare two public replays for offline robustness studies."""
-    reply = _vllm_json(
-        pairwise_robustness_messages(request), PairwisePreference.model_json_schema()
-    )
-    return PairwisePreference.model_validate_json(reply)
+    return _vllm_parsed_json(pairwise_robustness_messages(request), PairwisePreference)

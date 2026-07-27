@@ -131,6 +131,9 @@ if JUDGE_MODE not in {"off", "shadow", "active"}:
     raise ValueError("JED_JUDGE_MODE must be one of: off, shadow, active")
 JUDGE_ROBUSTNESS_TIE_POINTS = 5.0
 JUDGE_MIN_CONFIDENCE = 0.60
+JUDGE_MAX_CONCURRENT_ASSESSMENTS = max(
+    1, int(os.getenv("JED_JUDGE_MAX_CONCURRENT_ASSESSMENTS", "2"))
+)
 NOVELTY_POOL_SAMPLE = 8
 JUDGE_STUDY_N = 40
 JUDGE_STUDY_LABEL_SPARES = 4
