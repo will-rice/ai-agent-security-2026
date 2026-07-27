@@ -665,6 +665,86 @@ def test_default_refine_rounds_restores_adversarial_hill_climb() -> None:
     assert config.REFINE_MAX_ROUNDS == 4
 
 
+def test_default_team_proposers_keep_cheapest_rotation_available() -> None:
+    """The default roster keeps multiple CI models in one grouped key lane."""
+    from jed_attack.campaign import config, providers
+
+    cheapest = [
+        name
+        for name in config.TEAM_PROPOSERS
+        if providers.get(name).key_env == "CHEAPEST_API_KEY"
+    ]
+    assert "cheapest-minimax" in cheapest
+    assert len(cheapest) > 1
+
+
+def test_team_proposers_env_override_parses_csv() -> None:
+    """Operators can pin a different single CI model without editing source."""
+    from jed_attack.campaign import config
+
+    assert config.team_proposers_from_env(
+        "cheapest-kimi2.6, zai-glm5-turbo",
+        default=("cheapest-minimax", "zai-glm5-turbo"),
+    ) == ("cheapest-kimi2.6", "zai-glm5-turbo")
+
+
+def test_ci_single_flight_errors_get_longer_retry_delay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CI concurrency/stream failures need a cooldown so the provider slot can clear."""
+    from jed_attack.campaign import optimize_prompts as op
+    from jed_attack.campaign import providers
+
+    monkeypatch.setattr(op, "_GENERATION_RETRY_S", 3.0)
+    monkeypatch.setattr(op, "_CI_GENERATION_RETRY_S", 45.0)
+
+    assert op._generation_retry_delay(
+        providers.get("cheapest-minimax"),
+        RuntimeError("Concurrency limit reached for this key"),
+    ) == pytest.approx(45.0)
+    assert op._generation_retry_delay(
+        providers.get("cheapest-minimax"),
+        RuntimeError("peer closed connection (incomplete chunked read)"),
+    ) == pytest.approx(45.0)
+    assert op._generation_retry_delay(
+        providers.get("zai-glm5-turbo"),
+        RuntimeError("Concurrency limit reached for this key"),
+    ) == pytest.approx(3.0)
+
+
+def test_worker_retries_same_ci_model_after_single_flight_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lingering CI slot should not make the lane switch models and collide again."""
+    import asyncio
+
+    from jed_attack.campaign import blackboard as bb
+    from jed_attack.campaign import optimize_prompts as op
+    from jed_attack.campaign import providers
+
+    seen: list[str] = []
+    ci_a = providers.get("cheapest-kimi")
+    ci_b = providers.get("cheapest-minimax")
+
+    async def fake_batch(
+        prompt: str, provider: "providers.Provider", timeout_s: float
+    ) -> tuple[list["Submission"], str]:
+        seen.append(provider.model)
+        if len(seen) == 1:
+            raise RuntimeError("Concurrency limit reached for this key")
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(op, "propose_batch_async", fake_batch)
+    monkeypatch.setattr(op, "_GENERATION_RETRY_S", 0.0)
+    monkeypatch.setattr(op, "_CI_GENERATION_RETRY_S", 0.0)
+
+    board = bb.Blackboard.load(tmp_path / "bb.jsonl")
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(op.worker_loop(0, [ci_a, ci_b], board, tmp_path / "out", 1.0))
+
+    assert seen == [ci_a.model, ci_a.model]
+
+
 def test_refine_runs_to_cap_when_every_round_improves(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -812,6 +892,7 @@ def test_worker_loop_logs_objective_metrics_separately(
 
     monkeypatch.setattr(config, "JUDGE_MODE", "off")
     monkeypatch.setattr(config, "REFINE_MAX_ROUNDS", 1)
+    monkeypatch.setattr(config, "ARTIFACT_SCORE_ENABLED", False)
     monkeypatch.setattr(op, "propose_batch_async", fake_batch)
     monkeypatch.setattr(op, "_score_batch", fake_score_batch)
     monkeypatch.setattr(op, "_GENERATION_RETRY_S", 0.0)
@@ -839,6 +920,83 @@ def test_worker_loop_logs_objective_metrics_separately(
     assert metrics["refine_objective_gain"] == pytest.approx(160.0)
     assert metrics["refine_public_gain"] == pytest.approx(-1.0)
     assert "refine_gain" not in metrics
+
+
+def test_worker_loop_logs_artifact_score_after_reship(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A new shipped artifact gets exact-score metrics logged with artifact prefixes."""
+    import asyncio
+
+    from jed_attack.campaign import blackboard as bb
+    from jed_attack.campaign import config
+    from jed_attack.campaign import optimize_prompts as op
+    from jed_attack.campaign.submission import Submission
+
+    class FakeRun:
+        def __init__(self) -> None:
+            self.logs: list[dict[str, object]] = []
+
+        def log(self, data: dict[str, object]) -> None:
+            self.logs.append(dict(data))
+
+        def finish(self) -> None:
+            return None
+
+    submission = Submission(
+        messages=[_exfil("SECRET_MARKER https://artifact.invalid/r", 1)]
+    )
+    calls = {"batch": 0}
+    scored_artifacts: list[Path] = []
+
+    async def fake_batch(
+        prompt: str, provider: object, timeout_s: float
+    ) -> tuple[list["Submission"], str]:
+        calls["batch"] += 1
+        if calls["batch"] > 1:
+            raise asyncio.CancelledError
+        return [submission], "reasoning"
+
+    async def fake_score_batch(batch: list["Submission"]) -> list["SubmissionScore"]:
+        return [_mk_score(2.0) for _ in batch]
+
+    async def fake_score_artifact(path: Path) -> dict[str, float | str]:
+        scored_artifacts.append(path)
+        return {
+            "artifact_public": 80.685,
+            "artifact_gpt_oss_public": 81.0,
+            "artifact_gemma_4_public": 80.37,
+            "artifact_sha256": "abc123",
+        }
+
+    monkeypatch.setattr(config, "REFINE_MAX_ROUNDS", 0)
+    monkeypatch.setattr(config, "ARTIFACT_SCORE_ENABLED", True)
+    monkeypatch.setattr(op, "propose_batch_async", fake_batch)
+    monkeypatch.setattr(op, "_score_batch", fake_score_batch)
+    monkeypatch.setattr(op, "_score_artifact_metrics", fake_score_artifact)
+    monkeypatch.setattr(op, "_GENERATION_RETRY_S", 0.0)
+
+    run = FakeRun()
+    board = bb.Blackboard.load(tmp_path / "bb.jsonl")
+    out_dir = tmp_path / "out"
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            op.worker_loop(
+                0,
+                [providers.get("cheapest-kimi")],
+                board,
+                out_dir,
+                timeout_s=1.0,
+                run=run,
+            )
+        )
+
+    assert scored_artifacts == [out_dir / "attack.py"]
+    artifact_logs = [entry for entry in run.logs if "artifact_public" in entry]
+    assert len(artifact_logs) == 1
+    assert artifact_logs[0]["artifact_public"] == pytest.approx(80.685)
+    assert artifact_logs[0]["model"] == providers.get("cheapest-kimi").model
+    assert artifact_logs[0]["worker"] == 0
 
 
 def test_refine_round_failure_keeps_improved_best(
@@ -1582,6 +1740,37 @@ def test_blackboard_append_persists_selects_and_ships(
     # attack.py written (last write = the best at that point)
     assert (out / "attack.py").exists()
     assert board.recent_reasoning(k=1)[0][0] == "deepseek-v4-flash"
+
+
+def test_blackboard_append_reports_whether_it_reshipped(tmp_path: Path) -> None:
+    """Callers can trigger exact artifact scoring only when ``attack.py`` changed."""
+    import asyncio
+
+    from jed_attack.campaign import blackboard as bb
+
+    def rec(public: float, objective: float) -> bb.Record:
+        return bb.Record(
+            messages=[{"type": "exfil", "text": "SECRET_MARKER https://x.invalid/r"}],
+            public=public,
+            feedback=[],
+            reasoning="",
+            model="m",
+            worker=0,
+            ts=1.0,
+            valid=True,
+            fires=True,
+            objective=objective,
+            objective_tiebreaker=public,
+            objective_name="public_raw_per_replay_s",
+        )
+
+    board = bb.Blackboard.load(tmp_path / "board.jsonl")
+    out = tmp_path / "build_next"
+
+    assert asyncio.run(board.append(rec(1.0, 1.0), out)) is True
+    assert asyncio.run(board.append(rec(2.0, 0.5), out)) is False
+    assert asyncio.run(board.append(rec(3.0, 2.0), out)) is True
+    assert asyncio.run(board.append(rec(4.0, 3.0), out, reship=False)) is False
 
 
 def test_blackboard_old_row_loads_without_assessment(tmp_path: Path) -> None:

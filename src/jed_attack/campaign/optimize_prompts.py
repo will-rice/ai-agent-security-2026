@@ -45,7 +45,7 @@ import pydantic
 from dotenv import load_dotenv
 from openai.types.chat import ChatCompletionMessageParam
 
-from jed_attack.campaign import blackboard, config, providers
+from jed_attack.campaign import artifact_score, blackboard, config, providers
 from jed_attack.campaign.judge_policy import (
     Comparison,
     JudgeAssessment,
@@ -79,6 +79,10 @@ _PROPOSER_TEMPERATURE = 1.0  # high temp + random seed => successive calls explo
 # Backoff after a whole generation raises, so a persistently-failing lane (a refusal
 # yielding no JSON, a proposer/score outage) retries without busy-spinning the process.
 _GENERATION_RETRY_S = float(os.getenv("JED_GENERATION_RETRY_S", "10"))
+# CheapestInference is effectively single-flight per key/model window. After a stream
+# disconnect or concurrency 429, the server can keep counting the prior request as
+# active briefly, so the normal fast retry just burns 429s.
+_CI_GENERATION_RETRY_S = float(os.getenv("JED_CI_GENERATION_RETRY_S", "60"))
 _PREDICATE_METRIC_SUFFIX = {
     "CONFUSED_DEPUTY": "confused_deputy",
     "DESTRUCTIVE_WRITE": "destructive_write",
@@ -189,6 +193,7 @@ async def worker_loop(
     gen = 0
     while True:
         provider = providers_cycle[gen % len(providers_cycle)]
+        advance_provider = True
         try:
             team = {t: board.top_messages(t, k=_TEAM_TOP_K) for t in MessageType}
             reasoning_digest = board.recent_reasoning(k=_TEAM_REASONING_K)
@@ -246,10 +251,11 @@ async def worker_loop(
 
             # Store EVERY submission of the kept batch as its own candidate in the
             # flat-file blackboard; a new objective best reships ``attack.py``.
+            artifact_reshipped = False
             for submission, score, assessment in zip(
                 local_batch, local_scores, local_assessments, strict=True
             ):
-                await board.append(
+                reshipped = await board.append(
                     make_record(
                         submission,
                         score,
@@ -260,6 +266,7 @@ async def worker_loop(
                     ),
                     out_dir,
                 )
+                artifact_reshipped = artifact_reshipped or reshipped
 
             objective_best = board.best_objective()
             public_best = board.best_public()
@@ -313,12 +320,24 @@ async def worker_loop(
                     },
                 },
             )
+            await _log_artifact_score_if_needed(
+                artifact_reshipped, out_dir, run, model, worker_id
+            )
         except asyncio.CancelledError:
             raise
-        except Exception:
-            _log.exception("worker %d generation failed; retrying", worker_id)
-            await asyncio.sleep(_GENERATION_RETRY_S)
-        gen += 1  # rotate to the next model in the lane (also skips a failing one)
+        except Exception as exc:
+            retry_s = _generation_retry_delay(provider, exc)
+            advance_provider = _advance_provider_after_error(provider, exc)
+            _log.exception(
+                "worker %d generation failed; retrying in %.1fs%s",
+                worker_id,
+                retry_s,
+                "" if advance_provider else " on same provider",
+            )
+            await asyncio.sleep(retry_s)
+        if advance_provider:
+            # Rotate to the next model in the lane; normal failures skip ahead too.
+            gen += 1
 
 
 async def _score_batch(batch: list[Submission]) -> list[SubmissionScore]:
@@ -331,6 +350,91 @@ async def _score_batch(batch: list[Submission]) -> list[SubmissionScore]:
         One :class:`SubmissionScore` per submission, in order.
     """
     return [await asyncio.to_thread(score_submission, s.messages) for s in batch]
+
+
+async def _score_artifact_metrics(
+    path: Path,
+) -> dict[str, artifact_score.ArtifactMetric]:
+    """Score the current shipped artifact off-thread for exact outer-loop telemetry."""
+    return await asyncio.to_thread(
+        artifact_score.score_artifact_metrics,
+        path,
+        budget_s=config.ARTIFACT_SCORE_BUDGET_S,
+    )
+
+
+async def _log_artifact_score_if_needed(
+    reshipped: bool,
+    out_dir: Path,
+    run: _WandbRun | None,
+    model: str,
+    worker: int,
+) -> None:
+    """Log exact artifact metrics when this generation rewrote ``attack.py``."""
+    if not reshipped or run is None or not config.ARTIFACT_SCORE_ENABLED:
+        return
+    attack_path = out_dir / "attack.py"
+    try:
+        metrics = await _score_artifact_metrics(attack_path)
+    except Exception as exc:
+        _log.warning("artifact scoring failed; continuing", exc_info=True)
+        _log_wandb(
+            run,
+            {
+                "artifact_valid": 0.0,
+                "artifact_error": type(exc).__name__,
+                "model": model,
+                "worker": worker,
+            },
+        )
+        return
+    _log.info(
+        "artifact score: public=%s sha=%s",
+        metrics.get("artifact_public"),
+        metrics.get("artifact_sha256"),
+    )
+    _log_wandb(run, {**metrics, "model": model, "worker": worker})
+
+
+def _generation_retry_delay(provider: providers.Provider, exc: BaseException) -> float:
+    """Return the retry delay for a failed proposer generation.
+
+    Args:
+        provider: The proposer that failed.
+        exc: The raised generation exception.
+
+    Returns:
+        A longer cooldown for CheapestInference single-flight failures; otherwise the
+        normal generation retry delay.
+    """
+    if provider.key_env == "CHEAPEST_API_KEY" and _is_ci_single_flight_error(exc):
+        return _CI_GENERATION_RETRY_S
+    return _GENERATION_RETRY_S
+
+
+def _is_ci_single_flight_error(exc: BaseException) -> bool:
+    """Recognize CI errors caused by its single active request/model window."""
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return (
+        "concurrency limit" in text
+        or "incomplete chunked read" in text
+        or "remoteprotocolerror" in text
+    )
+
+
+def _advance_provider_after_error(
+    provider: providers.Provider, exc: BaseException
+) -> bool:
+    """Return whether a failed lane should rotate to its next provider.
+
+    CI single-flight failures usually mean the current model request is still clearing
+    server-side. Switching to another CI model under the same key immediately replays
+    the collision, so retry the same provider after cooldown. Other failures still
+    rotate so unsupported or bad models do not wedge the lane forever.
+    """
+    return not (
+        provider.key_env == "CHEAPEST_API_KEY" and _is_ci_single_flight_error(exc)
+    )
 
 
 async def _assess_batch(

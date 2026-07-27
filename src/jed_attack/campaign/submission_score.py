@@ -75,6 +75,17 @@ def _resident_backend(model_key: str) -> ResidentAgentFactory:
     return _backends[model_key]
 
 
+def resident_backend(model_key: str) -> ResidentAgentFactory:
+    """Return the shared resident backend for exact artifact evaluation."""
+    return _resident_backend(model_key)
+
+
+def resident_backend_lock(model_key: str) -> threading.Lock:
+    """Return the per-model lock protecting the shared resident backend."""
+    _resident_backend(model_key)
+    return _model_locks[model_key]
+
+
 @dataclass(frozen=True)
 class ActionFact:
     """A bounded, judge-facing record of one tool action."""
