@@ -16,9 +16,9 @@ blackboard.Blackboard`. Each lane, forever:
    capturing the backend's reasoning;
 4. scores EVERY submission in the batch on the live served models
    (:func:`~jed_attack.campaign.submission_score.score_submission`, off-thread),
-   hill-climbs the batch on its mean public score, and appends every submission of the
-   kept batch to the shared flat-file blackboard as its own candidate; a new public best
-   reships ``attack.py`` (:func:`~jed_attack.campaign.assemble.build`).
+   hill-climbs the batch on public raw per replay second, and appends every submission
+   of the kept batch to the shared flat-file blackboard as its own candidate; a new
+   objective best reships ``attack.py`` (:func:`~jed_attack.campaign.assemble.build`).
 
 One :func:`wandb.init` run spans the whole team (one process); every lane logs to it,
 each metric tagged with its ``model`` + ``worker`` so lanes are comparable in one chart.
@@ -95,6 +95,7 @@ _TEAM_TOP_K = 8  # teammate best-messages per shape shown in each proposer promp
 _TEAM_REASONING_K = (
     3  # recent cross-model reasoning blobs shown in each proposer prompt
 )
+_PUBLIC_THROUGHPUT_OBJECTIVE = "public_raw_per_replay_s"
 
 
 def make_record(
@@ -141,6 +142,9 @@ def make_record(
         assessment=(
             assessment.model_dump(mode="json") if assessment is not None else None
         ),
+        objective=_score_public_raw_per_replay_s(score),
+        objective_tiebreaker=score.public,
+        objective_name=_PUBLIC_THROUGHPUT_OBJECTIVE,
     )
 
 
@@ -158,14 +162,15 @@ async def worker_loop(
     time, so only one request per key is ever in flight — a shared-key concurrency cap
     (cheapestinference's per-key limit, confirmed empirically) can never be hit, while
     every model still gets exercised. Each generation reads the shared blackboard's
-    global best + team digest, authors round 0 as a BATCH of submissions on the
+    objective champion + team digest, authors round 0 as a BATCH of submissions on the
     generation's model, scores EVERY submission off-thread, then hill-climbs the batch:
     up to ``config.REFINE_MAX_ROUNDS`` further re-authorings against every submission
     in the current batch and its feedback, re-scoring every submission and keeping the
-    batch with the higher MEAN public score, stopping at the first round that doesn't
-    strictly improve (or on a refine round's own failure). Every submission of the kept
-    batch is appended to the flat-file blackboard as its own candidate; a new public
-    best reships ``attack.py`` (:func:`~jed_attack.campaign.assemble.build`). A refine
+    batch with the higher public-throughput objective, stopping at the first round that
+    doesn't strictly improve (or on a refine round's own failure). Every submission of
+    the kept batch is appended to the flat-file blackboard as its own candidate; a new
+    objective best reships ``attack.py``
+    (:func:`~jed_attack.campaign.assemble.build`). A refine
     round's failure is caught and the best-so-far batch is still shipped; an
     empty batch skips the generation; a whole generation's failure (proposer blip,
     refusal yielding no JSON, score outage) is caught and backed off so the lane keeps
@@ -196,7 +201,7 @@ async def worker_loop(
             incumbent = (
                 board.best_robust()
                 if config.JUDGE_MODE == "active"
-                else board.best_public()
+                else board.best_objective()
             )
             prompt = submission_prompt(
                 incumbent,
@@ -213,8 +218,9 @@ async def worker_loop(
             scores = await _score_batch(batch)
             assessments = await _assess_batch(batch, scores, reference_mechanisms)
             round0_public = mean(sc.public for sc in scores)
+            round0_objective = _batch_refine_objective(scores)
 
-            # Hill-climb the whole batch on its MEAN public score (see _refine_batch).
+            # Hill-climb the whole batch on public-throughput objective.
             (
                 local_batch,
                 local_scores,
@@ -236,9 +242,10 @@ async def worker_loop(
                 reference_mechanisms=reference_mechanisms,
             )
             batch_public = mean(sc.public for sc in local_scores)
+            batch_objective = _batch_refine_objective(local_scores)
 
             # Store EVERY submission of the kept batch as its own candidate in the
-            # flat-file blackboard; a new public best reships ``attack.py``.
+            # flat-file blackboard; a new objective best reships ``attack.py``.
             for submission, score, assessment in zip(
                 local_batch, local_scores, local_assessments, strict=True
             ):
@@ -254,29 +261,39 @@ async def worker_loop(
                     out_dir,
                 )
 
-            best = board.best()
-            assert best is not None  # just appended -> the board is non-empty
-            best_score = max(local_scores, key=lambda sc: sc.public)
+            objective_best = board.best_objective()
+            public_best = board.best_public()
+            assert objective_best is not None  # just appended -> the board is non-empty
+            best_score = max(local_scores, key=_score_public_raw_per_replay_s)
             _log.info(
-                "worker %d (%s): batch_n=%d mean_public=%g (+%g over %d refine rounds) "
-                "best=%g",
+                "worker %d (%s): batch_n=%d mean_public=%g objective=%g "
+                "(objective %+g, public %+g over %d refine rounds) best_objective=%g "
+                "best_public=%g",
                 worker_id,
                 provider.model,
                 len(local_batch),
                 batch_public,
+                batch_objective[0],
+                batch_objective[0] - round0_objective[0],
                 batch_public - round0_public,
                 refine_rounds,
-                best.public,
+                objective_best.objective,
+                public_best.public if public_best is not None else 0.0,
             )
             _log_wandb(  # one shared run; tag by lane so models are comparable
                 run,
                 {
                     "batch_n": len(local_batch),
                     "batch_mean_public": batch_public,
-                    "best_public": best.public,
+                    "best_public": public_best.public if public_best else 0.0,
+                    "best_objective": objective_best.objective,
+                    "best_objective_public": objective_best.public,
+                    "best_objective_tiebreaker": objective_best.objective_tiebreaker,
+                    "best_objective_name": objective_best.objective_name,
                     "total_hops": float(best_score.total_hops),
                     "refine_rounds": refine_rounds,
-                    "refine_gain": batch_public - round0_public,
+                    "refine_objective_gain": batch_objective[0] - round0_objective[0],
+                    "refine_public_gain": batch_public - round0_public,
                     "judge_mode": config.JUDGE_MODE,
                     "judge_available_rate": _judge_available_rate(local_assessments),
                     "shadow_winner": shadow_decision.winner,
@@ -324,10 +341,18 @@ async def _assess_batch(
     """Assess a scored batch once per candidate when judge mode is enabled."""
     if config.JUDGE_MODE == "off":
         return [None] * len(batch)
+    semaphore = asyncio.Semaphore(config.JUDGE_MAX_CONCURRENT_ASSESSMENTS)
+
+    async def assess_gated(
+        submission: Submission, score: SubmissionScore
+    ) -> JudgeAssessment | None:
+        async with semaphore:
+            return await assess_submission(submission, score, reference_mechanisms)
+
     return list(
         await asyncio.gather(
             *(
-                assess_submission(submission, score, reference_mechanisms)
+                assess_gated(submission, score)
                 for submission, score in zip(batch, scores, strict=True)
             )
         )
@@ -809,6 +834,9 @@ def _batch_score_metrics(scores: list[SubmissionScore]) -> dict[str, float]:
             sum(score.public * 200.0 for score in scores), total_replay
         ),
     }
+    metrics["batch_objective_raw_per_replay_s"] = metrics[
+        "batch_public_raw_per_replay_s"
+    ]
     model_rates: list[float] = []
     for model in config.MODELS:
         model_times = [score.replay_seconds.get(model, 0.0) for score in scores]
@@ -856,6 +884,11 @@ def _batch_refine_objective(scores: list[SubmissionScore]) -> tuple[float, float
     return (public_raw_per_replay_s, mean(score.public for score in scores))
 
 
+def _score_public_raw_per_replay_s(score: SubmissionScore) -> float:
+    """Return one submission's public raw score per replay second."""
+    return _safe_div(score.public * 200.0, _total_replay_seconds(score))
+
+
 def _empty_batch_score_metrics() -> dict[str, float]:
     metrics = {
         "batch_valid_rate": 0.0,
@@ -867,6 +900,7 @@ def _empty_batch_score_metrics() -> dict[str, float]:
         "batch_p50_replay_s_total": 0.0,
         "batch_p95_replay_s_total": 0.0,
         "batch_public_raw_per_replay_s": 0.0,
+        "batch_objective_raw_per_replay_s": 0.0,
         "batch_worst_model_public_raw_per_replay_s": 0.0,
         "batch_predicates_total": 0.0,
     }
