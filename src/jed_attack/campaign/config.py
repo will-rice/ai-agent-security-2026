@@ -48,20 +48,54 @@ MODEL_GPU: dict[str, int] = {"gpt_oss": 0, "gemma_4": 1}
 # too tight (120 zeroed ~60% of valid output). gemma never binds.
 GREEN_REPLAY_BUDGET_S: dict[str, float] = {"gpt_oss": 300.0, "gemma_4": 60.0}
 
+
+# Exact generated-artifact scoring. The optimizer still uses public raw/sec as its
+# cheap inner-loop objective, but on every new shipped ``build_next/attack.py`` we can
+# run the full SDK evaluator (including live validation/fill) and log leaderboard-like
+# ``artifact_*`` metrics. Disable only when throughput debugging is more important than
+# exact outer-loop telemetry.
+ARTIFACT_SCORE_ENABLED = os.getenv("JED_ARTIFACT_SCORE", "1") != "0"
+ARTIFACT_SCORE_BUDGET_S = float(os.getenv("JED_ARTIFACT_SCORE_BUDGET_S", "9000"))
+
+
+def team_proposers_from_env(
+    value: str | None, *, default: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Parse a comma-separated proposer roster override.
+
+    Args:
+        value: Raw ``JED_TEAM_PROPOSERS`` value, or ``None``.
+        default: The fallback roster when no usable override is set.
+
+    Returns:
+        The stripped proposer names, preserving order, or ``default``.
+    """
+    if value is None:
+        return default
+    proposers = tuple(name.strip() for name in value.split(",") if name.strip())
+    return proposers or default
+
+
 # The proposer models the async team rotates. optimize_team GROUPS these by API key into
-# one lane per key (one worker per lane), and the lane's worker rotates through its
-# models one generation at a time — so only one request per key is ever in flight (the
-# cheapestinference concurrency cap is per-KEY, confirmed). Two lanes result:
-# CHEAPEST_API_KEY (all 6 CI models — the new token covers every one) and ZAI_API_KEY
-# (glm-5-turbo — structured-capable + fast). A model whose key_env is unset is skipped.
-TEAM_PROPOSERS: tuple[str, ...] = (
-    "cheapest-kimi",
-    "cheapest-kimi2.6",
-    "cheapest-deepseek",
-    "cheapest-glm5.2",
-    "cheapest-minimax",
-    "cheapest-mimo",
-    "zai-glm5-turbo",
+# one lane per key (one worker per lane). CheapestInference is also single-flight at
+# the model-window level, so the worker must not advance to another CI model after a
+# CI concurrency/stream failure; it retries the same model after a cooldown instead.
+# The CI entries below are only a static fallback/order hint: at optimizer startup the
+# CI lane is replaced with the live /v1/models response for CHEAPEST_API_KEY. Operators
+# can temporarily pin a smaller roster with
+# JED_TEAM_PROPOSERS="cheapest-minimax,zai-glm5-turbo" without editing source.
+_TEAM_PROPOSERS_ENV = os.getenv("JED_TEAM_PROPOSERS")
+TEAM_PROPOSERS_FROM_ENV = _TEAM_PROPOSERS_ENV is not None
+TEAM_PROPOSERS: tuple[str, ...] = team_proposers_from_env(
+    _TEAM_PROPOSERS_ENV,
+    default=(
+        "cheapest-deepseek",
+        "cheapest-mimo",
+        "cheapest-minimax",
+        "cheapest-kimi",
+        "cheapest-glm5.2",
+        "zai-glm5-turbo",
+    ),
 )
 
 # Max tool hops per interaction. MUST match the scored gateway's replay depth

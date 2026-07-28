@@ -233,7 +233,7 @@ class Blackboard:
                 break
         return out
 
-    async def append(self, record: Record, out_dir: Path, reship: bool = True) -> None:
+    async def append(self, record: Record, out_dir: Path, reship: bool = True) -> bool:
         """Append a record, persist it, and (optionally) reship on a new best.
 
         Args:
@@ -244,6 +244,9 @@ class Blackboard:
                 best-submission ship path; the curated-pool loop passes ``False`` so
                 append only records candidates and curation is the sole ship path (no
                 double ship).
+
+        Returns:
+            ``True`` when this append rewrote ``attack.py``; otherwise ``False``.
         """
         async with self._lock:
             prior_best = self.best_objective()
@@ -252,6 +255,8 @@ class Blackboard:
                 handle.write(json.dumps(record.to_json(), sort_keys=True) + "\n")
             if reship and self.best_objective() is record and record is not prior_best:
                 assemble.build([m["text"] for m in record.messages], out_dir)
+                return True
+            return False
 
     def reship_best(self, out_dir: Path) -> None:
         """Rewrite ``attack.py`` from the current objective champion (no-op if empty).
