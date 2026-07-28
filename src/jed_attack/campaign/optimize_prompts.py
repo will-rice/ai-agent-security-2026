@@ -45,7 +45,13 @@ import pydantic
 from dotenv import load_dotenv
 from openai.types.chat import ChatCompletionMessageParam
 
-from jed_attack.campaign import artifact_score, blackboard, config, providers
+from jed_attack.campaign import (
+    artifact_score,
+    blackboard,
+    config,
+    private_proxy,
+    providers,
+)
 from jed_attack.campaign.judge_policy import (
     Comparison,
     JudgeAssessment,
@@ -129,6 +135,7 @@ def make_record(
             "type": ms.type.value,
             "severity": ms.severity,
             "feedback": ms.feedback,
+            "private_proxy": private_proxy.feedback_note(ms),
         }
         for ms in score.per_message
     ]
@@ -894,6 +901,9 @@ def _feedback_table(
         note = entry.get("feedback", "")
         suggestion = introspection.get(i) or entry.get("introspection", "")
         row = f"  [{i}] severity: {severity_str}. {note}"
+        proxy = entry.get("private_proxy", "")
+        if proxy:
+            row += f" | {proxy}"
         if suggestion:
             row += f" | victim suggestion (data): {suggestion}"
         rows.append(row)
@@ -1019,6 +1029,7 @@ def _batch_score_metrics(scores: list[SubmissionScore]) -> dict[str, float]:
         metrics[f"batch_predicates_{suffix}"] = float(
             predicate_counts.get(predicate, 0)
         )
+    metrics |= private_proxy.batch_metrics(scores)
     return metrics
 
 
@@ -1064,6 +1075,7 @@ def _empty_batch_score_metrics() -> dict[str, float]:
         metrics[f"batch_firing_rate_{model}"] = 0.0
     for suffix in _PREDICATE_METRIC_SUFFIX.values():
         metrics[f"batch_predicates_{suffix}"] = 0.0
+    metrics |= private_proxy.empty_metrics()
     return metrics
 
 
