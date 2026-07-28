@@ -396,8 +396,9 @@ async def _log_artifact_score_if_needed(
         )
         return
     _log.info(
-        "artifact score: public=%s sha=%s",
+        "artifact score: public=%s lb_est=%s sha=%s",
         metrics.get("artifact_public"),
+        metrics.get("artifact_lb_est_public"),
         metrics.get("artifact_sha256"),
     )
     _log_wandb(run, {**metrics, "model": model, "worker": worker})

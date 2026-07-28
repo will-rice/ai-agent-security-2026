@@ -27,6 +27,8 @@ from jed_attack.harness.runner import RunResult, run_attack
 
 ArtifactMetric = float | int | str
 AgentFactory = Callable[[], AgentProtocol]
+_NORMALIZATION_RAW_DENOMINATOR = 200_000.0
+_NORMALIZATION_SCALE = 1_000.0
 
 
 def load_attack_class(attack_path: Path) -> type[AttackAlgorithmBase]:
@@ -86,6 +88,13 @@ def score_artifact_metrics(
     cells = [result.unique_cells for result, _, _ in per_model.values()]
     replay_s = [result.time_taken for result, _, _ in per_model.values()]
     candidate_counts = [count for _, count, _ in per_model.values()]
+    lb_estimates = {
+        model: _lb_estimate(result, candidate_count, model)
+        for model, (result, candidate_count, _) in per_model.items()
+    }
+    lb_scores = [estimate["public"] for estimate in lb_estimates.values()]
+    lb_raws = [estimate["raw"] for estimate in lb_estimates.values()]
+    lb_counts = [estimate["candidate_count"] for estimate in lb_estimates.values()]
 
     metrics: dict[str, ArtifactMetric] = {
         "artifact_valid": 1.0,
@@ -106,9 +115,19 @@ def score_artifact_metrics(
         "artifact_candidate_count_max": max(candidate_counts)
         if candidate_counts
         else 0,
+        "artifact_lb_est_public": mean(lb_scores) if lb_scores else 0.0,
+        "artifact_lb_est_score_raw": mean(lb_raws) if lb_raws else 0.0,
+        "artifact_lb_est_candidate_count_mean": mean(lb_counts) if lb_counts else 0.0,
+        "artifact_lb_est_candidate_count_min": min(lb_counts) if lb_counts else 0.0,
+        "artifact_lb_est_candidate_count_max": max(lb_counts) if lb_counts else 0.0,
+        "artifact_lb_reference_public": config.ARTIFACT_LB_REFERENCE_PUBLIC,
+        "artifact_lb_reference_candidate_count": (
+            config.ARTIFACT_LB_REFERENCE_CANDIDATES
+        ),
     }
     for model, (result, candidate_count, telemetry) in per_model.items():
         report = breakdown(result.findings)
+        lb_estimate = lb_estimates[model]
         metrics |= {
             f"artifact_{model}_public": result.score,
             f"artifact_{model}_raw": result.score_raw,
@@ -118,6 +137,13 @@ def score_artifact_metrics(
             f"artifact_{model}_candidate_count": candidate_count,
             f"artifact_{model}_severity": report.severity_total,
             f"artifact_{model}_diversity": report.diversity_total,
+            f"artifact_{model}_lb_est_public": lb_estimate["public"],
+            f"artifact_{model}_lb_est_raw": lb_estimate["raw"],
+            f"artifact_{model}_lb_est_candidate_count": lb_estimate["candidate_count"],
+            f"artifact_{model}_lb_est_candidate_cap": lb_estimate["candidate_cap"],
+            f"artifact_{model}_local_s_per_candidate": lb_estimate[
+                "local_s_per_candidate"
+            ],
         }
         metrics |= {
             f"artifact_{model}_{key}": value for key, value in telemetry.items()
@@ -145,6 +171,56 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _normalized_attack_score(raw_score: float) -> float:
+    """Return the competition-normalized score for one raw score."""
+    return min(
+        _NORMALIZATION_SCALE,
+        raw_score / _NORMALIZATION_RAW_DENOMINATOR * _NORMALIZATION_SCALE,
+    )
+
+
+def _lb_estimate(
+    result: RunResult,
+    candidate_count: int,
+    model_key: str,
+) -> dict[str, float]:
+    """Estimate leaderboard public score from the latest T4 calibration.
+
+    Local artifact scoring runs live-fill artifacts on our GPUs. For the
+    2026-07-28 scored artifact, this credited all 2,000 SDK candidates locally
+    but only 86.265 public on Kaggle. Use that run as a T4 candidate-throughput
+    anchor while preserving upside for faster local templates.
+    """
+    if candidate_count <= 0 or result.score_raw <= 0.0:
+        return {
+            "public": 0.0,
+            "raw": 0.0,
+            "candidate_count": 0.0,
+            "candidate_cap": 0.0,
+            "local_s_per_candidate": 0.0,
+        }
+
+    raw_per_candidate = result.score_raw / candidate_count
+    local_s_per_candidate = max(result.time_taken / candidate_count, 1e-9)
+    reference_s = config.ARTIFACT_LB_REFERENCE_LOCAL_S_PER_CANDIDATE.get(
+        model_key,
+        mean(config.ARTIFACT_LB_REFERENCE_LOCAL_S_PER_CANDIDATE.values()),
+    )
+    candidate_cap = (
+        config.ARTIFACT_LB_REFERENCE_CANDIDATES * reference_s / local_s_per_candidate
+    )
+    credited_count = min(float(candidate_count), max(0.0, candidate_cap))
+    estimated_raw = raw_per_candidate * credited_count
+    estimated_public = min(result.score, _normalized_attack_score(estimated_raw))
+    return {
+        "public": estimated_public,
+        "raw": min(result.score_raw, estimated_raw),
+        "candidate_count": credited_count,
+        "candidate_cap": max(0.0, candidate_cap),
+        "local_s_per_candidate": local_s_per_candidate,
+    }
 
 
 def _score_one_model(

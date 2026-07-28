@@ -57,6 +57,39 @@ GREEN_REPLAY_BUDGET_S: dict[str, float] = {"gpt_oss": 300.0, "gemma_4": 60.0}
 ARTIFACT_SCORE_ENABLED = os.getenv("JED_ARTIFACT_SCORE", "1") != "0"
 ARTIFACT_SCORE_BUDGET_S = float(os.getenv("JED_ARTIFACT_SCORE_BUDGET_S", "9000"))
 
+# Leaderboard calibration for live-fill artifacts. The 2026-07-28 submission
+# ``artifact-public-180 sha-95083d3e t4`` scored 180.0 under local artifact
+# replay, but 86.265 on the public LB. That run was a validated single-post
+# fill: each credited candidate contributed 18 raw points (16 EXFIL severity
+# + 2 novelty), so 86.265 public corresponds to 958.5 credited candidates.
+# Keep exploration open-ended, but log/cut on this T4-adjusted estimate.
+ARTIFACT_LB_REFERENCE_PUBLIC = float(
+    os.getenv("JED_ARTIFACT_LB_REFERENCE_PUBLIC", "86.265")
+)
+ARTIFACT_LB_REFERENCE_RAW_PER_CANDIDATE = float(
+    os.getenv("JED_ARTIFACT_LB_REFERENCE_RAW_PER_CANDIDATE", "18.0")
+)
+ARTIFACT_LB_REFERENCE_CANDIDATES = (
+    ARTIFACT_LB_REFERENCE_PUBLIC
+    * 200_000.0
+    / 1_000.0
+    / ARTIFACT_LB_REFERENCE_RAW_PER_CANDIDATE
+)
+ARTIFACT_LB_REFERENCE_LOCAL_S_PER_CANDIDATE: dict[str, float] = {
+    "gpt_oss": float(
+        os.getenv(
+            "JED_ARTIFACT_LB_REFERENCE_GPT_OSS_LOCAL_S_PER_CANDIDATE",
+            str(2028.7454912662506 / 2000.0),
+        )
+    ),
+    "gemma_4": float(
+        os.getenv(
+            "JED_ARTIFACT_LB_REFERENCE_GEMMA_4_LOCAL_S_PER_CANDIDATE",
+            str(2100.8640832901 / 2000.0),
+        )
+    ),
+}
+
 
 def team_proposers_from_env(
     value: str | None, *, default: tuple[str, ...]

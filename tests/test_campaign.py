@@ -1412,6 +1412,156 @@ def test_artifact_score_metrics_include_generated_fill_telemetry(
     assert metrics["artifact_gpt_oss_fill_replay_cost_s"] == pytest.approx(6.5)
 
 
+def test_artifact_score_metrics_include_lb_calibrated_public_estimate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A local max-fill artifact reports the LB-calibrated score."""
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from aicomp_sdk.attacks.contracts import AttackRunConfig
+
+    from jed_attack.campaign import artifact_score, config
+
+    attack_path = tmp_path / "attack.py"
+    attack_path.write_text(
+        "\n".join(
+            [
+                "from aicomp_sdk.attacks.contracts import (",
+                "    AttackAlgorithmBase,",
+                "    AttackCandidate,",
+                ")",
+                "class AttackAlgorithm(AttackAlgorithmBase):",
+                "    def run(self, env, config):",
+                "        return [",
+                "            AttackCandidate.from_messages((str(i),))",
+                "            for i in range(2000)",
+                "        ]",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_run_attack(
+        attack_cls: type[AttackAlgorithmBase],
+        agent_factory: Callable[[], object],
+        agent_label: str,
+        budget_s: float,
+    ) -> object:
+        attack = attack_cls()
+        candidates = attack.run(
+            cast("Any", object()), AttackRunConfig(time_budget_s=1.0)
+        )
+        assert len(candidates) == 2000
+        return SimpleNamespace(
+            score=180.0,
+            score_raw=36_000.0,
+            findings_count=2000,
+            unique_cells=2000,
+            time_taken=2000.0
+            * config.ARTIFACT_LB_REFERENCE_LOCAL_S_PER_CANDIDATE["gpt_oss"],
+            findings=[],
+        )
+
+    monkeypatch.setattr(
+        artifact_score.resident_score,
+        "resident_backend_lock",
+        lambda model: nullcontext(),
+    )
+    monkeypatch.setattr(
+        artifact_score,
+        "_resident_factory",
+        lambda model: lambda: object(),
+    )
+    monkeypatch.setattr(artifact_score, "run_attack", fake_run_attack)
+
+    metrics = artifact_score.score_artifact_metrics(
+        attack_path, budget_s=1.0, models=("gpt_oss",)
+    )
+
+    assert metrics["artifact_lb_est_public"] == pytest.approx(
+        config.ARTIFACT_LB_REFERENCE_PUBLIC
+    )
+    assert metrics["artifact_gpt_oss_lb_est_public"] == pytest.approx(
+        config.ARTIFACT_LB_REFERENCE_PUBLIC
+    )
+    assert metrics["artifact_gpt_oss_lb_est_candidate_count"] == pytest.approx(
+        config.ARTIFACT_LB_REFERENCE_CANDIDATES
+    )
+
+
+def test_artifact_score_lb_estimate_keeps_under_cap_artifacts_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Calibration caps only optimistic max-fill artifacts, not small local scores."""
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from aicomp_sdk.attacks.contracts import AttackRunConfig
+
+    from jed_attack.campaign import artifact_score, config
+
+    attack_path = tmp_path / "attack.py"
+    attack_path.write_text(
+        "\n".join(
+            [
+                "from aicomp_sdk.attacks.contracts import (",
+                "    AttackAlgorithmBase,",
+                "    AttackCandidate,",
+                ")",
+                "class AttackAlgorithm(AttackAlgorithmBase):",
+                "    def run(self, env, config):",
+                "        return [",
+                "            AttackCandidate.from_messages((str(i),))",
+                "            for i in range(500)",
+                "        ]",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_run_attack(
+        attack_cls: type[AttackAlgorithmBase],
+        agent_factory: Callable[[], object],
+        agent_label: str,
+        budget_s: float,
+    ) -> object:
+        attack = attack_cls()
+        candidates = attack.run(
+            cast("Any", object()), AttackRunConfig(time_budget_s=1.0)
+        )
+        assert len(candidates) == 500
+        return SimpleNamespace(
+            score=45.0,
+            score_raw=9_000.0,
+            findings_count=500,
+            unique_cells=500,
+            time_taken=500.0
+            * config.ARTIFACT_LB_REFERENCE_LOCAL_S_PER_CANDIDATE["gpt_oss"],
+            findings=[],
+        )
+
+    monkeypatch.setattr(
+        artifact_score.resident_score,
+        "resident_backend_lock",
+        lambda model: nullcontext(),
+    )
+    monkeypatch.setattr(
+        artifact_score,
+        "_resident_factory",
+        lambda model: lambda: object(),
+    )
+    monkeypatch.setattr(artifact_score, "run_attack", fake_run_attack)
+
+    metrics = artifact_score.score_artifact_metrics(
+        attack_path, budget_s=1.0, models=("gpt_oss",)
+    )
+
+    assert metrics["artifact_public"] == pytest.approx(45.0)
+    assert metrics["artifact_lb_est_public"] == pytest.approx(45.0)
+    assert metrics["artifact_gpt_oss_lb_est_candidate_count"] == pytest.approx(500.0)
+
+
 def test_refine_round_failure_keeps_improved_best(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
