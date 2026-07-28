@@ -575,6 +575,49 @@ async def _refine_batch(
     return batch, scores, local_assessments, reasoning, refine_rounds, shadow_decision
 
 
+def _resolve_cheapest_cycle(
+    configured: list[providers.Provider],
+) -> list[providers.Provider]:
+    """Return the CheapestInference cycle for this optimizer launch.
+
+    The active subscription/window is the provider's /v1/models response, so the
+    default CI lane should track that response. If an operator explicitly pins
+    ``JED_TEAM_PROPOSERS``, keep only pinned models that are currently listed. If the
+    lookup itself fails, fall back to the configured static cycle so the optimizer can
+    still start in offline/provider-outage cases.
+    """
+    try:
+        live_model_ids = providers.fetch_cheapest_model_ids()
+    except RuntimeError:
+        _log.warning(
+            "CheapestInference model lookup failed; using static fallback cycle",
+            exc_info=True,
+        )
+        return configured
+
+    if config.TEAM_PROPOSERS_FROM_ENV:
+        configured_ids = {provider.model for provider in configured}
+        selected_ids = tuple(
+            model_id for model_id in live_model_ids if model_id in configured_ids
+        )
+        missing_ids = sorted(configured_ids.difference(live_model_ids))
+        if missing_ids:
+            _log.warning(
+                "configured CheapestInference models unavailable: %s",
+                missing_ids,
+            )
+        if not selected_ids:
+            _log.warning(
+                "no configured CheapestInference models are available; skipping CI lane"
+            )
+            return []
+        live_model_ids = selected_ids
+
+    return [
+        providers.cheapest_provider_for_model(model_id) for model_id in live_model_ids
+    ]
+
+
 async def optimize_team(
     board: blackboard.Blackboard,
     out_dir: Path,
@@ -595,12 +638,20 @@ async def optimize_team(
     # workers 429'd each other), so its models collapse into a single rotating lane;
     # z.ai is its own key, hence a second independent lane that also rotates its models.
     lanes: dict[str, list[providers.Provider]] = {}
+    cheapest_configured: list[providers.Provider] = []
     for name in config.TEAM_PROPOSERS:
         provider = providers.get(name)
         if provider.key_env and provider.key_env not in os.environ:
             _log.warning("lane %s skipped: %s unset", name, provider.key_env)
             continue
+        if providers.is_cheapest(provider):
+            lanes.setdefault(provider.key_env, [])
+            cheapest_configured.append(provider)
+            continue
         lanes.setdefault(provider.key_env, []).append(provider)
+    if cheapest_configured:
+        lanes[providers.CHEAPEST_KEY_ENV] = _resolve_cheapest_cycle(cheapest_configured)
+    lanes = {key_env: cycle for key_env, cycle in lanes.items() if cycle}
     if not lanes:  # no keys set -> fail loudly instead of a silent successful no-op
         raise SystemExit(
             "no usable proposer lanes; set CHEAPEST_API_KEY and/or ZAI_API_KEY"

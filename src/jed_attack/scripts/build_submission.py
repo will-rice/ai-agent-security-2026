@@ -13,7 +13,6 @@ _MODULE_ORDER = ("templates", "engine", "selector", "attack")
 
 _INTRA_IMPORT = re.compile(r"^\s*from jed_attack[.\w]* import .*$", re.MULTILINE)
 _INTRA_IMPORT_MOD = re.compile(r"^\s*import jed_attack.*$", re.MULTILINE)
-_FUTURE = re.compile(r"^\s*from __future__ import annotations\s*$", re.MULTILINE)
 _MODULE_DOCSTRING = re.compile(r'\A\s*""".*?"""', re.DOTALL)
 
 
@@ -30,7 +29,6 @@ def _clean_module(name: str) -> str:
     source = _MODULE_DOCSTRING.sub("", source, count=1)
     source = _INTRA_IMPORT.sub("", source)
     source = _INTRA_IMPORT_MOD.sub("", source)
-    source = _FUTURE.sub("", source)
     return source.strip() + "\n"
 
 

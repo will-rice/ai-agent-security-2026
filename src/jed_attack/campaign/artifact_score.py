@@ -77,15 +77,15 @@ def score_artifact_metrics(
     """
     resolved = attack_path.resolve()
     attack_cls = load_attack_class(resolved)
-    per_model: dict[str, tuple[RunResult, int]] = {
+    per_model: dict[str, tuple[RunResult, int, dict[str, ArtifactMetric]]] = {
         model: _score_one_model(attack_cls, model, budget_s) for model in models
     }
-    scores = [result.score for result, _ in per_model.values()]
-    raws = [result.score_raw for result, _ in per_model.values()]
-    findings = [result.findings_count for result, _ in per_model.values()]
-    cells = [result.unique_cells for result, _ in per_model.values()]
-    replay_s = [result.time_taken for result, _ in per_model.values()]
-    candidate_counts = [count for _, count in per_model.values()]
+    scores = [result.score for result, _, _ in per_model.values()]
+    raws = [result.score_raw for result, _, _ in per_model.values()]
+    findings = [result.findings_count for result, _, _ in per_model.values()]
+    cells = [result.unique_cells for result, _, _ in per_model.values()]
+    replay_s = [result.time_taken for result, _, _ in per_model.values()]
+    candidate_counts = [count for _, count, _ in per_model.values()]
 
     metrics: dict[str, ArtifactMetric] = {
         "artifact_valid": 1.0,
@@ -107,7 +107,7 @@ def score_artifact_metrics(
         if candidate_counts
         else 0,
     }
-    for model, (result, candidate_count) in per_model.items():
+    for model, (result, candidate_count, telemetry) in per_model.items():
         report = breakdown(result.findings)
         metrics |= {
             f"artifact_{model}_public": result.score,
@@ -118,6 +118,9 @@ def score_artifact_metrics(
             f"artifact_{model}_candidate_count": candidate_count,
             f"artifact_{model}_severity": report.severity_total,
             f"artifact_{model}_diversity": report.diversity_total,
+        }
+        metrics |= {
+            f"artifact_{model}_{key}": value for key, value in telemetry.items()
         }
     return metrics
 
@@ -148,10 +151,11 @@ def _score_one_model(
     attack_cls: type[AttackAlgorithmBase],
     model_key: str,
     budget_s: float,
-) -> tuple[RunResult, int]:
+) -> tuple[RunResult, int, dict[str, ArtifactMetric]]:
     """Score ``attack_cls`` against one resident model and count returned candidates."""
     counts: list[int] = []
-    counting_cls = _counting_attack_class(attack_cls, counts)
+    telemetry: list[dict[str, ArtifactMetric]] = []
+    counting_cls = _counting_attack_class(attack_cls, counts, telemetry)
     lock = resident_score.resident_backend_lock(model_key)
     with lock:
         result = run_attack(
@@ -160,11 +164,13 @@ def _score_one_model(
             agent_label=model_key,
             budget_s=budget_s,
         )
-    return result, counts[-1] if counts else 0
+    return result, counts[-1] if counts else 0, telemetry[-1] if telemetry else {}
 
 
 def _counting_attack_class(
-    attack_cls: type[AttackAlgorithmBase], counts: list[int]
+    attack_cls: type[AttackAlgorithmBase],
+    counts: list[int],
+    telemetry: list[dict[str, ArtifactMetric]],
 ) -> type[AttackAlgorithmBase]:
     """Wrap an attack class so artifact telemetry records its returned count."""
 
@@ -181,6 +187,17 @@ def _counting_attack_class(
             """Run the wrapped artifact and record how many candidates it returns."""
             candidates = self._delegate.run(env, config)
             counts.append(len(candidates))
+            observed = getattr(self._delegate, "last_telemetry", {})
+            if isinstance(observed, Mapping):
+                telemetry.append(
+                    {
+                        str(key): value
+                        for key, value in observed.items()
+                        if isinstance(value, str | int | float)
+                    }
+                )
+            else:
+                telemetry.append({})
             return candidates
 
     return CountingAttack
@@ -199,9 +216,7 @@ def _resident_factory(model_key: str) -> AgentFactory:
 class _ResettingAgent:
     """Proxy that clears a resident llama.cpp KV cache on env reset/restore."""
 
-    def __init__(
-        self, agent: AgentProtocol, resident: ResidentAgentFactory
-    ) -> None:
+    def __init__(self, agent: AgentProtocol, resident: ResidentAgentFactory) -> None:
         self._agent = agent
         self._resident = resident
 

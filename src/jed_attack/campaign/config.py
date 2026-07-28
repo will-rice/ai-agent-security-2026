@@ -80,17 +80,20 @@ def team_proposers_from_env(
 # one lane per key (one worker per lane). CheapestInference is also single-flight at
 # the model-window level, so the worker must not advance to another CI model after a
 # CI concurrency/stream failure; it retries the same model after a cooldown instead.
-# Operators can temporarily pin a smaller roster with
+# The CI entries below are only a static fallback/order hint: at optimizer startup the
+# CI lane is replaced with the live /v1/models response for CHEAPEST_API_KEY. Operators
+# can temporarily pin a smaller roster with
 # JED_TEAM_PROPOSERS="cheapest-minimax,zai-glm5-turbo" without editing source.
+_TEAM_PROPOSERS_ENV = os.getenv("JED_TEAM_PROPOSERS")
+TEAM_PROPOSERS_FROM_ENV = _TEAM_PROPOSERS_ENV is not None
 TEAM_PROPOSERS: tuple[str, ...] = team_proposers_from_env(
-    os.getenv("JED_TEAM_PROPOSERS"),
+    _TEAM_PROPOSERS_ENV,
     default=(
-        "cheapest-kimi",
-        "cheapest-kimi2.6",
         "cheapest-deepseek",
-        "cheapest-glm5.2",
-        "cheapest-minimax",
         "cheapest-mimo",
+        "cheapest-minimax",
+        "cheapest-kimi",
+        "cheapest-glm5.2",
         "zai-glm5-turbo",
     ),
 )
