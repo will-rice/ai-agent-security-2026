@@ -365,8 +365,7 @@ def _read_discussions(
                     signals.append((relative, text))
     if not signals:
         warnings.append(
-            "missing optional input: "
-            "run/kaggle_research_cron/latest_*_discussions.json"
+            "missing optional input: run/kaggle_research_cron/latest_*_discussions.json"
         )
     return signals
 
