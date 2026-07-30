@@ -7,7 +7,7 @@ import json
 import re
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -102,12 +102,16 @@ def run_once(
     root = (repo_root or default_repo_root()).resolve()
     output_dir = out_dir or (root / "run" / "idea_hopper")
     context = _collect_context(root)
-    ideas = sorted(
-        _generate_ideas(context), key=lambda item: item.priority_score, reverse=True
+    ideas = _deduplicate_ideas(
+        sorted(
+            _generate_ideas(context),
+            key=lambda item: item.priority_score,
+            reverse=True,
+        )
     )
     suppressed_count = 0
     if use_state:
-        seen = _read_state(output_dir / "state.json")
+        seen = _read_state(output_dir / "state.json", context["warnings"])
         fresh = [idea for idea in ideas if idea.fingerprint not in seen]
         suppressed_count = len(ideas) - len(fresh)
         ideas = fresh
@@ -218,6 +222,9 @@ def _read_text(
     except OSError:
         warnings.append(f"missing optional input: {relative}")
         return ""
+    except UnicodeError:
+        warnings.append(f"malformed optional input: {relative}")
+        return ""
     inputs_read.append(relative)
     return text
 
@@ -249,7 +256,7 @@ def _read_artifact_metrics(
         relative = path.relative_to(root).as_posix()
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, UnicodeError, json.JSONDecodeError):
             warnings.append(f"malformed artifact metrics: {relative}")
             continue
         inputs_read.append(relative)
@@ -307,6 +314,9 @@ def _read_blackboard(
     except OSError:
         warnings.append(f"missing optional input: {relative}")
         return signals
+    except UnicodeError:
+        warnings.append(f"malformed blackboard cache: {relative}")
+        return signals
     inputs_read.append(relative)
     for line_no, line in enumerate(lines, start=1):
         if not line.strip():
@@ -350,20 +360,24 @@ def _read_discussions(
     """Read cached Kaggle discussions without fetching anything remotely."""
     base = root / "run" / "kaggle_research_cron"
     signals: list[tuple[str, str]] = []
+    cache_found = False
     for path in sorted(base.glob("latest_*_discussions.json")):
+        cache_found = True
         relative = path.relative_to(root).as_posix()
         try:
             rows = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, UnicodeError, json.JSONDecodeError):
             warnings.append(f"malformed discussion cache: {relative}")
             continue
         inputs_read.append(relative)
-        if isinstance(rows, list):
-            for row in rows[:20]:
-                if isinstance(row, Mapping):
-                    text = f"{row.get('title', '')}\n{row.get('body_markdown', '')}"
-                    signals.append((relative, text))
-    if not signals:
+        if not isinstance(rows, list):
+            warnings.append(f"malformed discussion cache: {relative}")
+            continue
+        for row in rows[:20]:
+            if isinstance(row, Mapping):
+                text = f"{row.get('title', '')}\n{row.get('body_markdown', '')}"
+                signals.append((relative, text))
+    if not cache_found:
         warnings.append(
             "missing optional input: run/kaggle_research_cron/latest_*_discussions.json"
         )
@@ -580,6 +594,23 @@ def _with_fingerprint(idea: Idea) -> Idea:
     )
 
 
+def _deduplicate_ideas(ideas: list[Idea]) -> list[Idea]:
+    """Keep one deterministic idea per fingerprint, retaining all citations."""
+    unique: dict[str, Idea] = {}
+    for idea in ideas:
+        existing = unique.get(idea.fingerprint)
+        if existing is None:
+            unique[idea.fingerprint] = idea
+            continue
+        evidence = existing.source_evidence + tuple(
+            item
+            for item in idea.source_evidence
+            if item not in existing.source_evidence
+        )
+        unique[idea.fingerprint] = replace(existing, source_evidence=evidence)
+    return list(unique.values())
+
+
 def _fingerprint(idea: Idea) -> str:
     text = "|".join(
         [
@@ -688,16 +719,24 @@ def _render_markdown(report: HopperReport) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _read_state(path: Path) -> set[str]:
+def _read_state(path: Path, warnings: list[str] | None = None) -> set[str]:
     """Return persisted idea fingerprints, treating bad state as empty."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except OSError:
+        return set()
+    except (UnicodeError, json.JSONDecodeError):
+        if warnings is not None:
+            warnings.append(f"malformed idea hopper state: {path.name}")
         return set()
     if not isinstance(data, Mapping):
+        if warnings is not None:
+            warnings.append(f"malformed idea hopper state: {path.name}")
         return set()
     values = data.get("fingerprints", [])
     if not isinstance(values, list):
+        if warnings is not None:
+            warnings.append(f"malformed idea hopper state: {path.name}")
         return set()
     return {str(value) for value in values if value}
 

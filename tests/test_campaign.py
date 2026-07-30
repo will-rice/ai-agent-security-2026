@@ -183,6 +183,134 @@ def test_idea_hopper_deduplicates_repeated_ideas_with_state(tmp_path: Path) -> N
     assert "Already-seen ideas suppressed: 1" in latest_md
 
 
+def test_idea_hopper_deduplicates_matching_kernel_findings_in_one_pass(
+    tmp_path: Path,
+) -> None:
+    """Matching local kernel caches produce one queue row with both citations."""
+    from jed_attack.campaign import idea_hopper
+
+    repo = tmp_path
+    (repo / "docs").mkdir()
+    (repo / "docs" / "strategy.md").write_text("# Strategy\n", encoding="utf-8")
+    campaign = repo / "src/jed_attack/campaign"
+    campaign.mkdir(parents=True)
+    (campaign / "assemble.py").write_text(
+        "_REPLAY_SAFE_FRAC = 0.99\n_TEMPLATES = ()\n", encoding="utf-8"
+    )
+    (campaign / "prompts.toml").write_text("", encoding="utf-8")
+    (campaign / "config.py").write_text("", encoding="utf-8")
+    for suffix in ("20260730_000514", "20260730_000515"):
+        decoded = (
+            repo / "run/kaggle_research_cron" / f"public_kernel_latest_mining_{suffix}"
+        )
+        decoded.mkdir(parents=True)
+        (decoded / "decoded_findings.md").write_text(
+            "Top latency-split kernels use REPLAY_SAFE_FRAC=0.97.\n",
+            encoding="utf-8",
+        )
+
+    out_dir = repo / "run/idea_hopper"
+    report = idea_hopper.run_once(repo_root=repo, out_dir=out_dir)
+    queue_rows = [
+        json.loads(line)
+        for line in (out_dir / "queue.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+    assert len(report.ideas) == 1
+    assert len(report.ideas[0].source_evidence) == 2
+    assert len(queue_rows) == 1
+
+
+def test_idea_hopper_warns_and_skips_non_utf8_optional_caches(tmp_path: Path) -> None:
+    """Unreadable optional caches never prevent a local hopper pass."""
+    from jed_attack.campaign import idea_hopper
+
+    repo = tmp_path
+    (repo / "docs").mkdir()
+    (repo / "docs" / "strategy.md").write_text("# Strategy\n", encoding="utf-8")
+    campaign = repo / "src/jed_attack/campaign"
+    campaign.mkdir(parents=True)
+    (campaign / "assemble.py").write_text(
+        "_REPLAY_SAFE_FRAC = 0.99\n_TEMPLATES = ()\n", encoding="utf-8"
+    )
+    (campaign / "prompts.toml").write_text("", encoding="utf-8")
+    (campaign / "config.py").write_text("", encoding="utf-8")
+    (repo / "run/blackboard.jsonl").parent.mkdir(parents=True)
+    (repo / "run/blackboard.jsonl").write_bytes(b"\xff")
+    metrics = repo / "run/artifact_sweeps/sample/template/metrics.json"
+    metrics.parent.mkdir(parents=True)
+    metrics.write_bytes(b"\xff")
+    discussions = repo / "run/kaggle_research_cron/latest_score_discussions.json"
+    discussions.parent.mkdir(parents=True)
+    discussions.write_bytes(b"\xff")
+    findings = repo / "run/kaggle_research_cron/public_kernel_latest_mining_a"
+    findings.mkdir()
+    (findings / "decoded_findings.md").write_bytes(b"\xff")
+
+    report = idea_hopper.run_once(repo_root=repo, out_dir=repo / "run/idea_hopper")
+
+    assert report.ideas == ()
+    assert any(
+        "malformed artifact metrics: "
+        "run/artifact_sweeps/sample/template/metrics.json" == warning
+        for warning in report.warnings
+    )
+    assert any(
+        "malformed blackboard cache: run/blackboard.jsonl" == warning
+        for warning in report.warnings
+    )
+    assert any(
+        "malformed discussion cache: "
+        "run/kaggle_research_cron/latest_score_discussions.json" == warning
+        for warning in report.warnings
+    )
+    assert any(
+        "malformed optional input: "
+        "run/kaggle_research_cron/public_kernel_latest_mining_a/decoded_findings.md"
+        == warning
+        for warning in report.warnings
+    )
+    assert (repo / "run/idea_hopper/latest.json").exists()
+
+
+def test_idea_hopper_warns_for_non_list_discussion_cache(tmp_path: Path) -> None:
+    """A syntactically valid but wrongly shaped discussion cache is malformed."""
+    from jed_attack.campaign import idea_hopper
+
+    cache = tmp_path / "run/kaggle_research_cron/latest_score_discussions.json"
+    cache.parent.mkdir(parents=True)
+    cache.write_text(json.dumps({"title": "not a list"}), encoding="utf-8")
+    inputs_read: list[str] = []
+    warnings: list[str] = []
+
+    signals = idea_hopper._read_discussions(tmp_path, inputs_read, warnings)
+
+    assert signals == []
+    assert warnings == [
+        "malformed discussion cache: "
+        "run/kaggle_research_cron/latest_score_discussions.json"
+    ]
+
+
+def test_idea_hopper_warns_for_corrupt_state_without_aborting(tmp_path: Path) -> None:
+    """Corrupt persisted state is ignored and replaced by the current pass."""
+    from jed_attack.campaign import idea_hopper
+
+    (tmp_path / "run/idea_hopper").mkdir(parents=True)
+    (tmp_path / "run/idea_hopper/state.json").write_text("[", encoding="utf-8")
+
+    report = idea_hopper.run_once(
+        repo_root=tmp_path,
+        out_dir=tmp_path / "run/idea_hopper",
+    )
+
+    assert "malformed idea hopper state: state.json" in report.warnings
+    assert json.loads((tmp_path / "run/idea_hopper/state.json").read_text()) == {
+        "fingerprints": []
+    }
+
+
 def test_idea_hopper_watch_runs_repeated_passes_with_injected_sleep(
     tmp_path: Path,
 ) -> None:
