@@ -311,6 +311,24 @@ def test_idea_hopper_warns_for_corrupt_state_without_aborting(tmp_path: Path) ->
     }
 
 
+@pytest.mark.parametrize("state", [{}, {"fingerprints": [123]}])
+def test_idea_hopper_warns_for_invalid_state_mapping(
+    tmp_path: Path,
+    state: dict[str, object],
+) -> None:
+    """State requires an explicit list of string fingerprints."""
+    from jed_attack.campaign import idea_hopper
+
+    out_dir = tmp_path / "run/idea_hopper"
+    out_dir.mkdir(parents=True)
+    (out_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
+
+    report = idea_hopper.run_once(repo_root=tmp_path, out_dir=out_dir)
+
+    assert "malformed idea hopper state: state.json" in report.warnings
+    assert json.loads((out_dir / "state.json").read_text()) == {"fingerprints": []}
+
+
 def test_idea_hopper_watch_runs_repeated_passes_with_injected_sleep(
     tmp_path: Path,
 ) -> None:

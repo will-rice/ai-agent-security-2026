@@ -729,16 +729,18 @@ def _read_state(path: Path, warnings: list[str] | None = None) -> set[str]:
         if warnings is not None:
             warnings.append(f"malformed idea hopper state: {path.name}")
         return set()
-    if not isinstance(data, Mapping):
+    if not isinstance(data, Mapping) or "fingerprints" not in data:
         if warnings is not None:
             warnings.append(f"malformed idea hopper state: {path.name}")
         return set()
-    values = data.get("fingerprints", [])
-    if not isinstance(values, list):
+    values = data["fingerprints"]
+    if not isinstance(values, list) or not all(
+        isinstance(value, str) for value in values
+    ):
         if warnings is not None:
             warnings.append(f"malformed idea hopper state: {path.name}")
         return set()
-    return {str(value) for value in values if value}
+    return set(cast(list[str], values))
 
 
 if __name__ == "__main__":
