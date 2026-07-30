@@ -68,6 +68,18 @@ class CodeSurface:
     source_path: str
 
 
+@dataclass(frozen=True)
+class BlackboardSignal:
+    """One historical model result from the local campaign blackboard."""
+
+    model: str
+    public: float
+    objective: float
+    fires: bool
+    text: str
+    path: str
+
+
 def default_repo_root() -> Path:
     """Return the repository root from this module path."""
     return Path(__file__).resolve().parents[3]
@@ -127,6 +139,8 @@ def _collect_context(root: Path) -> dict[str, Any]:
         "code_surface": _read_code_surface(root, inputs_read, warnings),
         "artifact_metrics": _read_artifact_metrics(root, inputs_read, warnings),
         "kernel_findings": _read_kernel_findings(root, inputs_read, warnings),
+        "blackboard_signals": _read_blackboard(root, inputs_read, warnings),
+        "discussion_signals": _read_discussions(root, inputs_read, warnings),
     }
 
 
@@ -233,8 +247,88 @@ def _read_kernel_findings(
     return findings
 
 
+def _read_blackboard(
+    root: Path,
+    inputs_read: list[str],
+    warnings: list[str],
+) -> list[BlackboardSignal]:
+    """Read local blackboard rows into the fields relevant to idea generation."""
+    relative = "run/blackboard.jsonl"
+    path = root / relative
+    signals: list[BlackboardSignal] = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        warnings.append(f"missing optional input: {relative}")
+        return signals
+    inputs_read.append(relative)
+    for line_no, line in enumerate(lines, start=1):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            warnings.append(f"malformed blackboard row: {relative}:{line_no}")
+            continue
+        if not isinstance(row, Mapping):
+            warnings.append(f"malformed blackboard row: {relative}:{line_no}")
+            continue
+        messages = row.get("messages") or []
+        first_text = ""
+        if messages and isinstance(messages, list) and isinstance(messages[0], Mapping):
+            first_text = str(messages[0].get("text") or "")
+        try:
+            public = float(row.get("public") or 0.0)
+            objective = float(row.get("objective") or 0.0)
+        except (TypeError, ValueError):
+            warnings.append(f"malformed blackboard row: {relative}:{line_no}")
+            continue
+        signals.append(
+            BlackboardSignal(
+                model=str(row.get("model") or ""),
+                public=public,
+                objective=objective,
+                fires=bool(row.get("fires")),
+                text=first_text,
+                path=f"{relative}:{line_no}",
+            )
+        )
+    return signals
+
+
+def _read_discussions(
+    root: Path,
+    inputs_read: list[str],
+    warnings: list[str],
+) -> list[tuple[str, str]]:
+    """Read cached Kaggle discussions without fetching anything remotely."""
+    base = root / "run" / "kaggle_research_cron"
+    signals: list[tuple[str, str]] = []
+    for path in sorted(base.glob("latest_*_discussions.json")):
+        relative = path.relative_to(root).as_posix()
+        try:
+            rows = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            warnings.append(f"malformed discussion cache: {relative}")
+            continue
+        inputs_read.append(relative)
+        if isinstance(rows, list):
+            for row in rows[:20]:
+                if isinstance(row, Mapping):
+                    text = f"{row.get('title', '')}\n{row.get('body_markdown', '')}"
+                    signals.append((relative, text))
+    if not signals:
+        warnings.append(
+            "missing optional input: "
+            "run/kaggle_research_cron/latest_*_discussions.json"
+        )
+    return signals
+
+
 def _generate_ideas(context: dict[str, Any]) -> list[Idea]:
     ideas = _public_kernel_delta_ideas(context)
+    ideas.extend(_blackboard_ideas(context))
+    ideas.extend(_discussion_ideas(context))
     return [_with_fingerprint(idea) for idea in ideas]
 
 
@@ -319,6 +413,107 @@ def _public_kernel_delta_ideas(context: dict[str, Any]) -> list[Idea]:
                 )
             )
     return ideas
+
+
+def _blackboard_ideas(context: dict[str, Any]) -> list[Idea]:
+    """Identify message families that behave differently across target models."""
+    signals = cast(list[BlackboardSignal], context["blackboard_signals"])
+    by_text: dict[str, list[BlackboardSignal]] = {}
+    for signal in signals:
+        if signal.text:
+            by_text.setdefault(signal.text, []).append(signal)
+    for rows in by_text.values():
+        fired = {row.model for row in rows if row.fires and row.public > 0.0}
+        failed = {row.model for row in rows if not row.fires or row.public <= 0.0}
+        if fired and failed:
+            evidence = tuple(
+                SourceEvidence(
+                    row.path,
+                    f"{row.model}: public={row.public}, fires={row.fires}",
+                )
+                for row in rows[:4]
+            )
+            return [
+                Idea(
+                    id="blackboard-model-asymmetry",
+                    title="Investigate model-asymmetric firing in blackboard history",
+                    hypothesis=(
+                        "A message family fires on one target model but not another; "
+                        "a template split or portfolio hedge may improve both-model "
+                        "score."
+                    ),
+                    source_evidence=evidence,
+                    likely_files=(
+                        "src/jed_attack/campaign/prompts.toml",
+                        "src/jed_attack/campaign/assemble.py",
+                    ),
+                    category="near_miss",
+                    priority="medium",
+                    priority_score=5.25,
+                    expected_upside=(
+                        "Recover score lost to one-model failures without expanding "
+                        "replay cost much."
+                    ),
+                    risk=(
+                        "May overfit noisy historical rows if the asymmetry came from "
+                        "transient latency."
+                    ),
+                    acceptance_gate=(
+                        "New candidate family improves both-model public raw/sec or "
+                        "artifact_lb_est_public by >= 0.25."
+                    ),
+                )
+            ]
+    return []
+
+
+def _discussion_ideas(context: dict[str, Any]) -> list[Idea]:
+    """Flag cached evaluator/scoring updates that require local validation."""
+    discussions = cast(list[tuple[str, str]], context["discussion_signals"])
+    for path, text in discussions:
+        lowered = text.lower()
+        if (
+            "runtime enforcement" in lowered
+            or "static replay" in lowered
+            or "secret-exfiltration scoring" in lowered
+        ):
+            return [
+                Idea(
+                    id="discussion-evaluator-risk-review",
+                    title="Review cached evaluator/scoring discussion changes",
+                    hypothesis=(
+                        "Cached Kaggle discussion mentions evaluator/runtime/scoring "
+                        "changes; our constants and scorer calibration may need "
+                        "validation."
+                    ),
+                    source_evidence=(
+                        SourceEvidence(
+                            path,
+                            "Discussion cache mentions runtime, static replay, or "
+                            "secret-exfiltration scoring changes.",
+                        ),
+                    ),
+                    likely_files=(
+                        "docs/strategy.md",
+                        "src/jed_attack/campaign/config.py",
+                    ),
+                    category="evaluator_risk",
+                    priority="medium",
+                    priority_score=4.75,
+                    expected_upside=(
+                        "Avoid optimizing against stale evaluator assumptions."
+                    ),
+                    risk=(
+                        "May produce only documentation or calibration work, not a "
+                        "direct score increase."
+                    ),
+                    acceptance_gate=(
+                        "Confirm docs/config still match cached FAQ; if not, update "
+                        "strategy and rerun artifact calibration."
+                    ),
+                )
+            ]
+    return []
 
 
 def _with_fingerprint(idea: Idea) -> Idea:
