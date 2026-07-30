@@ -140,6 +140,87 @@ def test_idea_hopper_generates_kernel_delta_and_replay_sizing_ideas(
     assert all(idea.acceptance_gate for idea in report.ideas)
 
 
+def test_idea_hopper_deduplicates_repeated_ideas_with_state(tmp_path: Path) -> None:
+    """Two stateful runs do not append the same idea twice."""
+    from jed_attack.campaign import idea_hopper
+
+    repo = tmp_path
+    (repo / "docs").mkdir(parents=True)
+    (repo / "docs" / "strategy.md").write_text("# Strategy\n", encoding="utf-8")
+    campaign = repo / "src/jed_attack/campaign"
+    campaign.mkdir(parents=True)
+    (campaign / "assemble.py").write_text(
+        "_REPLAY_SAFE_FRAC = 0.99\n_TEMPLATES = ()\n",
+        encoding="utf-8",
+    )
+    (campaign / "prompts.toml").write_text("", encoding="utf-8")
+    (campaign / "config.py").write_text("", encoding="utf-8")
+    decoded = (
+        repo
+        / "run/kaggle_research_cron"
+        / "public_kernel_latest_mining_20260730_000514"
+    )
+    decoded.mkdir(parents=True)
+    (decoded / "decoded_findings.md").write_text(
+        "Top latency-split kernels use REPLAY_SAFE_FRAC=0.97.\n",
+        encoding="utf-8",
+    )
+
+    out_dir = repo / "run/idea_hopper"
+    first = idea_hopper.run_once(repo_root=repo, out_dir=out_dir)
+    second = idea_hopper.run_once(repo_root=repo, out_dir=out_dir)
+
+    queue_rows = [
+        json.loads(line)
+        for line in (out_dir / "queue.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    latest_md = (out_dir / "latest.md").read_text(encoding="utf-8")
+
+    assert len(first.ideas) == 1
+    assert second.ideas == ()
+    assert len(queue_rows) == 1
+    assert "Already-seen ideas suppressed: 1" in latest_md
+
+
+def test_idea_hopper_markdown_includes_evidence_risk_gate_and_first_step(
+    tmp_path: Path,
+) -> None:
+    """Markdown report gives an operator enough information to pick an experiment."""
+    from jed_attack.campaign import idea_hopper
+
+    repo = tmp_path
+    (repo / "docs").mkdir(parents=True)
+    (repo / "docs" / "strategy.md").write_text("# Strategy\n", encoding="utf-8")
+    campaign = repo / "src/jed_attack/campaign"
+    campaign.mkdir(parents=True)
+    (campaign / "assemble.py").write_text(
+        "_REPLAY_SAFE_FRAC = 0.99\n_TEMPLATES = ()\n",
+        encoding="utf-8",
+    )
+    (campaign / "prompts.toml").write_text("", encoding="utf-8")
+    (campaign / "config.py").write_text("", encoding="utf-8")
+    decoded = (
+        repo
+        / "run/kaggle_research_cron"
+        / "public_kernel_latest_mining_20260730_000514"
+    )
+    decoded.mkdir(parents=True)
+    (decoded / "decoded_findings.md").write_text(
+        "Top latency-split kernels use REPLAY_SAFE_FRAC=0.97.\n",
+        encoding="utf-8",
+    )
+
+    idea_hopper.run_once(repo_root=repo, out_dir=repo / "run/idea_hopper")
+    markdown = (repo / "run/idea_hopper/latest.md").read_text(encoding="utf-8")
+
+    assert "## Top ideas" in markdown
+    assert "Source evidence" in markdown
+    assert "Risk:" in markdown
+    assert "Acceptance gate:" in markdown
+    assert "First step:" in markdown
+
+
 def test_idea_hopper_generates_blackboard_near_miss_and_discussion_ideas(
     tmp_path: Path,
 ) -> None:

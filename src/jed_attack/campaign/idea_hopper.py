@@ -47,6 +47,7 @@ class HopperReport:
     inputs_read: tuple[str, ...]
     warnings: tuple[str, ...]
     ideas: tuple[Idea, ...]
+    suppressed_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -96,15 +97,24 @@ def run_once(
     root = (repo_root or default_repo_root()).resolve()
     output_dir = out_dir or (root / "run" / "idea_hopper")
     context = _collect_context(root)
-    ideas = _generate_ideas(context)
+    ideas = sorted(
+        _generate_ideas(context), key=lambda item: item.priority_score, reverse=True
+    )
+    suppressed_count = 0
+    if use_state:
+        seen = _read_state(output_dir / "state.json")
+        fresh = [idea for idea in ideas if idea.fingerprint not in seen]
+        suppressed_count = len(ideas) - len(fresh)
+        ideas = fresh
     if not include_low_confidence:
         ideas = [idea for idea in ideas if idea.priority != "low"]
-    ideas = sorted(ideas, key=lambda item: item.priority_score, reverse=True)[:limit]
+    ideas = ideas[:limit]
     report = HopperReport(
         generated_utc=datetime.now(UTC).isoformat(),
         inputs_read=tuple(context["inputs_read"]),
         warnings=tuple(context["warnings"]),
         ideas=tuple(ideas),
+        suppressed_count=suppressed_count,
     )
     _write_outputs(report, output_dir, use_state=use_state)
     return report
@@ -564,9 +574,12 @@ def _write_outputs(
         for idea in report.ideas:
             handle.write(json.dumps(_idea_payload(idea), sort_keys=True) + "\n")
     if use_state:
-        fingerprints = [idea.fingerprint for idea in report.ideas if idea.fingerprint]
+        fingerprints = _read_state(out_dir / "state.json")
+        fingerprints.update(
+            idea.fingerprint for idea in report.ideas if idea.fingerprint
+        )
         (out_dir / "state.json").write_text(
-            json.dumps({"fingerprints": fingerprints}, indent=2, sort_keys=True)
+            json.dumps({"fingerprints": sorted(fingerprints)}, indent=2, sort_keys=True)
             + "\n",
             encoding="utf-8",
         )
@@ -582,6 +595,7 @@ def _report_payload(report: HopperReport) -> dict[str, Any]:
         "generated_utc": report.generated_utc,
         "inputs_read": list(report.inputs_read),
         "warnings": list(report.warnings),
+        "suppressed_count": report.suppressed_count,
         "ideas": [_idea_payload(idea) for idea in report.ideas],
     }
 
@@ -599,6 +613,7 @@ def _render_markdown(report: HopperReport) -> str:
         f"Generated: {report.generated_utc}",
         f"Inputs read: {', '.join(report.inputs_read) or '-'}",
         f"Warnings: {len(report.warnings)}",
+        f"Already-seen ideas suppressed: {report.suppressed_count}",
         "",
         "## Top ideas",
         "",
@@ -608,16 +623,48 @@ def _render_markdown(report: HopperReport) -> str:
     for index, idea in enumerate(report.ideas, start=1):
         lines.extend(
             [
-                f"{index}. **{idea.title}**",
-                f"   - Category: `{idea.category}`",
-                f"   - Priority: `{idea.priority}` ({idea.priority_score:.2f})",
-                f"   - Gate: {idea.acceptance_gate}",
+                f"### {index}. {idea.title}",
+                "",
+                f"- Category: `{idea.category}`",
+                f"- Priority: `{idea.priority}` ({idea.priority_score:.2f})",
+                f"- Hypothesis: {idea.hypothesis}",
+                f"- Expected upside: {idea.expected_upside}",
+                f"- Risk: {idea.risk}",
+                f"- Acceptance gate: {idea.acceptance_gate}",
+                (
+                    "- Likely files: "
+                    f"{', '.join(f'`{path}`' for path in idea.likely_files)}"
+                ),
+                (
+                    f"- First step: inspect {idea.likely_files[0]} and write a "
+                    "targeted failing test."
+                ),
+                "",
+                "Source evidence:",
+                "",
             ]
         )
+        for evidence in idea.source_evidence:
+            lines.append(f"- `{evidence.path}` — {evidence.observation}")
+        lines.append("")
     if report.warnings:
         lines.extend(["", "## Warnings", ""])
         lines.extend(f"- {warning}" for warning in report.warnings)
     return "\n".join(lines) + "\n"
+
+
+def _read_state(path: Path) -> set[str]:
+    """Return persisted idea fingerprints, treating bad state as empty."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    if not isinstance(data, Mapping):
+        return set()
+    values = data.get("fingerprints", [])
+    if not isinstance(values, list):
+        return set()
+    return {str(value) for value in values if value}
 
 
 if __name__ == "__main__":
