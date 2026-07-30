@@ -5,7 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import re
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -81,6 +82,10 @@ class BlackboardSignal:
     path: str
 
 
+RunFunc = Callable[[Path | None, Path | None, int, bool, bool], HopperReport]
+SleepFunc = Callable[[float], None]
+
+
 def default_repo_root() -> Path:
     """Return the repository root from this module path."""
     return Path(__file__).resolve().parents[3]
@@ -120,6 +125,26 @@ def run_once(
     return report
 
 
+def watch(
+    repo_root: Path | None,
+    out_dir: Path | None,
+    interval_min: float,
+    limit: int,
+    include_low_confidence: bool,
+    use_state: bool,
+    run_func: RunFunc = run_once,
+    sleep_func: SleepFunc = time.sleep,
+) -> int:
+    """Run the hopper repeatedly until interrupted."""
+    interval_s = max(1.0, float(interval_min) * 60.0)
+    while True:
+        try:
+            run_func(repo_root, out_dir, limit, include_low_confidence, use_state)
+            sleep_func(interval_s)
+        except KeyboardInterrupt:
+            return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI entrypoint."""
     parser = argparse.ArgumentParser(description="Generate a ranked JED idea queue.")
@@ -127,7 +152,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--include-low-confidence", action="store_true")
     parser.add_argument("--no-state", action="store_true")
+    parser.add_argument("--watch", action="store_true")
+    parser.add_argument("--interval-min", type=float, default=30.0)
     args = parser.parse_args(argv)
+    if args.watch:
+        return watch(
+            repo_root=None,
+            out_dir=args.out_dir,
+            interval_min=args.interval_min,
+            limit=args.limit,
+            include_low_confidence=args.include_low_confidence,
+            use_state=not args.no_state,
+        )
     report = run_once(
         out_dir=args.out_dir,
         limit=args.limit,

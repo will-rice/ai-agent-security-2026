@@ -183,6 +183,52 @@ def test_idea_hopper_deduplicates_repeated_ideas_with_state(tmp_path: Path) -> N
     assert "Already-seen ideas suppressed: 1" in latest_md
 
 
+def test_idea_hopper_watch_runs_repeated_passes_with_injected_sleep(
+    tmp_path: Path,
+) -> None:
+    """Watch mode is session-local and testable without real sleeping."""
+    from jed_attack.campaign import idea_hopper
+
+    calls: list[Path] = []
+    sleeps: list[float] = []
+
+    def fake_run(
+        repo_root: Path | None,
+        out_dir: Path | None,
+        limit: int,
+        include_low_confidence: bool,
+        use_state: bool,
+    ) -> idea_hopper.HopperReport:
+        calls.append(out_dir or tmp_path)
+        return idea_hopper.HopperReport(
+            generated_utc="2026-07-30T00:00:00+00:00",
+            inputs_read=(),
+            warnings=(),
+            ideas=(),
+            suppressed_count=0,
+        )
+
+    def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        if len(sleeps) >= 2:
+            raise KeyboardInterrupt
+
+    exit_code = idea_hopper.watch(
+        repo_root=tmp_path,
+        out_dir=tmp_path / "run/idea_hopper",
+        interval_min=0.5,
+        limit=3,
+        include_low_confidence=False,
+        use_state=True,
+        run_func=fake_run,
+        sleep_func=fake_sleep,
+    )
+
+    assert exit_code == 0
+    assert len(calls) == 2
+    assert sleeps == [30.0, 30.0]
+
+
 def test_idea_hopper_markdown_includes_evidence_risk_gate_and_first_step(
     tmp_path: Path,
 ) -> None:
