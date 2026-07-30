@@ -35,6 +35,40 @@ def _exfil(text: str, hops: int) -> "Message":
     return Message(type=MessageType.EXFIL, text=text, hops=hops)
 
 
+def test_idea_hopper_writes_empty_report_with_missing_optional_inputs(
+    tmp_path: Path,
+) -> None:
+    """Idea hopper writes reports and warnings without optional evidence files."""
+    from jed_attack.campaign import idea_hopper
+
+    repo = tmp_path
+    (repo / "docs").mkdir()
+    (repo / "docs" / "strategy.md").write_text("# Strategy\n", encoding="utf-8")
+    (repo / "src/jed_attack/campaign").mkdir(parents=True)
+    (repo / "src/jed_attack/campaign/assemble.py").write_text(
+        "_REPLAY_SAFE_FRAC = 0.99\n_TEMPLATES = ()\n",
+        encoding="utf-8",
+    )
+    (repo / "src/jed_attack/campaign/prompts.toml").write_text("", encoding="utf-8")
+    (repo / "src/jed_attack/campaign/config.py").write_text("", encoding="utf-8")
+
+    report = idea_hopper.run_once(repo_root=repo, out_dir=repo / "run/idea_hopper")
+
+    latest_md = repo / "run/idea_hopper/latest.md"
+    latest_json = repo / "run/idea_hopper/latest.json"
+    queue_jsonl = repo / "run/idea_hopper/queue.jsonl"
+    state_json = repo / "run/idea_hopper/state.json"
+
+    assert report.ideas == ()
+    assert report.warnings
+    assert latest_md.exists()
+    assert latest_json.exists()
+    assert queue_jsonl.exists()
+    assert state_json.exists()
+    assert "# Idea Hopper Report" in latest_md.read_text(encoding="utf-8")
+    assert json.loads(latest_json.read_text(encoding="utf-8"))["ideas"] == []
+
+
 class _FakeMonotonicClock:
     def __init__(self) -> None:
         self.now = 0.0
