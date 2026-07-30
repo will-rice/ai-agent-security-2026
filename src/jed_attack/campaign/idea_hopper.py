@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -193,12 +193,21 @@ def _read_artifact_metrics(
             warnings.append(f"malformed artifact metrics: {relative}")
             continue
         inputs_read.append(relative)
+        if not isinstance(data, Mapping):
+            warnings.append(f"malformed artifact metrics: {relative}")
+            continue
+        try:
+            lb_est_public = float(data.get("artifact_lb_est_public") or 0.0)
+            candidate_count = float(data.get("artifact_candidate_count_mean") or 0.0)
+        except (AttributeError, TypeError, ValueError):
+            warnings.append(f"malformed artifact metrics: {relative}")
+            continue
         records.append(
             ArtifactMetricRecord(
                 path=relative,
                 template=path.parent.name,
-                lb_est_public=float(data.get("artifact_lb_est_public") or 0.0),
-                candidate_count=float(data.get("artifact_candidate_count_mean") or 0.0),
+                lb_est_public=lb_est_public,
+                candidate_count=candidate_count,
             )
         )
     return records

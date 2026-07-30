@@ -140,6 +140,33 @@ def test_idea_hopper_generates_kernel_delta_and_replay_sizing_ideas(
     assert all(idea.acceptance_gate for idea in report.ideas)
 
 
+def test_idea_hopper_skips_malformed_artifact_metric_values(tmp_path: Path) -> None:
+    """Malformed metric JSON shapes and values emit warnings without aborting."""
+    from jed_attack.campaign import idea_hopper
+
+    sweep = tmp_path / "run/artifact_sweeps/20260730_000000/call_reply_ok"
+    sweep.mkdir(parents=True)
+    (sweep / "metrics.json").write_text(
+        json.dumps({"artifact_lb_est_public": "not-a-float"}),
+        encoding="utf-8",
+    )
+    list_sweep = tmp_path / "run/artifact_sweeps/20260730_000001/list_payload"
+    list_sweep.mkdir(parents=True)
+    (list_sweep / "metrics.json").write_text("[]", encoding="utf-8")
+
+    inputs_read: list[str] = []
+    warnings: list[str] = []
+    records = idea_hopper._read_artifact_metrics(tmp_path, inputs_read, warnings)
+
+    assert records == []
+    assert warnings == [
+        "malformed artifact metrics: "
+        "run/artifact_sweeps/20260730_000000/call_reply_ok/metrics.json",
+        "malformed artifact metrics: "
+        "run/artifact_sweeps/20260730_000001/list_payload/metrics.json",
+    ]
+
+
 class _FakeMonotonicClock:
     def __init__(self) -> None:
         self.now = 0.0
