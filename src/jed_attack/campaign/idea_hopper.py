@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,25 @@ class HopperReport:
     ideas: tuple[Idea, ...]
 
 
+@dataclass(frozen=True)
+class ArtifactMetricRecord:
+    """One artifact sweep's public-score and candidate-count metrics."""
+
+    path: str
+    template: str
+    lb_est_public: float
+    candidate_count: float
+
+
+@dataclass(frozen=True)
+class CodeSurface:
+    """The generated-artifact knobs currently visible in campaign source."""
+
+    replay_safe_frac: float | None
+    template_names: tuple[str, ...]
+    source_path: str
+
+
 def default_repo_root() -> Path:
     """Return the repository root from this module path."""
     return Path(__file__).resolve().parents[3]
@@ -64,7 +84,7 @@ def run_once(
     root = (repo_root or default_repo_root()).resolve()
     output_dir = out_dir or (root / "run" / "idea_hopper")
     context = _collect_context(root)
-    ideas: list[Idea] = []
+    ideas = _generate_ideas(context)
     if not include_low_confidence:
         ideas = [idea for idea in ideas if idea.priority != "low"]
     ideas = sorted(ideas, key=lambda item: item.priority_score, reverse=True)[:limit]
@@ -96,31 +116,230 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-def _collect_context(root: Path) -> dict[str, list[str]]:
-    """Collect only required-path existence/warning data for the skeleton task."""
-    required = (
-        "docs/strategy.md",
-        "src/jed_attack/campaign/assemble.py",
-        "src/jed_attack/campaign/prompts.toml",
-        "src/jed_attack/campaign/config.py",
-    )
+def _collect_context(root: Path) -> dict[str, Any]:
+    """Collect local code, artifact, and public-kernel evidence."""
     inputs_read: list[str] = []
     warnings: list[str] = []
-    for relative in required:
+    _read_primary_paths(root, inputs_read, warnings)
+    return {
+        "inputs_read": inputs_read,
+        "warnings": warnings,
+        "code_surface": _read_code_surface(root, inputs_read, warnings),
+        "artifact_metrics": _read_artifact_metrics(root, inputs_read, warnings),
+        "kernel_findings": _read_kernel_findings(root, inputs_read, warnings),
+    }
+
+
+def _read_primary_paths(
+    root: Path,
+    inputs_read: list[str],
+    warnings: list[str],
+) -> None:
+    for relative in (
+        "docs/strategy.md",
+        "src/jed_attack/campaign/prompts.toml",
+        "src/jed_attack/campaign/config.py",
+    ):
         path = root / relative
         if path.exists():
             inputs_read.append(relative)
         else:
             warnings.append(f"missing primary input: {relative}")
-    optional = (
-        "run/blackboard.jsonl",
-        "run/artifact_eval_current/latest_metrics.json",
-        "run/kaggle_research_cron/latest_public_kernel_mining.md",
+
+
+def _read_text(
+    path: Path,
+    relative: str,
+    inputs_read: list[str],
+    warnings: list[str],
+) -> str:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        warnings.append(f"missing optional input: {relative}")
+        return ""
+    inputs_read.append(relative)
+    return text
+
+
+def _read_code_surface(
+    root: Path,
+    inputs_read: list[str],
+    warnings: list[str],
+) -> CodeSurface:
+    relative = "src/jed_attack/campaign/assemble.py"
+    text = _read_text(root / relative, relative, inputs_read, warnings)
+    replay_match = re.search(r"_REPLAY_SAFE_FRAC\s*=\s*([0-9.]+)", text)
+    replay_safe_frac = float(replay_match.group(1)) if replay_match else None
+    template_names = tuple(re.findall(r'\("([^"]+)",\s*"[^"]*"\)', text))
+    return CodeSurface(
+        replay_safe_frac=replay_safe_frac,
+        template_names=template_names,
+        source_path=relative,
     )
-    for relative in optional:
-        if not (root / relative).exists():
-            warnings.append(f"missing optional input: {relative}")
-    return {"inputs_read": inputs_read, "warnings": warnings}
+
+
+def _read_artifact_metrics(
+    root: Path,
+    inputs_read: list[str],
+    warnings: list[str],
+) -> list[ArtifactMetricRecord]:
+    records: list[ArtifactMetricRecord] = []
+    for path in sorted((root / "run" / "artifact_sweeps").glob("**/metrics.json")):
+        relative = path.relative_to(root).as_posix()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            warnings.append(f"malformed artifact metrics: {relative}")
+            continue
+        inputs_read.append(relative)
+        records.append(
+            ArtifactMetricRecord(
+                path=relative,
+                template=path.parent.name,
+                lb_est_public=float(data.get("artifact_lb_est_public") or 0.0),
+                candidate_count=float(data.get("artifact_candidate_count_mean") or 0.0),
+            )
+        )
+    return records
+
+
+def _read_kernel_findings(
+    root: Path,
+    inputs_read: list[str],
+    warnings: list[str],
+) -> list[tuple[str, str]]:
+    findings: list[tuple[str, str]] = []
+    base = root / "run" / "kaggle_research_cron"
+    for path in sorted(base.glob("public_kernel_latest_mining_*/decoded_findings.md")):
+        relative = path.relative_to(root).as_posix()
+        text = _read_text(path, relative, inputs_read, warnings)
+        if text:
+            findings.append((relative, text))
+    if not findings:
+        warnings.append(
+            "missing optional input: "
+            "run/kaggle_research_cron/public_kernel_latest_mining_*/decoded_findings.md"
+        )
+    return findings
+
+
+def _generate_ideas(context: dict[str, Any]) -> list[Idea]:
+    ideas = _public_kernel_delta_ideas(context)
+    return [_with_fingerprint(idea) for idea in ideas]
+
+
+def _public_kernel_delta_ideas(context: dict[str, Any]) -> list[Idea]:
+    code = cast(CodeSurface, context["code_surface"])
+    findings = cast(list[tuple[str, str]], context["kernel_findings"])
+    ideas: list[Idea] = []
+    for path, text in findings:
+        if "REPLAY_SAFE_FRAC=0.97" in text and code.replay_safe_frac != 0.97:
+            ideas.append(
+                Idea(
+                    id="replay-safe-frac-097",
+                    title="Test REPLAY_SAFE_FRAC=0.97 in generated artifact",
+                    hypothesis=(
+                        "Top public latency-split kernels use 0.97; the change may "
+                        "reduce timeout risk versus the current generated setting."
+                    ),
+                    source_evidence=(
+                        SourceEvidence(
+                            path,
+                            "Decoded public kernels report REPLAY_SAFE_FRAC=0.97.",
+                        ),
+                    ),
+                    likely_files=(
+                        "src/jed_attack/campaign/assemble.py",
+                        "tests/test_campaign.py",
+                    ),
+                    category="replay_sizing",
+                    priority="medium",
+                    priority_score=5.5,
+                    expected_upside=(
+                        "Improve calibrated LB estimate by avoiding replay "
+                        "timeout/overpacking."
+                    ),
+                    risk=(
+                        "Can underfill and lower public score if current 0.99 is safe."
+                    ),
+                    acceptance_gate=(
+                        "artifact_lb_est_public beats current build_next by >= 0.25 "
+                        "and campaign tests pass."
+                    ),
+                )
+            )
+        if "measured latency split" in text.lower():
+            ideas.append(
+                Idea(
+                    id="measured-latency-split",
+                    title="Test measured latency split without model hints",
+                    hypothesis=(
+                        "Public leaders classify fast/slow behavior from observed "
+                        "latency "
+                        "rather than relying on exposed model hints."
+                    ),
+                    source_evidence=(
+                        SourceEvidence(
+                            path,
+                            "Decoded findings recommend testing measured latency "
+                            "split.",
+                        ),
+                    ),
+                    likely_files=(
+                        "src/jed_attack/campaign/assemble.py",
+                        "tests/test_campaign.py",
+                    ),
+                    category="template_selection",
+                    priority="medium",
+                    priority_score=5.0,
+                    expected_upside=(
+                        "May improve generalization if model hints are absent or "
+                        "stale in "
+                        "the evaluator."
+                    ),
+                    risk=(
+                        "Can choose the wrong template if warmup/probe latency "
+                        "is noisy."
+                    ),
+                    acceptance_gate=(
+                        "artifact_lb_est_public beats current build_next by >= 0.25 "
+                        "and "
+                        "selected-template telemetry remains stable on both models."
+                    ),
+                )
+            )
+    return ideas
+
+
+def _with_fingerprint(idea: Idea) -> Idea:
+    fingerprint = _fingerprint(idea)
+    return Idea(
+        id=idea.id,
+        title=idea.title,
+        hypothesis=idea.hypothesis,
+        source_evidence=idea.source_evidence,
+        likely_files=idea.likely_files,
+        category=idea.category,
+        priority=idea.priority,
+        priority_score=idea.priority_score,
+        expected_upside=idea.expected_upside,
+        risk=idea.risk,
+        acceptance_gate=idea.acceptance_gate,
+        status=idea.status,
+        fingerprint=fingerprint,
+    )
+
+
+def _fingerprint(idea: Idea) -> str:
+    text = "|".join(
+        [
+            idea.title.lower().strip(),
+            idea.category,
+            ",".join(sorted(idea.likely_files)),
+        ]
+    )
+    return re.sub(r"[^a-z0-9]+", "-", text).strip("-")
 
 
 def _write_outputs(
