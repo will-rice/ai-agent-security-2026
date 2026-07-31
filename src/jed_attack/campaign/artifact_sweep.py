@@ -282,11 +282,7 @@ def _alpha_word(index: int, width: int) -> str:
 
 def _host(index: int) -> str:
     """Return the same short host stem shape as the generated artifact."""
-    return (
-        _alpha_word(index, 2)
-        if index < 26 * 26
-        else _alpha_word(index - 26 * 26, 3)
-    )
+    return _alpha_word(index, 2) if index < 26 * 26 else _alpha_word(index - 26 * 26, 3)
 
 
 def _url(index: int) -> str:
