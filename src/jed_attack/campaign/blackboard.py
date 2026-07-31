@@ -11,6 +11,7 @@ artifact never lags the campaign champion.
 import asyncio
 import functools
 import json
+import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,8 @@ from jed_attack.campaign.judge_policy import (
     compare_candidates,
 )
 from jed_attack.campaign.submission import MessageType
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -137,15 +140,27 @@ class Blackboard:
     def load(cls, path: Path) -> "Blackboard":
         """Warm-start: replay the JSONL into memory (skips malformed lines)."""
         records: list[Record] = []
+        malformed_lines: list[int] = []
         if path.exists():
-            for line in path.read_text(encoding="utf-8").splitlines():
+            for line_no, line in enumerate(
+                path.read_text(encoding="utf-8").splitlines(), start=1
+            ):
                 line = line.strip()
                 if not line:
                     continue
                 try:
                     records.append(Record.from_json(json.loads(line)))
                 except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                    malformed_lines.append(line_no)
                     continue
+        if malformed_lines:
+            _log.warning(
+                "skipped %d malformed blackboard row(s) while loading %s; "
+                "first lines=%s",
+                len(malformed_lines),
+                path,
+                malformed_lines[:5],
+            )
         return cls(path, records)
 
     def best_public(self) -> Record | None:
@@ -253,6 +268,7 @@ class Blackboard:
             self._records.append(record)
             with self._path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record.to_json(), sort_keys=True) + "\n")
+                handle.flush()
             if reship and self.best_objective() is record and record is not prior_best:
                 assemble.build([m["text"] for m in record.messages], out_dir)
                 return True

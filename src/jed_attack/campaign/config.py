@@ -24,6 +24,8 @@ BUILD_NEXT_DIR = (
     CAMPAIGN_ROOT / "build_next"
 )  # assembled attack.py + build_next_status.json
 BUILD_ROBUST_DIR = CAMPAIGN_ROOT / "build_robust"
+SUBMISSION_CUTS_DIR = CAMPAIGN_ROOT / "submission_cuts"
+ARTIFACT_CHAMPION_PATH = CAMPAIGN_ROOT / "artifact_champion.json"
 
 # The two target models and their served base URLs (llama-server on green).
 MODELS: tuple[str, ...] = ("gpt_oss", "gemma_4")
@@ -199,7 +201,7 @@ if JUDGE_MODE not in {"off", "shadow", "active"}:
 JUDGE_ROBUSTNESS_TIE_POINTS = 5.0
 JUDGE_MIN_CONFIDENCE = 0.60
 JUDGE_MAX_CONCURRENT_ASSESSMENTS = max(
-    1, int(os.getenv("JED_JUDGE_MAX_CONCURRENT_ASSESSMENTS", "2"))
+    1, int(os.getenv("JED_JUDGE_MAX_CONCURRENT_ASSESSMENTS", "1"))
 )
 NOVELTY_POOL_SAMPLE = 8
 JUDGE_STUDY_N = 40
@@ -219,5 +221,10 @@ VLLM_MODEL = os.getenv("VLLM_MODEL", "bullerwins/Qwen3-32B-awq")
 
 def ensure_dirs() -> None:
     """Create the runtime directories the submission pipeline writes to."""
-    for path in (BUILD_NEXT_DIR, BUILD_ROBUST_DIR, CAMPAIGN_ROOT / "logs"):
+    for path in (
+        BUILD_NEXT_DIR,
+        BUILD_ROBUST_DIR,
+        SUBMISSION_CUTS_DIR,
+        CAMPAIGN_ROOT / "logs",
+    ):
         path.mkdir(parents=True, exist_ok=True)
