@@ -27,6 +27,7 @@ from jed_attack.harness.runner import RunResult, run_attack
 
 ArtifactMetric = float | int | str
 AgentFactory = Callable[[], AgentProtocol]
+GuardrailFactory = Callable[[], object]
 _NORMALIZATION_RAW_DENOMINATOR = 200_000.0
 _NORMALIZATION_SCALE = 1_000.0
 
@@ -61,6 +62,7 @@ def score_artifact_metrics(
     *,
     budget_s: float = config.ARTIFACT_SCORE_BUDGET_S,
     models: Sequence[str] = config.MODELS,
+    guardrail_factory: GuardrailFactory | None = None,
 ) -> dict[str, ArtifactMetric]:
     """Score a built artifact exactly and return W&B-ready ``artifact_*`` metrics.
 
@@ -73,6 +75,9 @@ def score_artifact_metrics(
         attack_path: Generated ``attack.py`` to score.
         budget_s: Per-model SDK generation/replay budget.
         models: Model keys to evaluate.
+        guardrail_factory: Optional zero-arg guardrail factory; ``None`` keeps the
+            SDK default (public ``OptimalGuardrail``). Pass a stricter guardrail
+            (e.g. ``StrictProxyGuardrail``) to measure private-surface robustness.
 
     Returns:
         Flat metrics suitable for direct W&B logging.
@@ -80,7 +85,10 @@ def score_artifact_metrics(
     resolved = attack_path.resolve()
     attack_cls = load_attack_class(resolved)
     per_model: dict[str, tuple[RunResult, int, dict[str, ArtifactMetric]]] = {
-        model: _score_one_model(attack_cls, model, budget_s) for model in models
+        model: _score_one_model(
+            attack_cls, model, budget_s, guardrail_factory=guardrail_factory
+        )
+        for model in models
     }
     scores = [result.score for result, _, _ in per_model.values()]
     raws = [result.score_raw for result, _, _ in per_model.values()]
@@ -227,6 +235,8 @@ def _score_one_model(
     attack_cls: type[AttackAlgorithmBase],
     model_key: str,
     budget_s: float,
+    *,
+    guardrail_factory: GuardrailFactory | None = None,
 ) -> tuple[RunResult, int, dict[str, ArtifactMetric]]:
     """Score ``attack_cls`` against one resident model and count returned candidates."""
     counts: list[int] = []
@@ -239,6 +249,7 @@ def _score_one_model(
             agent_factory=_resident_factory(model_key),
             agent_label=model_key,
             budget_s=budget_s,
+            guardrail_factory=guardrail_factory,
         )
     return result, counts[-1] if counts else 0, telemetry[-1] if telemetry else {}
 
