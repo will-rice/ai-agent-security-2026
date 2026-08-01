@@ -126,7 +126,7 @@ _FALLBACK_N = 300
 _REPLAY_SAFE_FRAC = 0.97
 _PROBE_REPS = 2
 _MIN_FIRE_RATE = 0.2
-_PROBE_START_INDEX = 900000
+_PROBE_START_INDEX = 910000
 _WARMUP_INDEX = 900000
 _WARMUP_SLOWEST_CAP = 55.0
 _SLOWEST0 = 25.0
@@ -579,7 +579,12 @@ def build(messages: list[str], out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     source = _TEMPLATE.replace("__POOL__", _render_pool(pairs))
     attack_path = out_dir / "attack.py"
-    attack_path.write_text(source, encoding="utf-8")
+    # Atomic swap: concurrent optimizer lanes reship this same file and champion
+    # captures read it, so a plain truncate-write can be observed half-written.
+    # Write a sibling temp then os.replace (atomic on the same filesystem).
+    tmp_path = out_dir / ".attack.py.tmp"
+    tmp_path.write_text(source, encoding="utf-8")
+    tmp_path.replace(attack_path)
     status = {"candidate_count": len(pairs), "source": "live_validation_fill"}
     (out_dir / "build_next_status.json").write_text(
         json.dumps(status, indent=2, sort_keys=True), encoding="utf-8"

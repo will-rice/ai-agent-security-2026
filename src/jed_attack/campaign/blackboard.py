@@ -154,6 +154,16 @@ class Blackboard:
                     malformed_lines.append(line_no)
                     continue
         if malformed_lines:
+            total = len(records) + len(malformed_lines)
+            # A few stragglers (a crash mid-append) are fine to skip, but losing most
+            # or all rows means a systematic schema/parse regression — proceeding would
+            # silently ship a stale/empty attack.py, so fail loudly instead.
+            if not records or len(malformed_lines) > 0.5 * total:
+                raise RuntimeError(
+                    f"blackboard load dropped {len(malformed_lines)}/{total} rows as "
+                    f"malformed (first lines={malformed_lines[:5]}) from {path}; "
+                    "refusing to warm-start from a degraded board"
+                )
             _log.warning(
                 "skipped %d malformed blackboard row(s) while loading %s; "
                 "first lines=%s",

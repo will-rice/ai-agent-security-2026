@@ -18,8 +18,8 @@ and only gate-adopted chains reach the submission.
 ```
 producers (5 strategy agents) → emit firing chains → harvest (collect) →
 GATE (replay vs both models × stricter guardrails) → ledger of ADOPTED robust chains →
-assemble (build_next attack.py = adopted pool, severity-ranked, repeated to fill ~300) →
-build_submission → dist/attack.py → (manual) Kaggle submit → promote on private-LB win
+assemble (writes run/build_next/attack.py directly, self-contained, self-sizing fill) →
+submit-kernel skill → (manual) Kaggle submit → promote on private-LB win
 ```
 
 A **watchdog** supervises all daemons + producers (60 s restart loop). Runtime state lives under
@@ -66,11 +66,10 @@ class Verdict:
   `harness.models.llama_server_agent_factory`.
 
 **Assemble** (`campaign/assemble.py`):
-- `assemble(root) -> str`: read the gate ledger, take adopted candidates, order by
-  `robust_severity` desc, and emit a self-contained `AttackAlgorithm` whose `run` returns the adopted
-  chains **repeated to fill `max_candidates` (~300)** (severity-repetition; see docs/strategy.md). No
-  live search needed — the pool is pre-validated. Writes `run/build_next/attack_src.py`.
-- `build_submission` then inlines it → `run/build_next/attack.py` (submission-isolation still enforced).
+- `build(messages, out_dir)`: render `_TEMPLATE` with the authored seed(s) and write a self-contained
+  `AttackAlgorithm` **directly** to `run/build_next/attack.py` (imports only `aicomp_sdk` + stdlib —
+  no `build_submission` inlining step). Its `run()` self-sizes: it live-validates candidates and fills
+  up to `_HARD_N_CAP` (2000) or the replay-budget deadline, whichever binds first.
 - Caches the current pool's expected score in `run/build_next_status.json`.
 
 **Promote** (`campaign/promote.py`): on a confirmed private-LB win, copy `build_next` to the

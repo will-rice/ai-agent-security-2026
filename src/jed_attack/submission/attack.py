@@ -1,5 +1,9 @@
 """Submission entry point: AttackAlgorithm for the JED red-team benchmark.
 
+RETIRED — this ``submission/*`` package is NOT shipped. The live attack is rendered by
+:mod:`jed_attack.campaign.assemble` to ``run/build_next/attack.py``; nothing in the live
+loop imports this package. Kept only by its own tests. See AGENTS.md "Where things are".
+
 This module is inlined into a single self-contained file at build time and must
 import only ``aicomp_sdk`` and the standard library.
 """

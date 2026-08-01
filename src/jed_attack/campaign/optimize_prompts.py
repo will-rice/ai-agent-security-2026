@@ -14,8 +14,8 @@ blackboard.Blackboard`. Each lane, forever:
 3. authors a batch of submissions on its lane via AsyncOpenAI
    (:func:`propose_batch_async`: streams one reply, salvages a ``list[Submission]``),
    capturing the backend's reasoning;
-4. scores EVERY submission in the batch on resident in-process llama-cpp-python
-   backends (:func:`~jed_attack.campaign.submission_score.score_submission`, off-thread),
+4. scores EVERY submission off-thread on resident in-process llama-cpp-python backends
+   (:func:`~jed_attack.campaign.submission_score.score_submission`),
    hill-climbs the batch on public raw per replay second, and appends every submission
    of the kept batch to the shared flat-file blackboard as its own candidate; a new
    objective best reships ``attack.py`` (:func:`~jed_attack.campaign.assemble.build`).
@@ -529,6 +529,22 @@ def _advance_provider_after_error(
     )
 
 
+_judge_semaphore: asyncio.Semaphore | None = None
+
+
+def _judge_gate() -> asyncio.Semaphore:
+    """One process-wide cap on concurrent judge assessments, shared across all lanes.
+
+    Built lazily inside the running loop and reused, so N lanes share a single
+    ``Semaphore(JUDGE_MAX_CONCURRENT_ASSESSMENTS)`` instead of each constructing its own
+    (a per-call semaphore let N assessments hit the single judge service at once).
+    """
+    global _judge_semaphore
+    if _judge_semaphore is None:
+        _judge_semaphore = asyncio.Semaphore(config.JUDGE_MAX_CONCURRENT_ASSESSMENTS)
+    return _judge_semaphore
+
+
 async def _assess_batch(
     batch: list[Submission],
     scores: list[SubmissionScore],
@@ -537,7 +553,7 @@ async def _assess_batch(
     """Assess a scored batch once per candidate when judge mode is enabled."""
     if config.JUDGE_MODE == "off":
         return [None] * len(batch)
-    semaphore = asyncio.Semaphore(config.JUDGE_MAX_CONCURRENT_ASSESSMENTS)
+    semaphore = _judge_gate()
 
     async def assess_gated(
         submission: Submission, score: SubmissionScore

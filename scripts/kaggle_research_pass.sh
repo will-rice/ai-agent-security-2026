@@ -25,18 +25,22 @@ mkdir -p "$OUT" "$ROOT/run/logs"
 
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "=== $ts kaggle research tick ===" >>"$LOG"
+FAILS=0
 
 step() {
   # step LABEL cmd... — run a bounded step, logging timeout/failure but never
   # aborting the pass (a transient API failure shouldn't skip later steps).
+  # Counts failures so the pass only stamps last_success_utc on a clean run.
   local label="$1"
   shift
   timeout "$STEP_TIMEOUT_S" "$@"
   local status=$?
   if [[ "$status" -eq 124 ]]; then
     echo "TIMEOUT: $label exceeded ${STEP_TIMEOUT_S}s" >>"$LOG"
+    FAILS=$((FAILS + 1))
   elif [[ "$status" -ne 0 ]]; then
     echo "FAILED: $label exited $status" >>"$LOG"
+    FAILS=$((FAILS + 1))
   fi
   return 0
 }
@@ -70,5 +74,9 @@ step fetch_top_kernel_scores \
   --sort descending --max-pages 2 --page-size 20 \
   >"$OUT/latest_kernel_scores.csv" 2>>"$LOG"
 
-date -u +%Y-%m-%dT%H:%M:%SZ >"$OUT/last_success_utc"
-echo "=== $ts kaggle research tick complete ===" >>"$LOG"
+now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "$now" >"$OUT/last_run_utc"
+if [[ "$FAILS" -eq 0 ]]; then
+  echo "$now" >"$OUT/last_success_utc"
+fi
+echo "=== $ts kaggle research tick complete ($FAILS step failure(s)) ===" >>"$LOG"

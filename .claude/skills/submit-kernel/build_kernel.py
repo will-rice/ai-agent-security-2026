@@ -53,10 +53,11 @@ def build() -> Path:
     attack_src = _repo_path(ATTACK_PY).read_text(encoding="utf-8")
 
     # Fail loudly here rather than ship a kernel whose attack.py won't import.
-    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as handle:
-        handle.write(attack_src)
-        probe = handle.name
-    py_compile.compile(probe, doraise=True)
+    # TemporaryDirectory cleans the probe .py and its .pyc rather than leaking them.
+    with tempfile.TemporaryDirectory() as probe_dir:
+        probe = Path(probe_dir) / "attack_probe.py"
+        probe.write_text(attack_src, encoding="utf-8")
+        py_compile.compile(str(probe), doraise=True)
 
     out_dir = _repo_path(OUT_ROOT) / slug
     out_dir.mkdir(parents=True, exist_ok=True)

@@ -64,13 +64,16 @@ def main() -> None:
     if status != "complete":
         sys.exit(f"kernel run did not complete (status={status}); not submitting")
 
+    # Make the description unique per pushed version — poll_submission matches by it,
+    # so a constant message could latch onto a prior submission's stale score.
+    message = f"{MESSAGE} (v{version})"
     if not sk.submit_to_competition(
-        api, slug, build_kernel.COMPETITION, SUBMISSION_FILE, version, MESSAGE
+        api, slug, build_kernel.COMPETITION, SUBMISSION_FILE, version, message
     ):
         sys.exit("competition submission rejected")
 
     eval_status, score, _ = sk.poll_submission(
-        api, build_kernel.COMPETITION, MESSAGE, POLL_INTERVAL_S, POLL_TIMEOUT_S
+        api, build_kernel.COMPETITION, message, POLL_INTERVAL_S, POLL_TIMEOUT_S
     )
     print(f"eval: {eval_status} | public score: {score}")
     if eval_status != "complete":

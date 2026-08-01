@@ -1,5 +1,11 @@
 """Build a single self-contained attack.py for Kaggle submission.
 
+RETIRED — NOT the live ship path. The shipped attack is ``run/build_next/attack.py``,
+rendered directly by :mod:`jed_attack.campaign.assemble` and embedded by the
+``submit-kernel`` skill. This builder and the ``src/jed_attack/submission/*`` package
+it inlines into ``dist/attack.py`` are a dead parallel codebase kept only by their own
+tests. Editing them ships nothing. See AGENTS.md "Where things are".
+
 Dev-time submission code is split across sibling modules for testability. Kaggle
 runs a lone attack.py with no sibling package, so we inline those modules into one
 file, stripping intra-package imports.
