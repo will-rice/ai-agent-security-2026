@@ -17,14 +17,25 @@ Usage:
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 COMPETITION = "ai-agent-security-multi-step-tool-attacks"
+# This competition forbids P100; the eval runs on T4. Kaggle metadata selects the
+# accelerator via ``machine_shape``.
+DEFAULT_MACHINE_SHAPE = "NvidiaTeslaT4"
 
 
-def build(attack_py: Path, out_dir: Path, *, user: str, slug: str,
-          competition: str, title: str, gpu: bool, internet: bool) -> Path:
+def _slugify(title: str) -> str:
+    """Kaggle derives a kernel's slug from its title; mirror that so the metadata
+    ``id`` matches the pushed slug (else the status poll targets the wrong slug)."""
+    return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+
+
+def build(attack_py: Path, out_dir: Path, *, user: str, title: str,
+          competition: str, gpu: bool, internet: bool, machine_shape: str) -> Path:
     """Write the notebook + kernel-metadata.json into out_dir. Returns the folder."""
+    slug = _slugify(title)
     attack_src = attack_py.read_text(encoding="utf-8")
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -88,6 +99,7 @@ def build(attack_py: Path, out_dir: Path, *, user: str, slug: str,
         "kernel_type": "notebook",
         "is_private": True,
         "enable_gpu": gpu,
+        "machine_shape": machine_shape,
         "enable_internet": internet,
         "dataset_sources": [],
         "competition_sources": [competition],
@@ -103,21 +115,21 @@ def main() -> None:
     p.add_argument("attack_py", type=Path)
     p.add_argument("out_dir", type=Path)
     p.add_argument("--user", required=True)
-    p.add_argument("--slug", required=True)
+    p.add_argument("--title", required=True, help="Kernel title; the slug is derived from it")
     p.add_argument("--competition", default=COMPETITION)
-    p.add_argument("--title", default="JED attack submission")
+    p.add_argument("--machine-shape", default=DEFAULT_MACHINE_SHAPE,
+                   help=f"Accelerator (default {DEFAULT_MACHINE_SHAPE}; this competition forbids P100)")
     p.add_argument("--enable-gpu", dest="gpu", action="store_true", default=True)
     p.add_argument("--no-gpu", dest="gpu", action="store_false")
     p.add_argument("--enable-internet", dest="internet", action="store_true", default=False)
     p.add_argument("--no-internet", dest="internet", action="store_false")
     args = p.parse_args()
     folder = build(
-        args.attack_py, args.out_dir, user=args.user, slug=args.slug,
-        competition=args.competition, title=args.title, gpu=args.gpu, internet=args.internet,
+        args.attack_py, args.out_dir, user=args.user, title=args.title,
+        competition=args.competition, gpu=args.gpu, internet=args.internet,
+        machine_shape=args.machine_shape,
     )
-    print(f"built kernel folder: {folder}")
-    print(f"  notebook: {folder / (args.slug + '.ipynb')}")
-    print(f"  metadata: {folder / 'kernel-metadata.json'}")
+    print(f"built kernel folder: {folder}  (slug: {_slugify(args.title)})")
 
 
 if __name__ == "__main__":

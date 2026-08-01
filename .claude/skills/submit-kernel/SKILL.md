@@ -35,8 +35,11 @@ COMP=ai-agent-security-multi-step-tool-attacks
 PYTHONPATH=$NK $PY $NK/submission_quota.py $COMP
 
 # 2. Build the kernel folder from the chosen attack.py (default: the latest cut).
+#    The slug is DERIVED from --title (Kaggle slugifies the title), so the
+#    metadata id always matches the pushed slug. machine_shape defaults to
+#    NvidiaTeslaT4 — this competition rejects P100 at submit time.
 $PY $SK/build_kernel.py <ATTACK_PY> <OUT_DIR> --user <KAGGLE_USER> \
-    --slug jed-attack-$(date -u +%Y%m%d-%H%M) --title "JED attack" --enable-gpu --no-internet
+    --title "JED attack $(date -u +%Y%m%d)" --enable-gpu --no-internet
 
 # 3. Verify locally before pushing (compile + inspect the writefile cell).
 $PY -c "import json,py_compile,pathlib,tempfile,sys; nb=json.load(open(sys.argv[1])); \
@@ -52,7 +55,8 @@ PYTHONPATH=$NK $PY $NK/submit_kernel.py <OUT_DIR> --file submission.csv --messag
 
 ## JED specifics (this competition)
 - Kernel cell 5 pattern: `if os.getenv('KAGGLE_IS_COMPETITION_RERUN'): JEDAttackInferenceServer().serve()` else write a zero-row `submission.csv`. On a normal push the notebook is fast (writes `attack.py` + placeholder); the **real ~5h eval runs only on Kaggle's competition rerun** after submit.
-- Metadata: `competition_sources:[ai-agent-security-multi-step-tool-attacks]`, no model/dataset sources (the competition provides the models), `enable_gpu:true`, `enable_internet:false`.
+- Metadata: `competition_sources:[ai-agent-security-multi-step-tool-attacks]`, no model/dataset sources (the competition provides the models), `enable_gpu:true`, `machine_shape:NvidiaTeslaT4` (P100 is rejected at submit with `400 FAILED_PRECONDITION`), `enable_internet:false`.
+- The metadata `id` slug MUST equal the slugified title, or Kaggle pushes under the title-derived slug and the status poll can't find the kernel. `build_kernel.py` derives the slug from `--title` to guarantee this.
 - `attack.py` self-sizes at grade time (`_HARD_N_CAP=2000`, `_REPLAY_SAFE_FRAC=0.97`). Cuts live in `run/submission_cuts/`; `build_kernel.py` embeds whichever `attack.py` you pass.
 
 ## Common mistakes
