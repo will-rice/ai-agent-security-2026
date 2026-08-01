@@ -1,29 +1,38 @@
 #!/usr/bin/env python3
-"""Build a Kaggle code-competition kernel folder for the JED attack submission.
+"""Build the JED Kaggle code-competition kernel folder from the current attack.
 
-Emits a self-contained notebook that (1) writes the given attack.py to
-/kaggle/working/, (2) py_compiles it as a guard, and (3) on the competition
-RERUN serves the real gateway (producing the scored submission.csv), else writes
-a zero placeholder so a normal notebook run still yields a valid output. Also
-writes kernel-metadata.json wired to the competition data source.
+Every submission setting is FIXED for this competition and expressed as an
+ALL-CAPS CONSTANT below — there are no CLI flags. That is deliberate: the two
+failures that broke earlier submissions (a P100 accelerator and a slug that did
+not match the title) were both wrong-flag mistakes, and constants make them
+unrepresentable. To change what gets built, edit a constant; then run with no
+arguments.
 
-This is the host-portable replacement for the old scratchpad-hardcoded builder.
-
-Usage:
-    python build_kernel.py ATTACK_PY OUT_DIR --user KAGGLE_USER --slug SLUG
-        [--competition ai-agent-security-multi-step-tool-attacks]
-        [--title "..."] [--enable-gpu/--no-gpu] [--enable-internet/--no-internet]
+Emits a notebook that (1) writes attack.py to /kaggle/working/, (2) py_compiles
+it, and (3) on the competition RERUN serves the real gateway (producing the
+scored submission.csv), else writes a zero placeholder. Also writes
+kernel-metadata.json wired to the competition.
 """
 
-import argparse
 import json
+import py_compile
 import re
+import tempfile
 from pathlib import Path
 
+# --- Fixed submission config (constants, not flags, so they can't be misset) ---
+KAGGLE_USER = "willrice"
 COMPETITION = "ai-agent-security-multi-step-tool-attacks"
-# This competition forbids P100; the eval runs on T4. Kaggle metadata selects the
-# accelerator via ``machine_shape``.
-DEFAULT_MACHINE_SHAPE = "NvidiaTeslaT4"
+TITLE = "JED attack submission"  # the kernel slug is DERIVED from this (see _slugify)
+MACHINE_SHAPE = "NvidiaTeslaT4"  # this competition rejects P100 (400 FAILED_PRECONDITION)
+ENABLE_GPU = True
+ENABLE_INTERNET = False  # rerun env is offline; attack imports only aicomp_sdk + stdlib
+ATTACK_PY = "run/build_next/attack.py"  # the artifact to embed (repo-relative; a cut path also works)
+OUT_ROOT = "run/submission_kernel"  # kernel folders are written under here, one per slug
+# -------------------------------------------------------------------------------
+
+# build_kernel.py -> submit-kernel -> skills -> .claude -> repo root
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _slugify(title: str) -> str:
@@ -32,11 +41,24 @@ def _slugify(title: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
 
 
-def build(attack_py: Path, out_dir: Path, *, user: str, title: str,
-          competition: str, gpu: bool, internet: bool, machine_shape: str) -> Path:
-    """Write the notebook + kernel-metadata.json into out_dir. Returns the folder."""
-    slug = _slugify(title)
-    attack_src = attack_py.read_text(encoding="utf-8")
+def _repo_path(rel: str) -> Path:
+    """Resolve a repo-relative constant against the repo root (cwd-independent)."""
+    p = Path(rel)
+    return p if p.is_absolute() else REPO_ROOT / p
+
+
+def build() -> Path:
+    """Render the notebook + kernel-metadata.json from the constants. Returns the folder."""
+    slug = _slugify(TITLE)
+    attack_src = _repo_path(ATTACK_PY).read_text(encoding="utf-8")
+
+    # Fail loudly here rather than ship a kernel whose attack.py won't import.
+    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as handle:
+        handle.write(attack_src)
+        probe = handle.name
+    py_compile.compile(probe, doraise=True)
+
+    out_dir = _repo_path(OUT_ROOT) / slug
     out_dir.mkdir(parents=True, exist_ok=True)
 
     setup = (
@@ -50,7 +72,6 @@ def build(attack_py: Path, out_dir: Path, *, user: str, title: str,
         "    break\n"
         "print('setup done | IS_RERUN:', bool(os.getenv('KAGGLE_IS_COMPETITION_RERUN')))"
     )
-    # Cell 2 uses the %%writefile magic to drop attack.py verbatim.
     write_attack = "%%writefile /kaggle/working/attack.py\n" + attack_src
     verify = (
         "import py_compile\n"
@@ -78,8 +99,7 @@ def build(attack_py: Path, out_dir: Path, *, user: str, title: str,
 
     notebook = {
         "cells": [
-            {"cell_type": "markdown", "metadata": {},
-             "source": [f"# {title}\n"]},
+            {"cell_type": "markdown", "metadata": {}, "source": [f"# {TITLE}\n"]},
             code(setup), code(write_attack), code(verify), code(serve),
         ],
         "metadata": {
@@ -92,17 +112,17 @@ def build(attack_py: Path, out_dir: Path, *, user: str, title: str,
     (out_dir / nb_name).write_text(json.dumps(notebook, indent=1), encoding="utf-8")
 
     metadata = {
-        "id": f"{user}/{slug}",
-        "title": title,
+        "id": f"{KAGGLE_USER}/{slug}",
+        "title": TITLE,
         "code_file": nb_name,
         "language": "python",
         "kernel_type": "notebook",
         "is_private": True,
-        "enable_gpu": gpu,
-        "machine_shape": machine_shape,
-        "enable_internet": internet,
+        "enable_gpu": ENABLE_GPU,
+        "machine_shape": MACHINE_SHAPE,
+        "enable_internet": ENABLE_INTERNET,
         "dataset_sources": [],
-        "competition_sources": [competition],
+        "competition_sources": [COMPETITION],
         "kernel_sources": [],
     }
     (out_dir / "kernel-metadata.json").write_text(
@@ -111,25 +131,12 @@ def build(attack_py: Path, out_dir: Path, *, user: str, title: str,
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("attack_py", type=Path)
-    p.add_argument("out_dir", type=Path)
-    p.add_argument("--user", required=True)
-    p.add_argument("--title", required=True, help="Kernel title; the slug is derived from it")
-    p.add_argument("--competition", default=COMPETITION)
-    p.add_argument("--machine-shape", default=DEFAULT_MACHINE_SHAPE,
-                   help=f"Accelerator (default {DEFAULT_MACHINE_SHAPE}; this competition forbids P100)")
-    p.add_argument("--enable-gpu", dest="gpu", action="store_true", default=True)
-    p.add_argument("--no-gpu", dest="gpu", action="store_false")
-    p.add_argument("--enable-internet", dest="internet", action="store_true", default=False)
-    p.add_argument("--no-internet", dest="internet", action="store_false")
-    args = p.parse_args()
-    folder = build(
-        args.attack_py, args.out_dir, user=args.user, title=args.title,
-        competition=args.competition, gpu=args.gpu, internet=args.internet,
-        machine_shape=args.machine_shape,
-    )
-    print(f"built kernel folder: {folder}  (slug: {_slugify(args.title)})")
+    """Build the kernel folder from the constants and print where it went."""
+    folder = build()
+    print(f"built kernel folder: {folder}")
+    print(f"  slug:    {_slugify(TITLE)}")
+    print(f"  attack:  {_repo_path(ATTACK_PY)}")
+    print(f"  machine: {MACHINE_SHAPE} | gpu={ENABLE_GPU} internet={ENABLE_INTERNET}")
 
 
 if __name__ == "__main__":

@@ -15,49 +15,45 @@ quota first and verify the kernel builds before pushing.
 - Any Kaggle code-competition kernel push + submit + score-poll.
 - Not for dataset uploads or plain-file (`competitions submit -f`) competitions.
 
-## The three tools
-- `build_kernel.py` (this dir) — builds the kernel folder (notebook + `kernel-metadata.json`) from an `attack.py`. Host-portable.
-- `submission_quota.py` (nvidia-kaggle skill) — headroom BEFORE spending a slot.
-- `submit_kernel.py` (nvidia-kaggle skill) — push → poll kernel → `competition_submit_code` → poll eval → report public score.
+## The tools (all Python, no flags — config lives in ALL-CAPS constants)
+- `build_kernel.py` (this dir) — builds the kernel folder (notebook + `kernel-metadata.json`). Edit its constants (`ATTACK_PY`, `TITLE`, `MACHINE_SHAPE`, …) to change what's built; it compile-checks the embedded attack before writing.
+- `submit.py` (this dir) — the one entry point: loads `.env`, builds, pushes, waits for COMPLETE, submits, polls the eval. Reuses `submit_kernel.py`'s functions.
+- `submit_kernel.py` / `submission_quota.py` (nvidia-kaggle skill) — the underlying Kaggle push/submit/poll and daily-quota helpers.
 
 Skill dir: `.claude/skills/submit-kernel` (in-repo) · nvidia-kaggle scripts: `/home/will/.agents/skills/nvidia-kaggle-skill/scripts`
 
 ## Workflow
 
+Config is fixed in constants (no CLI flags), so a wrong accelerator or mismatched
+slug can't be passed by accident — those were the two real submission failures.
+To change what's submitted, edit the constants; then run from the repo root:
+
 ```
-# run from the repo root
-NK=/home/will/.agents/skills/nvidia-kaggle-skill/scripts
-SK=.claude/skills/submit-kernel
 PY=.venv/bin/python
-COMP=ai-agent-security-multi-step-tool-attacks
+SK=.claude/skills/submit-kernel
 
-# 1. Quota — STOP if 0 remaining (a spent slot cannot be reclaimed).
-PYTHONPATH=$NK $PY $NK/submission_quota.py $COMP
+# Build only (writes the kernel folder; compile-checks the embedded attack.py):
+$PY $SK/build_kernel.py
 
-# 2. Build the kernel folder from the chosen attack.py (default: the latest cut).
-#    The slug is DERIVED from --title (Kaggle slugifies the title), so the
-#    metadata id always matches the pushed slug. machine_shape defaults to
-#    NvidiaTeslaT4 — this competition rejects P100 at submit time.
-$PY $SK/build_kernel.py <ATTACK_PY> <OUT_DIR> --user <KAGGLE_USER> \
-    --title "JED attack $(date -u +%Y%m%d)" --enable-gpu --no-internet
-
-# 3. Verify locally before pushing (compile + inspect the writefile cell).
-$PY -c "import json,py_compile,pathlib,tempfile,sys; nb=json.load(open(sys.argv[1])); \
-src=[''.join(c['source']) for c in nb['cells'] if ''.join(c['source']).startswith('%%writefile')][0].split('\n',1)[1]; \
-f=tempfile.NamedTemporaryFile('w',suffix='.py',delete=False); f.write(src); f.close(); py_compile.compile(f.name,doraise=True); print('attack cell compiles')" <OUT_DIR>/<slug>.ipynb
-
-# 4. Push + submit + poll (the submission file the notebook produces is submission.csv).
-# NOTE: the Kaggle SDK USES $KAGGLE_API_TOKEN as the bearer token — pass the REAL
-# value (from the repo .env), never a dummy like `1`, or the push 401s.
-set -a; . /home/will/projects/ai-agent-security-2026/.env; set +a
-PYTHONPATH=$NK $PY $NK/submit_kernel.py <OUT_DIR> --file submission.csv --message "<msg>"
+# Build + push + submit + poll the eval (spends a daily slot — human-invoked):
+$PY $SK/submit.py
 ```
+
+`submit.py` is self-guarding: the competition submit only fires after the pushed
+kernel run reaches COMPLETE, so a broken build fails before any slot is spent.
+The eval poll then runs for hours; background it or let it run.
+
+Constants worth knowing (in `build_kernel.py` unless noted):
+- `ATTACK_PY` — the artifact embedded (default `run/build_next/attack.py`; point at a `run/submission_cuts/…` path for a frozen cut).
+- `TITLE` — the kernel slug is DERIVED from it, so the metadata id always matches the pushed slug.
+- `MACHINE_SHAPE = NvidiaTeslaT4` — this competition rejects P100 (`400 FAILED_PRECONDITION`).
+- `MESSAGE`, `SUBMISSION_FILE = submission.csv` (in `submit.py`) — the competition scores `submission.csv`, produced by the rerun.
 
 ## JED specifics (this competition)
 - Kernel cell 5 pattern: `if os.getenv('KAGGLE_IS_COMPETITION_RERUN'): JEDAttackInferenceServer().serve()` else write a zero-row `submission.csv`. On a normal push the notebook is fast (writes `attack.py` + placeholder); the **real ~5h eval runs only on Kaggle's competition rerun** after submit.
 - Metadata: `competition_sources:[ai-agent-security-multi-step-tool-attacks]`, no model/dataset sources (the competition provides the models), `enable_gpu:true`, `machine_shape:NvidiaTeslaT4` (P100 is rejected at submit with `400 FAILED_PRECONDITION`), `enable_internet:false`.
 - The metadata `id` slug MUST equal the slugified title, or Kaggle pushes under the title-derived slug and the status poll can't find the kernel. `build_kernel.py` derives the slug from `--title` to guarantee this.
-- `attack.py` self-sizes at grade time (`_HARD_N_CAP=2000`, `_REPLAY_SAFE_FRAC=0.97`). Cuts live in `run/submission_cuts/`; `build_kernel.py` embeds whichever `attack.py` you pass.
+- `attack.py` self-sizes at grade time (`_HARD_N_CAP=2000`, `_REPLAY_SAFE_FRAC=0.97`). Cuts live in `run/submission_cuts/`; `build_kernel.py` embeds the `ATTACK_PY` constant (default `run/build_next/attack.py`).
 
 ## Common mistakes
 - Skipping the quota check and burning the last slot on a bad build.
