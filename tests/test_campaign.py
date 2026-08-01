@@ -3380,8 +3380,9 @@ def test_assembled_attack_can_fill_with_learned_call_then_answer_ok_template(
 
 
 def test_blackboard_load_raises_when_all_rows_malformed(tmp_path: Path) -> None:
-    """A systematically broken board (every row unparseable) fails loudly instead of
-    silently warm-starting from an empty board and shipping a stale/empty attack.py.
+    """Fail loudly on a fully-degraded board rather than warm-starting empty.
+
+    Every row unparseable would otherwise silently ship a stale/empty attack.py.
     """
     from jed_attack.campaign import blackboard as bb
 
@@ -3395,8 +3396,9 @@ def test_blackboard_load_raises_when_all_rows_malformed(tmp_path: Path) -> None:
 
 
 def test_blackboard_load_tolerates_a_few_malformed_rows(tmp_path: Path) -> None:
-    """A handful of bad rows among many valid ones is skipped, not fatal (a crash
-    mid-append shouldn't wipe the campaign).
+    """Skip a handful of bad rows among many valid ones rather than aborting.
+
+    A crash mid-append leaves a corrupt tail; it must not wipe the campaign.
     """
     from jed_attack.campaign import blackboard as bb
 
