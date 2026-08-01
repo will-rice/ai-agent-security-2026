@@ -14,8 +14,8 @@ blackboard.Blackboard`. Each lane, forever:
 3. authors a batch of submissions on its lane via AsyncOpenAI
    (:func:`propose_batch_async`: streams one reply, salvages a ``list[Submission]``),
    capturing the backend's reasoning;
-4. scores EVERY submission in the batch on the live served models
-   (:func:`~jed_attack.campaign.submission_score.score_submission`, off-thread),
+4. scores EVERY submission in the batch on resident in-process llama-cpp-python
+   backends (:func:`~jed_attack.campaign.submission_score.score_submission`, off-thread),
    hill-climbs the batch on public raw per replay second, and appends every submission
    of the kept batch to the shared flat-file blackboard as its own candidate; a new
    objective best reships ``attack.py`` (:func:`~jed_attack.campaign.assemble.build`).
