@@ -44,7 +44,13 @@ jobs:
           KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
           COMPETITION: ai-agent-security-multi-step-tool-attacks
         run: |
-          uvx kaggle competitions download "$COMPETITION" -p vendor/
+          # kaggle >=2.3 dropped username/key + kaggle.json auth for token-only; pin
+          # to 2.2.4 (matches the project) and write the standard credentials file.
+          mkdir -p "$HOME/.kaggle"
+          printf '{"username":"%s","key":"%s"}' "$KAGGLE_USERNAME" "$KAGGLE_KEY" \
+            > "$HOME/.kaggle/kaggle.json"
+          chmod 600 "$HOME/.kaggle/kaggle.json"
+          uvx --from 'kaggle==2.2.4' kaggle competitions download "$COMPETITION" -p vendor/
           unzip -o -q "vendor/$COMPETITION.zip" -d vendor/bundle
           python3 - <<'PY'
           import pathlib
