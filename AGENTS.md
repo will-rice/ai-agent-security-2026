@@ -84,7 +84,9 @@ exfil payloads) → run pytest → run an experiment → compare → keep or rev
 
 ## Out of scope for you
 
-- **Do not submit to Kaggle** — the human does that (it spends a daily slot). Your job is to raise
+- **Hold submission for human direction** — submitting to Kaggle spends a scarce daily slot, so do
+  not submit autonomously. Build and verify the kernel (see the `submit-kernel` skill), then submit
+  only when the human explicitly directs it for this specific artifact. Your standing job is to raise
   the local score, which predicts the leaderboard.
 - **Do not reinterpret scoring** — `docs/strategy.md` is verified against the SDK. If you think it's
   wrong, verify against `aicomp_sdk.scoring.score_attack` and note it, don't silently diverge.
