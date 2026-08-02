@@ -1,6 +1,6 @@
 """Shadow private-transfer proxy metrics derived from authoritative replay facts.
 
-The public optimizer objective stays ``public_raw_per_replay_s``. This module adds a
+The public optimizer objective is public raw per generated char. This module adds a
 separate observability lane for research-derived private-transfer hypotheses: literal
 payload DLP exposure, encoded/split exfil variants, task-aligned framing, source-to-sink
 tool chains, deputy notifications, cross-model firing, and Harmony/channel artifacts.

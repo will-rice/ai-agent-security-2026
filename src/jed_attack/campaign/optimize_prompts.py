@@ -107,7 +107,10 @@ _TEAM_TOP_K = 8  # teammate best-messages per shape shown in each proposer promp
 _TEAM_REASONING_K = (
     3  # recent cross-model reasoning blobs shown in each proposer prompt
 )
-_PUBLIC_THROUGHPUT_OBJECTIVE = "public_raw_per_replay_s"
+# The objective's persisted scheme tag lives in blackboard (it owns champion ranking);
+# alias it here so records are stamped with the current scheme and stale-scale rows from
+# a prior denominator cannot out-rank them (see blackboard.OBJECTIVE_NAME).
+_PUBLIC_THROUGHPUT_OBJECTIVE = blackboard.OBJECTIVE_NAME
 
 
 def make_record(

@@ -2578,7 +2578,9 @@ def test_make_record_persists_public_throughput_objective() -> None:
     submission = _mk_sub("throughput")
     score = _mk_score(2.0)
     score.replay_seconds = {"gpt_oss": 10.0, "gemma_4": 30.0}
-    score.total_hops = 40  # objective denominator is now deterministic summed hops
+    score.total_hops = (
+        40  # gen_chars unset here -> denominator falls back to summed hops
+    )
     score.public_by_model = {"gpt_oss": 2.0, "gemma_4": 2.0}
 
     record = op.make_record(
@@ -2589,7 +2591,7 @@ def test_make_record_persists_public_throughput_objective() -> None:
         worker=0,
     )
 
-    assert record.objective_name == "public_raw_per_replay_s"
+    assert record.objective_name == op._PUBLIC_THROUGHPUT_OBJECTIVE
     assert record.objective == pytest.approx(10.0)
     assert record.objective_tiebreaker == pytest.approx(2.0)
     assert record.to_json()["objective"] == pytest.approx(10.0)
@@ -3642,6 +3644,42 @@ def test_blackboard_append_persists_selects_and_ships(
     assert board.recent_reasoning(k=1)[0][0] == "deepseek-v4-flash"
 
 
+def test_blackboard_prefers_current_scheme_over_stale_scale_champion(
+    tmp_path: Path,
+) -> None:
+    """A current-scheme firing record wins over a higher-magnitude stale-scheme one.
+
+    Changing the objective denominator (per-hop -> per-generated-char) changes its
+    scale, so a prior scheme's large ``objective`` is not comparable to a current small
+    one. Without the scheme tier the stale champion (objective 18) out-ranks every new
+    record forever and freezes reshipping; the current-scheme tag must win regardless of
+    magnitude.
+    """
+    from jed_attack.campaign import blackboard as bb
+
+    def rec(objective: float, name: str, url: str) -> bb.Record:
+        return bb.Record(
+            messages=[{"type": "exfil", "text": f"SECRET_MARKER {url}", "hops": 1}],
+            public=1.0,
+            feedback=[],
+            reasoning="",
+            model="m",
+            worker=0,
+            ts=1.0,
+            valid=True,
+            fires=True,
+            objective=objective,
+            objective_tiebreaker=1.0,
+            objective_name=name,
+        )
+
+    stale = rec(18.0, "public_raw_per_replay_s", "https://stale.invalid/r")
+    current = rec(0.2, bb.OBJECTIVE_NAME, "https://current.invalid/r")
+    board = bb.Blackboard(tmp_path / "board.jsonl", [stale, current])
+
+    assert board.best_objective() is current
+
+
 def test_blackboard_append_reports_whether_it_reshipped(tmp_path: Path) -> None:
     """Callers can trigger exact artifact scoring only when ``attack.py`` changed."""
     import asyncio
@@ -3661,7 +3699,7 @@ def test_blackboard_append_reports_whether_it_reshipped(tmp_path: Path) -> None:
             fires=True,
             objective=objective,
             objective_tiebreaker=public,
-            objective_name="public_raw_per_replay_s",
+            objective_name=bb.OBJECTIVE_NAME,
         )
 
     board = bb.Blackboard.load(tmp_path / "board.jsonl")
@@ -3783,7 +3821,7 @@ def test_blackboard_best_objective_prefers_throughput_over_static_public(
         fires=True,
         objective=12.0,
         objective_tiebreaker=3.0,
-        objective_name="public_raw_per_replay_s",
+        objective_name=bb.OBJECTIVE_NAME,
     )
     board = bb.Blackboard(tmp_path / "board.jsonl", [old_static, throughput])
 
@@ -3832,7 +3870,7 @@ def test_blackboard_append_reships_new_objective_champion(tmp_path: Path) -> Non
         fires=True,
         objective=12.0,
         objective_tiebreaker=3.0,
-        objective_name="public_raw_per_replay_s",
+        objective_name=bb.OBJECTIVE_NAME,
     )
     board = bb.Blackboard(tmp_path / "board.jsonl", [old_static])
 
@@ -3888,7 +3926,7 @@ def test_worker_loop_prompts_from_objective_champion(
         fires=True,
         objective=12.0,
         objective_tiebreaker=3.0,
-        objective_name="public_raw_per_replay_s",
+        objective_name=bb.OBJECTIVE_NAME,
     )
     board = bb.Blackboard(tmp_path / "board.jsonl", [old_static, throughput])
     captured: dict[str, str] = {}

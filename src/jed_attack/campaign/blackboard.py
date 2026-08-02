@@ -26,6 +26,12 @@ from jed_attack.campaign.submission import MessageType
 
 _log = logging.getLogger(__name__)
 
+# Tag stamped on every record scored under the CURRENT optimizer objective (public raw
+# per bottleneck generated character). Bump this whenever the objective's denominator
+# changes scale: champion selection prefers rows carrying the current tag so a prior
+# scheme's incomparable magnitudes cannot freeze the champion. See _objective_key.
+OBJECTIVE_NAME = "public_raw_per_gen_char"
+
 
 @dataclass(frozen=True)
 class Record:
@@ -114,14 +120,21 @@ def _more_robust_record(left: Record, right: Record) -> Record:
     return left
 
 
-def _objective_key(record: Record) -> tuple[bool, float, float, float]:
+def _objective_key(record: Record) -> tuple[bool, bool, float, float, float]:
     """Ranking key for campaign objective champions.
 
-    Legacy rows do not have replay-time objective fields, so their objective defaults
-    to 0 and they only win by public score when no measured-throughput records exist.
+    Firing dominates: a valid firing record always outranks a non-firing one. Among
+    firing records, CURRENT-scheme rows (``objective_name == OBJECTIVE_NAME``) outrank
+    older-scheme rows regardless of magnitude, because a change of objective denominator
+    changes the scale — the persisted ``objective`` of a stale-scheme row is not
+    comparable to a current one (e.g. a per-hop objective of 18 dwarfs an equivalent
+    per-generated-char objective, which would otherwise freeze the champion forever).
+    Only within one scheme is the numeric ``objective`` a valid comparison. Legacy rows
+    have no objective and only win by public score when no scored records exist.
     """
     return (
         record.valid and record.fires,
+        record.objective_name == OBJECTIVE_NAME,
         record.objective,
         record.objective_tiebreaker,
         record.public,

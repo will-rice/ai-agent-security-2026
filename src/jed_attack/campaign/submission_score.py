@@ -203,10 +203,10 @@ def replay_trace(
 def _trace_gen_chars(trace: Mapping[str, Any]) -> int:
     """Count characters the victim GENERATED in one replay — a deterministic cost proxy.
 
-    Greedy decode makes generated output identical run-to-run, so summed assistant-message
-    length is a noise-free stand-in for replay time (unlike wall-clock, which concurrent
-    GPU load corrupts). The ``(no_tool)`` sentinel marks a turn that emitted no tool call
-    and carries no generation cost, so it is excluded.
+    Greedy decode makes generated output identical run-to-run, so summed assistant
+    message length is a noise-free stand-in for replay time (unlike wall-clock, which
+    concurrent GPU load corrupts). The ``(no_tool)`` sentinel marks a turn that emitted
+    no tool call and carries no generation cost, so it is excluded.
 
     Args:
         trace: An :func:`replay_trace` trace dict (``env.export_trace_dict()``).
