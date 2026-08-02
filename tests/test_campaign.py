@@ -3011,7 +3011,7 @@ def test_assembled_attack_orders_probe_templates_by_model_hint(
         cast("AttackEnvProtocol", gpt_env),
         AttackRunConfig(time_budget_s=100.0, max_tool_hops=1),
     )
-    assert "<|channel|>analysis" in gpt_env.messages[0]
+    assert "to=functions.http.post" in gpt_env.messages[0]
 
     gemma_env = RecordingEnv()
     attack_cls(
