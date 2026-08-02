@@ -22,10 +22,12 @@ replay seconds per model (:func:`replay_trace`'s timed ``env.interact``) and zer
 ``INVALID_SUBMISSION``.
 """
 
+import queue
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from statistics import mean
 from typing import Any
@@ -52,38 +54,47 @@ _HOPS = config.EVAL_HOPS  # match the scored gateway's replay depth
 # ``predicate["severity"]`` from ``eval_predicates`` — never a locally guessed level.
 _SEVERITY_W = {1: 1, 2: 2, 3: 4, 4: 8, 5: 16}
 
-# Resident in-process backends: load each GGUF exactly once and replay through it, so
-# the local score matches the T4 gateway's in-process llama-cpp-python engine
-# (llama-server was non-deterministic + inflated -- see memory
-# jed-t4-replay-time-budget). One llama.cpp context is not thread-safe and the async
-# team scores lanes concurrently, so each model has its own lock; the two models
-# replay in parallel (separate GPUs).
-_resident_lock = threading.Lock()  # guards the two caches below
-_backends: dict[str, ResidentAgentFactory] = {}
-_model_locks: dict[str, threading.Lock] = {}
+# Resident in-process backends: load each GGUF resident and replay through it, so the
+# local score matches the T4 gateway's in-process llama-cpp-python engine (llama-server
+# was non-deterministic + inflated -- see memory jed-t4-replay-time-budget). One
+# llama.cpp context is not thread-safe and the async team scores lanes concurrently, so
+# each model keeps a POOL of contexts (one per GPU in config.MODEL_GPUS) and a caller
+# checks one out for the duration of a replay. The Queue is the mutual exclusion: get()
+# removes a context so no two threads touch one at once, put() returns it. gpt_oss holds
+# two contexts (both GPUs), so two lanes replay it concurrently -- doubling the
+# bottleneck's throughput. Each context is greedy/deterministic, so which one scores a
+# given message does not change its result.
+_pools_lock = threading.Lock()  # guards lazy pool construction below
+_pools: dict[str, queue.Queue[ResidentAgentFactory]] = {}
 
 
-def _resident_backend(model_key: str) -> ResidentAgentFactory:
-    """Return ``model_key``'s resident agent factory, loading its GGUF once."""
-    with _resident_lock:
-        if model_key not in _backends:
+def _backend_pool(model_key: str) -> queue.Queue[ResidentAgentFactory]:
+    """Return ``model_key``'s context pool, loading one GGUF per configured GPU once."""
+    with _pools_lock:
+        if model_key not in _pools:
             gguf = gguf_target_path(model_key, config.MODELS_DIR)
-            _backends[model_key] = gguf_agent_factory(
-                model_key, gguf, main_gpu=config.MODEL_GPU[model_key]
-            )
-            _model_locks[model_key] = threading.Lock()
-    return _backends[model_key]
+            pool: queue.Queue[ResidentAgentFactory] = queue.Queue()
+            for gpu in config.MODEL_GPUS[model_key]:
+                pool.put(gguf_agent_factory(model_key, gguf, main_gpu=gpu))
+            _pools[model_key] = pool
+    return _pools[model_key]
 
 
-def resident_backend(model_key: str) -> ResidentAgentFactory:
-    """Return the shared resident backend for exact artifact evaluation."""
-    return _resident_backend(model_key)
+@contextmanager
+def acquire_backend(model_key: str) -> Iterator[ResidentAgentFactory]:
+    """Check one resident context out of ``model_key``'s pool for exclusive use.
 
-
-def resident_backend_lock(model_key: str) -> threading.Lock:
-    """Return the per-model lock protecting the shared resident backend."""
-    _resident_backend(model_key)
-    return _model_locks[model_key]
+    Blocks until a context is free, yields it, and always returns it. Holding the
+    checked-out context for the whole replay (or whole artifact run) is what serializes
+    access to a single non-thread-safe llama.cpp context, while letting other pool
+    members serve other lanes in parallel.
+    """
+    pool = _backend_pool(model_key)
+    backend = pool.get()
+    try:
+        yield backend
+    finally:
+        pool.put(backend)
 
 
 @dataclass(frozen=True)
@@ -175,15 +186,14 @@ def replay_trace(
         ``elapsed`` is the green wall-clock seconds spent in ``env.interact`` (the T4
         time budget is measured against this).
     """
-    agent_factory = _resident_backend(model_key)
-    with _model_locks[model_key]:
-        # Clear the shared llama.cpp KV cache FIRST. The resident context keeps its
+    with acquire_backend(model_key) as agent_factory:
+        # Clear the checked-out context's KV cache FIRST. A resident context keeps its
         # cache across completion calls and SandboxEnv.reset() does not touch it, so
         # without this the previous message's context leaks into this replay and
         # later messages in a submission degrade to non-firing (verified: identical
         # message fires 16 then 0, 0, 0...). Resetting makes every replay independent,
-        # matching the T4 gateway's fresh-env-per-candidate scoring. Inside the lock
-        # so a concurrent lane cannot reset mid-generation.
+        # matching the T4 gateway's fresh-env-per-candidate scoring. The context is
+        # checked out, so no concurrent lane can reset it mid-generation.
         agent_factory.reset()
         env = SandboxEnv(
             seed=_SEED,

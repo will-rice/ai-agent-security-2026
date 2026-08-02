@@ -166,7 +166,7 @@ def agent_factory_for_model(
     resident = gguf_agent_factory(
         model_key,
         model_path,
-        main_gpu=campaign_config.MODEL_GPU[model_key],
+        main_gpu=campaign_config.MODEL_GPUS[model_key][0],
     )
 
     def factory() -> AgentProtocol:

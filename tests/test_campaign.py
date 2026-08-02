@@ -2104,7 +2104,7 @@ def test_artifact_score_metrics_include_generated_fill_telemetry(
 
     monkeypatch.setattr(
         artifact_score.resident_score,
-        "resident_backend_lock",
+        "acquire_backend",
         lambda model: nullcontext(),
     )
     monkeypatch.setattr(
@@ -2176,7 +2176,7 @@ def test_artifact_score_metrics_include_lb_calibrated_public_estimate(
 
     monkeypatch.setattr(
         artifact_score.resident_score,
-        "resident_backend_lock",
+        "acquire_backend",
         lambda model: nullcontext(),
     )
     monkeypatch.setattr(
@@ -2254,7 +2254,7 @@ def test_artifact_score_lb_estimate_keeps_under_cap_artifacts_unchanged(
 
     monkeypatch.setattr(
         artifact_score.resident_score,
-        "resident_backend_lock",
+        "acquire_backend",
         lambda model: nullcontext(),
     )
     monkeypatch.setattr(
@@ -4538,10 +4538,10 @@ def test_score_submission_accepts_offline_guardrail_mapping(
     assert "optimal" not in out.per_message[0].severity
 
 
-def test_score_submission_uses_one_resident_backend_per_model_under_lock(
+def test_score_submission_pools_resident_backends_and_checks_out_exclusively(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Each model's GGUF backend is built once (resident) and replays hold its lock."""
+    """A model's context pool is built once and each replay checks a context out."""
     from jed_attack.campaign import submission_score as ss
 
     built: list[str] = []
@@ -4557,17 +4557,17 @@ def test_score_submission_uses_one_resident_backend_per_model_under_lock(
 
     monkeypatch.setattr(ss, "gguf_agent_factory", fake_gguf_agent_factory)
     monkeypatch.setattr(ss, "gguf_target_path", lambda mk, d: Path(f"/{mk}.gguf"))
-    # reset the module caches so the test is isolated
-    ss._backends.clear()
-    ss._model_locks.clear()
+    # Single-context pool so "built once" is unambiguous (a two-GPU pool builds two).
+    monkeypatch.setattr(ss.config, "MODEL_GPUS", {"gpt_oss": (0,)})
+    ss._pools.clear()  # isolate the module-level pool cache
 
-    captured_lock_held: list[bool] = []
+    captured_pool_empty: list[bool] = []
 
-    # exercise the real replay_trace to build the backend + take the lock, but stub the
-    # SDK env so nothing loads: monkeypatch SandboxEnv to a no-op recorder.
+    # exercise the real replay_trace to build the pool + check a context out, but stub
+    # the SDK env so nothing loads: monkeypatch SandboxEnv to a no-op recorder.
     class FakeEnv:
         def __init__(self, **kw: object) -> None:
-            captured_lock_held.append(ss._model_locks["gpt_oss"].locked())
+            captured_pool_empty.append(ss._pools["gpt_oss"].empty())
 
         def reset(self) -> None: ...
 
@@ -4580,8 +4580,10 @@ def test_score_submission_uses_one_resident_backend_per_model_under_lock(
     monkeypatch.setattr(ss, "eval_predicates", lambda trace: [])
     one = _exfil("SECRET_MARKER https://a.invalid/r", 1)
     ss.score_submission([one, one], models=("gpt_oss",))
-    assert built == ["gpt_oss"]  # built ONCE despite two messages
-    assert all(captured_lock_held)  # the per-model lock was held during each replay
+    assert built == ["gpt_oss"]  # pool built ONCE despite two messages
+    assert all(
+        captured_pool_empty
+    )  # the sole context was checked out during each replay
 
 
 def test_replay_trace_resets_shared_backend_before_each_replay(
@@ -4607,8 +4609,7 @@ def test_replay_trace_resets_shared_backend_before_each_replay(
             backend, lambda b: cast(AgentProtocol, object())
         ),
     )
-    ss._backends.clear()
-    ss._model_locks.clear()
+    ss._pools.clear()
 
     class FakeEnv:
         def __init__(self, **kw: object) -> None: ...

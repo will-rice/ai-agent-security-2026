@@ -36,7 +36,13 @@ MODELS: tuple[str, ...] = ("gpt_oss", "gemma_4")
 # the T4 gateway exactly -- see docs/.../in-process-scoring-design.md and memory
 # jed-t4-replay-time-budget.
 MODELS_DIR = Path(os.getenv("JED_MODELS_DIR", str(_REPO_ROOT / "models")))
-MODEL_GPU: dict[str, int] = {"gpt_oss": 0, "gemma_4": 1}
+# Which GPU(s) each model loads a resident context on. A model may list MULTIPLE GPUs:
+# the scorer loads one context per GPU and pools them, so that many contexts replay
+# concurrently (each greedy/deterministic, so any context scores a message identically).
+# gpt_oss -- the throughput bottleneck (its budget is 5x gemma's) -- gets two contexts
+# (3090 + the Ada, which has room beside gemma) to double scoring throughput; gemma,
+# never the bottleneck, keeps one on the Ada.
+MODEL_GPUS: dict[str, tuple[int, ...]] = {"gpt_oss": (0, 1), "gemma_4": (1,)}
 
 # Time-aware objective: the T4 gateway INVALIDATES a submission that exceeds ~9000s/
 # model of wall-clock replay. We replay in-process, so we MEASURE green replay-seconds
