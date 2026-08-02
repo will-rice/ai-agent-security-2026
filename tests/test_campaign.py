@@ -1674,8 +1674,10 @@ def test_refine_accepts_lower_public_when_raw_per_replay_second_improves(
     fast = _mk_sub("fast")
     slow_score = _mk_score(10.0)
     slow_score.replay_seconds = {"gpt_oss": 50.0, "gemma_4": 50.0}
+    slow_score.total_hops = 100
     fast_score = _mk_score(9.0)
     fast_score.replay_seconds = {"gpt_oss": 5.0, "gemma_4": 5.0}
+    fast_score.total_hops = 10
 
     async def fake_batch(
         prompt: str, provider: object, timeout_s: float
@@ -1746,9 +1748,11 @@ def test_worker_loop_logs_objective_metrics_separately(
     fast = Submission(messages=[_exfil("SECRET_MARKER https://fast.invalid/r", 1)])
     slow_score = _mk_score(10.0)
     slow_score.replay_seconds = {"gpt_oss": 50.0, "gemma_4": 50.0}
+    slow_score.total_hops = 100
     slow_score.public_by_model = {"gpt_oss": 10.0, "gemma_4": 10.0}
     fast_score = _mk_score(9.0)
     fast_score.replay_seconds = {"gpt_oss": 5.0, "gemma_4": 5.0}
+    fast_score.total_hops = 10
     fast_score.public_by_model = {"gpt_oss": 9.0, "gemma_4": 9.0}
     submissions = iter([slow, fast])
     scores = iter([slow_score, fast_score])
@@ -2574,6 +2578,7 @@ def test_make_record_persists_public_throughput_objective() -> None:
     submission = _mk_sub("throughput")
     score = _mk_score(2.0)
     score.replay_seconds = {"gpt_oss": 10.0, "gemma_4": 30.0}
+    score.total_hops = 40  # objective denominator is now deterministic summed hops
     score.public_by_model = {"gpt_oss": 2.0, "gemma_4": 2.0}
 
     record = op.make_record(

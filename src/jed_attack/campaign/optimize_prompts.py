@@ -373,6 +373,9 @@ async def _score_artifact_metrics(
     )
 
 
+_last_artifact_score_at: float = 0.0
+
+
 async def _log_artifact_score_if_needed(
     reshipped: bool,
     out_dir: Path,
@@ -380,9 +383,21 @@ async def _log_artifact_score_if_needed(
     model: str,
     worker: int,
 ) -> None:
-    """Log exact artifact metrics when this generation rewrote ``attack.py``."""
-    if not reshipped or run is None or not config.ARTIFACT_SCORE_ENABLED:
+    """Log exact artifact metrics on a new-champion reship OR on a timed interval.
+
+    Scoring only on reship starved the telemetry for ~27h during an objective plateau,
+    so it also runs when ``ARTIFACT_SCORE_EVERY_S`` has elapsed. The timestamp is set
+    before the (awaited, GPU-locked) score so concurrent lanes don't double-run it.
+    """
+    if run is None or not config.ARTIFACT_SCORE_ENABLED:
         return
+    global _last_artifact_score_at
+    now = time.monotonic()
+    interval = config.ARTIFACT_SCORE_EVERY_S
+    due = interval > 0.0 and (now - _last_artifact_score_at) >= interval
+    if not (reshipped or due):
+        return
+    _last_artifact_score_at = now
     attack_path = out_dir / "attack.py"
     try:
         metrics = await _score_artifact_metrics(attack_path)
@@ -1154,25 +1169,28 @@ def _batch_score_metrics(scores: list[SubmissionScore]) -> dict[str, float]:
 
 
 def _batch_refine_objective(scores: list[SubmissionScore]) -> tuple[float, float]:
-    """Return the optimizer's public-throughput objective.
+    """Return the optimizer's public-throughput objective (raw per summed hop).
 
-    Public raw per replay second is the primary signal because the public surface is
-    replay-time-limited: a lower absolute score can be the better candidate family when
-    it scores much faster. Mean public remains a secondary tie-breaker so equal-rate
-    batches keep the higher board value.
+    The public surface is replay-time-limited, so the objective rewards public raw per
+    unit of replay cost. The cost denominator is the submission's summed ``total_hops``
+    — a DETERMINISTIC proxy for replay time — NOT measured wall-clock. Wall-clock made
+    the objective non-reproducible: ``best_objective`` is a max over all history, so it
+    latched onto the single least-loaded timing sample and could never be re-earned once
+    the host slowed, freezing the optimizer. A hop-based denominator makes an identical
+    submission always score identically. Mean public stays a secondary tie-breaker.
     """
     if not scores:
         return (0.0, 0.0)
-    total_replay = sum(_total_replay_seconds(score) for score in scores)
+    total_cost = sum(float(score.total_hops) for score in scores)
     public_raw_per_replay_s = _safe_div(
-        sum(score.public * 200.0 for score in scores), total_replay
+        sum(score.public * 200.0 for score in scores), total_cost
     )
     return (public_raw_per_replay_s, mean(score.public for score in scores))
 
 
 def _score_public_raw_per_replay_s(score: SubmissionScore) -> float:
-    """Return one submission's public raw score per replay second."""
-    return _safe_div(score.public * 200.0, _total_replay_seconds(score))
+    """Return one submission's public raw score per summed hop (deterministic cost)."""
+    return _safe_div(score.public * 200.0, float(score.total_hops))
 
 
 def _empty_batch_score_metrics() -> dict[str, float]:

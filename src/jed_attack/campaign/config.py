@@ -58,6 +58,11 @@ GREEN_REPLAY_BUDGET_S: dict[str, float] = {"gpt_oss": 300.0, "gemma_4": 60.0}
 # exact outer-loop telemetry.
 ARTIFACT_SCORE_ENABLED = os.getenv("JED_ARTIFACT_SCORE", "1") != "0"
 ARTIFACT_SCORE_BUDGET_S = float(os.getenv("JED_ARTIFACT_SCORE_BUDGET_S", "9000"))
+# Also re-score the shipped artifact on a timer, not only on a new-champion reship —
+# otherwise the "artifact score" telemetry goes stale for the entire duration of any
+# objective plateau (it silently did for ~27h). A full score is expensive (~1-2h), so
+# default to a long interval; 0 disables the timer (reship-only, the old behavior).
+ARTIFACT_SCORE_EVERY_S = float(os.getenv("JED_ARTIFACT_SCORE_EVERY_S", "21600"))
 
 # Leaderboard calibration for live-fill artifacts. The 2026-07-28 submission
 # ``artifact-public-180 sha-95083d3e t4`` scored 180.0 under local artifact
