@@ -790,6 +790,34 @@ def test_propose_batch_async_streams_and_salvages(
     assert reasoning == "weighed diversity"
 
 
+def test_score_batch_preserves_input_order_when_scoring_concurrently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Concurrent batch scoring returns one score per submission, in input order.
+
+    _score_batch now scores a pool's-worth of submissions at once (via gather), so the
+    regression risk is reordering: the i-th result must still be the i-th submission's.
+    gather preserves argument order regardless of which score finishes first, so the
+    per-index public values must come back in input order.
+    """
+    import asyncio
+
+    from jed_attack.campaign import optimize_prompts as op
+    from jed_attack.campaign.submission_score import SubmissionScore
+
+    def fake_score_submission(messages: list) -> SubmissionScore:
+        # public encodes the submission's tag index so order is checkable downstream.
+        idx = int(messages[0].text.split("@")[0].split()[-1])
+        return SubmissionScore(public=float(idx), per_message=[], total_hops=idx)
+
+    monkeypatch.setattr(op, "score_submission", fake_score_submission)
+    batch = [_mk_sub(str(i)) for i in range(6)]
+
+    scores = asyncio.run(op._score_batch(batch))
+
+    assert [s.public for s in scores] == [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
+
+
 def test_worker_loop_appends_then_survives_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -355,7 +355,15 @@ async def worker_loop(
 
 
 async def _score_batch(batch: list[Submission]) -> list[SubmissionScore]:
-    """Score every submission in a batch off-thread (one score per submission).
+    """Score a batch off-thread, up to a pool's-worth of submissions at once.
+
+    Concurrency is the largest resident context pool (``config.MODEL_GPUS``), so ONE
+    lane's batch keeps every pooled context -- both gpt_oss GPUs -- busy instead of
+    leaving one idle whenever the two proposer lanes are not scoring at the same moment.
+    Each concurrent score checks out its own context and replays greedily on a fresh
+    env, so results are identical to serial scoring. The pool's Queue is the real
+    limiter: when two lanes score at once their extra scores just block on it, never
+    over-driving the GPUs.
 
     Args:
         batch: The submissions to score.
@@ -363,7 +371,13 @@ async def _score_batch(batch: list[Submission]) -> list[SubmissionScore]:
     Returns:
         One :class:`SubmissionScore` per submission, in order.
     """
-    return [await asyncio.to_thread(score_submission, s.messages) for s in batch]
+    semaphore = asyncio.Semaphore(max(len(gpus) for gpus in config.MODEL_GPUS.values()))
+
+    async def score_one(submission: Submission) -> SubmissionScore:
+        async with semaphore:
+            return await asyncio.to_thread(score_submission, submission.messages)
+
+    return list(await asyncio.gather(*(score_one(s) for s in batch)))
 
 
 async def _score_artifact_metrics(
