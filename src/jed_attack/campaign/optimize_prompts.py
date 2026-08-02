@@ -16,7 +16,7 @@ blackboard.Blackboard`. Each lane, forever:
    capturing the backend's reasoning;
 4. scores EVERY submission off-thread on resident in-process llama-cpp-python backends
    (:func:`~jed_attack.campaign.submission_score.score_submission`),
-   hill-climbs the batch on public raw per replay second, and appends every submission
+   hill-climbs the batch on public raw per generated char, and appends every submission
    of the kept batch to the shared flat-file blackboard as its own candidate; a new
    objective best reships ``attack.py`` (:func:`~jed_attack.campaign.assemble.build`).
 
@@ -161,6 +161,7 @@ def make_record(
         objective=_score_public_raw_per_replay_s(score),
         objective_tiebreaker=score.public,
         objective_name=_PUBLIC_THROUGHPUT_OBJECTIVE,
+        gen_chars=_gen_chars_cost(score),
     )
 
 
@@ -626,7 +627,7 @@ async def _refine_batch(
     int,
     Comparison,
 ]:
-    """Hill-climb a scored batch on public raw per replay second; return the kept.
+    """Hill-climb a scored batch on public raw per generated character; return the kept.
 
     Up to ``config.REFINE_MAX_ROUNDS`` rounds: each round re-authors a fresh batch from
     every submission in the current batch + their real feedback, re-scores every
@@ -922,9 +923,16 @@ def _render_incumbent(
         )
     incumbent_hops = sum(int(message["hops"]) for message in incumbent.messages)
     if incumbent.objective_name == _PUBLIC_THROUGHPUT_OBJECTIVE:
+        fired_in = (
+            f" -- fired in {incumbent.gen_chars:g} generated chars on the bottleneck "
+            "model"
+            if incumbent.gen_chars
+            else ""
+        )
         objective_line = (
-            f"optimizer objective = {incumbent.objective:g} public raw per replay "
-            f"second; public total = {incumbent.public:g}."
+            f"optimizer objective = {incumbent.objective:g} public raw per GENERATED "
+            f"CHARACTER{fired_in}; public total = {incumbent.public:g}. FEWER chars "
+            "generated to fire = higher score."
         )
     else:
         objective_line = (
@@ -946,8 +954,9 @@ def _render_incumbent(
             for i, message in enumerate(incumbent.messages)
         ),
         "",
-        "Improve on the incumbent: keep the low-latency seed shape that scored, repair",
-        "or replace weak members, and only add diversity when it preserves throughput.",
+        "Improve on the incumbent: keep the lean seed shape that scored but make it",
+        "fire in FEWER generated chars (terser tool call, less preamble); repair or",
+        "replace weak members, and only add diversity when it preserves throughput.",
     ]
     return "\n".join(lines)
 

@@ -51,6 +51,9 @@ class Record:
     objective: float = 0.0
     objective_tiebreaker: float = 0.0
     objective_name: str = "legacy_public"
+    gen_chars: float = (
+        0.0  # bottleneck-model generated chars to fire (the objective's cost)
+    )
 
     def to_json(self) -> dict[str, Any]:
         """Return a JSON-serializable dict for this record."""
@@ -82,6 +85,7 @@ class Record:
             objective=float(data.get("objective", 0.0)),
             objective_tiebreaker=float(data.get("objective_tiebreaker", 0.0)),
             objective_name=str(data.get("objective_name", "legacy_public")),
+            gen_chars=float(data.get("gen_chars", 0.0)),
         )
 
 

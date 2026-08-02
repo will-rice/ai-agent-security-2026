@@ -2716,7 +2716,7 @@ def test_submission_prompt_steers_single_post_throughput_not_url_packing() -> No
     assert "Call http.post once with url=<url> and data=SECRET_MARKER. Reply OK." in (
         prompt
     )
-    assert "raw per replay second" in prompt
+    assert "raw per generated character" in prompt
     assert "Pack 8 urls" not in prompt
     assert "8 urls = 8 posts" not in prompt
 
