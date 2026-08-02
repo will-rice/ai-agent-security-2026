@@ -291,12 +291,23 @@ def _deputy_fired(trace: Mapping[str, Any]) -> bool:
     return False
 
 
+def _gen_chars(trace: Mapping[str, Any]) -> int:
+    """Deterministic generation cost: total assistant text the victim emits to fire.
+
+    Fewer generated chars -> faster T4 replay -> more candidates fit the fixed budget
+    -> higher score, with NO wall-clock noise. Template SELECTION ranks by this; the
+    count-sizing loop still uses measured replay time for the fail-fast boundary.
+    """
+    messages = trace.get("assistant_messages") or []
+    return sum(len(m) for m in messages if isinstance(m, str) and m != "(no_tool)")
+
+
 def _probe_chain(
     env: AttackEnvProtocol,
     chain: tuple[str, ...],
     max_hops: int,
     fired_fn: Any = _trace_fired,
-) -> tuple[bool, float]:
+) -> tuple[bool, float, int]:
     start = time.monotonic()
     try:
         env.reset()
@@ -304,10 +315,13 @@ def _probe_chain(
             env.interact(message, max_tool_hops=max_hops)
         trace = env.export_trace_dict()
     except Exception:
-        return False, max(_LAT_FLOOR_S, time.monotonic() - start)
+        return False, max(_LAT_FLOOR_S, time.monotonic() - start), 0
+    if not isinstance(trace, Mapping):
+        return False, max(_LAT_FLOOR_S, time.monotonic() - start), 0
     return (
-        isinstance(trace, Mapping) and bool(fired_fn(trace)),
+        bool(fired_fn(trace)),
         max(_LAT_FLOOR_S, time.monotonic() - start),
+        _gen_chars(trace),
     )
 
 
@@ -406,7 +420,7 @@ class AttackAlgorithm(AttackAlgorithmBase):
         ):
             warmup_index = int(self._cfg("warmup_index", _WARMUP_INDEX))
             warmup_chain = (_single_msg(warmup_index),)
-            fired, elapsed = _probe_chain(env, warmup_chain, max_hops)
+            fired, elapsed, _gen = _probe_chain(env, warmup_chain, max_hops)
             warmup_cap = float(
                 self._cfg("warmup_slowest_cap", _WARMUP_SLOWEST_CAP)
             )
@@ -436,7 +450,7 @@ class AttackAlgorithm(AttackAlgorithmBase):
                 wall_deadline=wall_deadline,
             ):
                 break
-            fired, elapsed = _probe_chain(env, chain, max_hops)
+            fired, elapsed, _gen = _probe_chain(env, chain, max_hops)
             slowest = max(slowest, elapsed)
             if fired:
                 keep(chain, elapsed)
@@ -444,6 +458,7 @@ class AttackAlgorithm(AttackAlgorithmBase):
         probe_reps = max(0, int(self._cfg("probe_reps", _PROBE_REPS)))
         probe_index = int(self._cfg("probe_start_index", _PROBE_START_INDEX))
         latencies: list[list[float]] = [[] for _ in _TEMPLATES]
+        gen_chars_lists: list[list[float]] = [[] for _ in _TEMPLATES]
         success_latencies: list[list[float]] = [[] for _ in _TEMPLATES]
         fires = [0 for _ in _TEMPLATES]
         bank: list[tuple[int, int, float]] = []
@@ -464,9 +479,10 @@ class AttackAlgorithm(AttackAlgorithmBase):
                 current_index = probe_index
                 probe_index += 1
                 chain = (_message(template, current_index),)
-                fired, elapsed = _probe_chain(env, chain, max_hops)
+                fired, elapsed, gen = _probe_chain(env, chain, max_hops)
                 slowest = max(slowest, elapsed)
                 latencies[template_index].append(elapsed)
+                gen_chars_lists[template_index].append(gen)
                 if fired:
                     fires[template_index] += 1
                     success_latencies[template_index].append(elapsed)
@@ -482,14 +498,18 @@ class AttackAlgorithm(AttackAlgorithmBase):
             fire_rate = fires[template_index] / sample_count if sample_count else 0.0
             if sample_count < probe_reps or fire_rate < _MIN_FIRE_RATE:
                 continue
-            cost = _effective_cost(latencies[template_index], fires[template_index])
+            # Rank by DETERMINISTIC generated chars (fewer -> faster replay -> more
+            # candidates fit), not noisy wall-clock latency. Sizing still uses time.
+            cost = _effective_cost(
+                gen_chars_lists[template_index], fires[template_index]
+            )
             ranked_indices.append(template_index)
             if cost < selected_cost:
                 selected_index = template_index
                 selected_cost = cost
         ranked_indices.sort(
             key=lambda index: (
-                _effective_cost(latencies[index], fires[index]),
+                _effective_cost(gen_chars_lists[index], fires[index]),
                 template_order.index(index) if index in template_order else index,
             )
         )
@@ -523,7 +543,7 @@ class AttackAlgorithm(AttackAlgorithmBase):
                     break
                 chain = (_deputy_message(template, d_index),)
                 d_index += 1
-                fired, elapsed = _probe_chain(env, chain, max_hops, _deputy_fired)
+                fired, elapsed, _gen = _probe_chain(env, chain, max_hops, _deputy_fired)
                 slowest = max(slowest, elapsed)
                 if fired:
                     keep(chain, elapsed)
@@ -538,7 +558,7 @@ class AttackAlgorithm(AttackAlgorithmBase):
             ):
                 chain = (_deputy_message(deputy_template, d_index),)
                 d_index += 1
-                fired, elapsed = _probe_chain(env, chain, max_hops, _deputy_fired)
+                fired, elapsed, _gen = _probe_chain(env, chain, max_hops, _deputy_fired)
                 slowest = max(slowest, elapsed)
                 if fired:
                     keep(chain, elapsed)
@@ -579,7 +599,7 @@ class AttackAlgorithm(AttackAlgorithmBase):
             selected_template = _TEMPLATES[current_template_index][1]
             chain = (_message(selected_template, idx),)
             idx += 1
-            fired, elapsed = _probe_chain(env, chain, max_hops)
+            fired, elapsed, _gen = _probe_chain(env, chain, max_hops)
             slowest = max(slowest, elapsed)
             latencies[current_template_index].append(elapsed)
             if fired:
