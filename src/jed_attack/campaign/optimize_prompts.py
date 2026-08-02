@@ -399,10 +399,18 @@ async def _log_artifact_score_if_needed(
         )
         return
     _log.info(
-        "artifact score: public=%s lb_est=%s sha=%s",
+        "artifact score: public=%s lb_est=%s sha=%s "
+        "gpt_oss[sel=%s toolcall_fires=%s deputy=%s] "
+        "gemma[sel=%s toolcall_fires=%s deputy=%s]",
         metrics.get("artifact_public"),
         metrics.get("artifact_lb_est_public"),
         metrics.get("artifact_sha256"),
+        metrics.get("artifact_gpt_oss_fill_selected_template"),
+        metrics.get("artifact_gpt_oss_fill_probe_inj_toolcall_fires"),
+        metrics.get("artifact_gpt_oss_fill_deputy_candidate_count"),
+        metrics.get("artifact_gemma_4_fill_selected_template"),
+        metrics.get("artifact_gemma_4_fill_probe_inj_toolcall_fires"),
+        metrics.get("artifact_gemma_4_fill_deputy_candidate_count"),
     )
     _record_artifact_champion_if_needed(attack_path, metrics, model, worker)
     _log_wandb(run, {**metrics, "model": model, "worker": worker})
