@@ -308,6 +308,7 @@ async def worker_loop(
                     "best_objective_tiebreaker": objective_best.objective_tiebreaker,
                     "best_objective_name": objective_best.objective_name,
                     "total_hops": float(best_score.total_hops),
+                    "best_gen_chars_bottleneck": _gen_chars_cost(best_score),
                     "refine_rounds": refine_rounds,
                     "refine_objective_gain": batch_objective[0] - round0_objective[0],
                     "refine_public_gain": batch_public - round0_public,
@@ -553,18 +554,25 @@ def _advance_provider_after_error(
 
 
 _judge_semaphore: asyncio.Semaphore | None = None
+_judge_semaphore_loop: asyncio.AbstractEventLoop | None = None
 
 
 def _judge_gate() -> asyncio.Semaphore:
-    """One process-wide cap on concurrent judge assessments, shared across all lanes.
+    """One cap on concurrent judge assessments per event loop, shared across all lanes.
 
     Built lazily inside the running loop and reused, so N lanes share a single
     ``Semaphore(JUDGE_MAX_CONCURRENT_ASSESSMENTS)`` instead of each constructing its own
     (a per-call semaphore let N assessments hit the single judge service at once).
+    Rebinds when the running loop changes: an ``asyncio.Semaphore`` binds to the loop
+    that first awaits it, so a cache reused across a fresh ``asyncio.run`` loop raises
+    "bound to a different event loop". Production runs one loop (one shared semaphore);
+    keying on the loop keeps that while staying correct across successive loops.
     """
-    global _judge_semaphore
-    if _judge_semaphore is None:
+    global _judge_semaphore, _judge_semaphore_loop
+    loop = asyncio.get_running_loop()
+    if _judge_semaphore is None or _judge_semaphore_loop is not loop:
         _judge_semaphore = asyncio.Semaphore(config.JUDGE_MAX_CONCURRENT_ASSESSMENTS)
+        _judge_semaphore_loop = loop
     return _judge_semaphore
 
 
@@ -1115,6 +1123,7 @@ def _batch_score_metrics(scores: list[SubmissionScore]) -> dict[str, float]:
 
     totals = [_total_replay_seconds(score) for score in scores]
     total_replay = sum(totals)
+    gen_costs = [_gen_chars_cost(score) for score in scores]
     metrics = {
         "batch_valid_rate": _rate(sum(score.valid for score in scores), len(scores)),
         "batch_invalid_rate": _rate(
@@ -1130,13 +1139,14 @@ def _batch_score_metrics(scores: list[SubmissionScore]) -> dict[str, float]:
         "batch_mean_replay_s_total": _mean_or_zero(totals),
         "batch_p50_replay_s_total": _nearest_percentile(totals, 50),
         "batch_p95_replay_s_total": _nearest_percentile(totals, 95),
+        "batch_mean_gen_chars_bottleneck": _mean_or_zero(gen_costs),
         "batch_public_raw_per_replay_s": _safe_div(
             sum(score.public * 200.0 for score in scores), total_replay
         ),
     }
-    metrics["batch_objective_raw_per_replay_s"] = metrics[
-        "batch_public_raw_per_replay_s"
-    ]
+    # Reflect the TRUE objective (deterministic gen-chars denominator), not the
+    # wall-clock rate above -- that stays as honest measured-throughput telemetry.
+    metrics["batch_objective_raw_per_replay_s"] = _batch_refine_objective(scores)[0]
     model_rates: list[float] = []
     for model in config.MODELS:
         model_times = [score.replay_seconds.get(model, 0.0) for score in scores]
@@ -1168,20 +1178,38 @@ def _batch_score_metrics(scores: list[SubmissionScore]) -> dict[str, float]:
     return metrics
 
 
+def _gen_chars_cost(score: SubmissionScore) -> float:
+    """Return a submission's deterministic replay-cost denominator (bottleneck chars).
+
+    The T4 candidate count is set by whichever model's per-model time budget binds first
+    — gpt_oss, whose budget is 5x gemma's and which generates slower — so throughput is
+    governed by the BOTTLENECK model's generated-character count, not the sum across
+    models. ``max`` over :attr:`SubmissionScore.gen_chars` tracks that bottleneck and
+    self-corrects if it ever shifts model. Generated chars are greedy-deterministic, so
+    the denominator is reproducible (the property ``total_hops`` gave) while being far
+    finer: a harmony scaffold and a lean template fire on the same hop but differ ~20x
+    in chars, so this gives the optimizer a real gradient toward lean, high-throughput
+    messages. Falls back to ``total_hops`` only for scores predating the field.
+    """
+    return max(score.gen_chars.values(), default=float(score.total_hops))
+
+
 def _batch_refine_objective(scores: list[SubmissionScore]) -> tuple[float, float]:
-    """Return the optimizer's public-throughput objective (raw per summed hop).
+    """Return the optimizer's public-throughput objective (raw per generated char).
 
     The public surface is replay-time-limited, so the objective rewards public raw per
-    unit of replay cost. The cost denominator is the submission's summed ``total_hops``
-    — a DETERMINISTIC proxy for replay time — NOT measured wall-clock. Wall-clock made
-    the objective non-reproducible: ``best_objective`` is a max over all history, so it
-    latched onto the single least-loaded timing sample and could never be re-earned once
-    the host slowed, freezing the optimizer. A hop-based denominator makes an identical
-    submission always score identically. Mean public stays a secondary tie-breaker.
+    unit of replay cost. The cost denominator is the batch's summed bottleneck-model
+    generated characters (see :func:`_gen_chars_cost`) — a DETERMINISTIC, fine-grained
+    proxy for replay time, NOT measured wall-clock. Wall-clock made the objective
+    non-reproducible: ``best_objective`` is a max over all history, so it latched onto
+    the single least-loaded timing sample and could never be re-earned once the host
+    slowed, freezing the optimizer. Generated chars make an identical submission score
+    identically AND reward leaner firing messages. Mean public stays a secondary
+    tie-breaker.
     """
     if not scores:
         return (0.0, 0.0)
-    total_cost = sum(float(score.total_hops) for score in scores)
+    total_cost = sum(_gen_chars_cost(score) for score in scores)
     public_raw_per_replay_s = _safe_div(
         sum(score.public * 200.0 for score in scores), total_cost
     )
@@ -1189,8 +1217,8 @@ def _batch_refine_objective(scores: list[SubmissionScore]) -> tuple[float, float
 
 
 def _score_public_raw_per_replay_s(score: SubmissionScore) -> float:
-    """Return one submission's public raw score per summed hop (deterministic cost)."""
-    return _safe_div(score.public * 200.0, float(score.total_hops))
+    """Return a submission's public raw per generated char (deterministic cost)."""
+    return _safe_div(score.public * 200.0, _gen_chars_cost(score))
 
 
 def _empty_batch_score_metrics() -> dict[str, float]:
