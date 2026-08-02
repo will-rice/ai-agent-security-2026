@@ -232,13 +232,11 @@ def _score_one_model(
     counts: list[int] = []
     telemetry: list[dict[str, ArtifactMetric]] = []
     counting_cls = _counting_attack_class(attack_cls, counts, telemetry)
-    # Check one context out of the pool for the whole run: run_attack drives many
-    # candidates through this single non-thread-safe context, so it must own it start to
-    # finish (pool peers keep serving the optimizer's lanes meanwhile).
-    with resident_score.acquire_backend(model_key) as resident:
+    lock = resident_score.resident_backend_lock(model_key)
+    with lock:
         result = run_attack(
             counting_cls,
-            agent_factory=_resident_factory(resident),
+            agent_factory=_resident_factory(model_key),
             agent_label=model_key,
             budget_s=budget_s,
         )
@@ -281,8 +279,9 @@ def _counting_attack_class(
     return CountingAttack
 
 
-def _resident_factory(resident: ResidentAgentFactory) -> AgentFactory:
-    """Return a zero-arg SDK factory backed by a checked-out resident context."""
+def _resident_factory(model_key: str) -> AgentFactory:
+    """Return a zero-arg SDK factory backed by the campaign's resident model."""
+    resident = resident_score.resident_backend(model_key)
 
     def factory() -> AgentProtocol:
         return cast("AgentProtocol", _ResettingAgent(resident(), resident))

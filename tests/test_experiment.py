@@ -75,7 +75,7 @@ def test_inline_backend_uses_resident_gguf_and_gpu_placement(
         return cast("experiment.ResidentAgentFactory", Resident())
 
     monkeypatch.setattr(experiment.campaign_config, "MODELS_DIR", tmp_path)
-    monkeypatch.setattr(experiment.campaign_config, "MODEL_GPUS", {"gpt_oss": (7,)})
+    monkeypatch.setattr(experiment.campaign_config, "MODEL_GPU", {"gpt_oss": 7})
     monkeypatch.setattr(experiment, "gguf_agent_factory", fake_gguf_agent_factory)
 
     factory, metadata = experiment.agent_factory_for_model(
