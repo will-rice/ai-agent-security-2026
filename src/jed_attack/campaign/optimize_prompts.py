@@ -1388,6 +1388,7 @@ _BATCH_SCHEMA = {
         "properties": {
             "submissions": {
                 "type": "array",
+                "maxItems": config.MAX_SCORE_BATCH,
                 "items": {
                     "type": "object",
                     "additionalProperties": False,
@@ -1531,6 +1532,10 @@ def _salvage_batch(content: str) -> list[Submission]:
             used_hops += message.hops
         if kept:
             batch.append(Submission(messages=kept))
+    if len(batch) > config.MAX_SCORE_BATCH:
+        # Bound per-generation scoring latency; the dropped tail is near-duplicate
+        # URL variants, so the search keeps its diversity but iterates far more often.
+        batch = batch[: config.MAX_SCORE_BATCH]
     _log.info("salvaged batch: %d submissions", len(batch))
     return batch
 
