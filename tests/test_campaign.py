@@ -1384,10 +1384,46 @@ def test_robustness_lambda_stamps_distinct_objective_scheme() -> None:
     from jed_attack.campaign import blackboard, config
 
     assert config.ROBUSTNESS_LAMBDA == 0.0  # default: unchanged live objective
-    assert blackboard.OBJECTIVE_NAME == "public_raw_per_gen_char"
-    assert blackboard.objective_scheme_name(0.0) == "public_raw_per_gen_char"
-    assert blackboard.objective_scheme_name(0.5) == "robust0.5_raw_per_gen_char"
-    assert blackboard.objective_scheme_name(1.0) == "robust1_raw_per_gen_char"
+    assert blackboard.OBJECTIVE_NAME == "public_raw_per_total_gen_char"
+    assert blackboard.objective_scheme_name(0.0) == "public_raw_per_total_gen_char"
+    assert blackboard.objective_scheme_name(0.5) == "robust0.5_raw_per_total_gen_char"
+    assert blackboard.objective_scheme_name(1.0) == "robust1_raw_per_total_gen_char"
+
+
+def test_raw_gen_meter_counts_full_raw_generation() -> None:
+    """The meter tallies raw_text length (incl. the reasoning channel) across hops."""
+    from types import SimpleNamespace
+
+    from jed_attack.campaign import submission_score as ss
+
+    raw = "<|channel|>analysis<|message|>deliberate<|channel|>commentary<|message|>call"
+    backend = SimpleNamespace(generate=lambda request: SimpleNamespace(raw_text=raw))
+    meter = ss._RawGenMeter(cast(ss._GenBackend, backend))  # shadows backend.generate
+
+    assert meter.chars == 0
+    backend.generate("hop0")
+    assert meter.chars == len(raw)
+    backend.generate("hop1")
+    assert meter.chars == 2 * len(raw)  # accumulates across a replay's hops
+    meter.reset()
+    assert meter.chars == 0
+
+
+def test_trace_gen_chars_prefers_raw_count_over_parsed() -> None:
+    """gen-char cost uses the raw reasoning-inclusive count if present, else parse."""
+    from jed_attack.campaign import submission_score as ss
+
+    # raw_gen_chars present -> used verbatim; the parse-only path would undercount it.
+    assert (
+        ss._trace_gen_chars(
+            {"assistant_messages": ["http.post(...)"], "raw_gen_chars": 137}
+        )
+        == 137
+    )
+    # absent (e.g. a test stub) -> parsed length, excluding the (no_tool) sentinel.
+    assert (
+        ss._trace_gen_chars({"assistant_messages": ["abcde", "(no_tool)", "fg"]}) == 7
+    )
 
 
 def test_make_record_persists_private_proxy_feedback() -> None:
@@ -4600,7 +4636,10 @@ def test_score_submission_uses_one_resident_backend_per_model_under_lock(
         model_key: str, gguf: Path, *, main_gpu: int | None = None
     ) -> ResidentAgentFactory:
         built.append(model_key)
-        backend = SimpleNamespace(llm=SimpleNamespace(reset=lambda: None))
+        backend = SimpleNamespace(
+            llm=SimpleNamespace(reset=lambda: None),
+            generate=lambda request: SimpleNamespace(raw_text=""),
+        )
         return ResidentAgentFactory(backend, lambda b: cast(AgentProtocol, object()))
 
     monkeypatch.setattr(ss, "gguf_agent_factory", fake_gguf_agent_factory)
@@ -4608,6 +4647,7 @@ def test_score_submission_uses_one_resident_backend_per_model_under_lock(
     # reset the module caches so the test is isolated
     ss._backends.clear()
     ss._model_locks.clear()
+    ss._gen_meters.clear()
 
     captured_lock_held: list[bool] = []
 
@@ -4646,7 +4686,10 @@ def test_replay_trace_resets_shared_backend_before_each_replay(
     from jed_attack.harness.models import ResidentAgentFactory
 
     events: list[str] = []
-    backend = SimpleNamespace(llm=SimpleNamespace(reset=lambda: events.append("reset")))
+    backend = SimpleNamespace(
+        llm=SimpleNamespace(reset=lambda: events.append("reset")),
+        generate=lambda request: SimpleNamespace(raw_text=""),
+    )
     monkeypatch.setattr(ss, "gguf_target_path", lambda mk, d: Path(f"/{mk}.gguf"))
     monkeypatch.setattr(
         ss,
@@ -4657,6 +4700,7 @@ def test_replay_trace_resets_shared_backend_before_each_replay(
     )
     ss._backends.clear()
     ss._model_locks.clear()
+    ss._gen_meters.clear()
 
     class FakeEnv:
         def __init__(self, **kw: object) -> None: ...

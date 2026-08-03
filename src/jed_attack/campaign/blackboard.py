@@ -34,10 +34,15 @@ _log = logging.getLogger(__name__)
 # A non-zero robustness weight reweights the numerator (mean -> worst-model blend),
 # which rescales the objective, so it earns its own tag and a fresh champion pool.
 def objective_scheme_name(robustness_lambda: float) -> str:
-    """Scheme tag for a robustness weight: the mean tag at 0, else a robust-L tag."""
+    """Scheme tag for a robustness weight: the mean tag at 0, else a robust-L tag.
+
+    The ``total_gen_char`` denominator counts the FULL raw generation (incl. gpt_oss's
+    reasoning channel), a different scale than the old parsed-only ``gen_char``, so the
+    tag is bumped to reset the champion pool onto the corrected metric.
+    """
     if robustness_lambda == 0.0:
-        return "public_raw_per_gen_char"
-    return f"robust{robustness_lambda:g}_raw_per_gen_char"
+        return "public_raw_per_total_gen_char"
+    return f"robust{robustness_lambda:g}_raw_per_total_gen_char"
 
 
 OBJECTIVE_NAME = objective_scheme_name(config.ROBUSTNESS_LAMBDA)

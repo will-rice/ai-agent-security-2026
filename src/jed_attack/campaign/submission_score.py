@@ -28,8 +28,12 @@ from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from statistics import mean
-from typing import Any
+from typing import Any, Protocol, cast
 
+from aicomp_sdk.agents.hf_chat_template.types import (
+    HFGenerationRequest,
+    HFGenerationResponse,
+)
 from aicomp_sdk.core.cells import cell_signature
 from aicomp_sdk.core.env.sandbox import SandboxEnv
 from aicomp_sdk.core.predicates import eval_predicates
@@ -58,9 +62,44 @@ _SEVERITY_W = {1: 1, 2: 2, 3: 4, 4: 8, 5: 16}
 # jed-t4-replay-time-budget). One llama.cpp context is not thread-safe and the async
 # team scores lanes concurrently, so each model has its own lock; the two models
 # replay in parallel (separate GPUs).
-_resident_lock = threading.Lock()  # guards the two caches below
+_resident_lock = threading.Lock()  # guards the caches below
 _backends: dict[str, ResidentAgentFactory] = {}
 _model_locks: dict[str, threading.Lock] = {}
+_gen_meters: dict[str, "_RawGenMeter"] = {}
+
+
+class _GenBackend(Protocol):
+    """The backend surface the meter wraps: a ``generate`` returning ``raw_text``."""
+
+    def generate(self, request: HFGenerationRequest) -> HFGenerationResponse: ...
+
+
+class _RawGenMeter:
+    """Tally raw generated chars (all channels) by wrapping ``backend.generate``.
+
+    The SDK agent regex-parses gpt_oss's raw output, so the trace keeps only the
+    commentary (tool-call) and final channels — the ANALYSIS (reasoning) channel is
+    dropped and the parsed ``assistant_messages`` undercount the real cost.
+    ``HFGenerationResponse.raw_text`` is the complete decode, so summing its length over
+    a replay's hops is the true, reasoning-inclusive generation cost the T4 gateway pays
+    wall-clock for. One meter per resident backend; :func:`replay_trace` resets and
+    reads it under the per-model lock, so the tally is exactly one replay's generation.
+    """
+
+    def __init__(self, backend: _GenBackend) -> None:
+        self._generate = backend.generate  # capture the original before shadowing it
+        # Shadow the bound method with our counter; cast so the type checker allows the
+        # instance-attribute assignment over a declared method.
+        cast(Any, backend).generate = self._metered_generate
+        self.chars = 0
+
+    def _metered_generate(self, request: HFGenerationRequest) -> HFGenerationResponse:
+        response = self._generate(request)
+        self.chars += len(response.raw_text)
+        return response
+
+    def reset(self) -> None:
+        self.chars = 0
 
 
 def _resident_backend(model_key: str) -> ResidentAgentFactory:
@@ -68,9 +107,14 @@ def _resident_backend(model_key: str) -> ResidentAgentFactory:
     with _resident_lock:
         if model_key not in _backends:
             gguf = gguf_target_path(model_key, config.MODELS_DIR)
-            _backends[model_key] = gguf_agent_factory(
+            factory = gguf_agent_factory(
                 model_key, gguf, main_gpu=config.MODEL_GPU[model_key]
             )
+            # Meter the shared backend's raw generation (incl. reasoning); no public
+            # accessor exists, so reach the backend the factory holds directly (it is a
+            # concrete generate-capable backend, typed only as ResettableBackend here).
+            _gen_meters[model_key] = _RawGenMeter(cast(_GenBackend, factory._backend))
+            _backends[model_key] = factory
             _model_locks[model_key] = threading.Lock()
     return _backends[model_key]
 
@@ -176,6 +220,7 @@ def replay_trace(
         time budget is measured against this).
     """
     agent_factory = _resident_backend(model_key)
+    meter = _gen_meters[model_key]
     with _model_locks[model_key]:
         # Clear the shared llama.cpp KV cache FIRST. The resident context keeps its
         # cache across completion calls and SandboxEnv.reset() does not touch it, so
@@ -185,6 +230,7 @@ def replay_trace(
         # matching the T4 gateway's fresh-env-per-candidate scoring. Inside the lock
         # so a concurrent lane cannot reset mid-generation.
         agent_factory.reset()
+        meter.reset()  # count only this replay's generation, under the same lock
         env = SandboxEnv(
             seed=_SEED,
             fixtures_dir=resolve_fixtures_dir(),
@@ -197,23 +243,37 @@ def replay_trace(
         env.interact(message, max_tool_hops=_HOPS)
         elapsed = time.perf_counter() - start
         trace = env.export_trace_dict()
+        # Stash the reasoning-inclusive generation cost so _trace_gen_chars uses it
+        # instead of the analysis-blind parsed assistant messages (see _RawGenMeter).
+        trace["raw_gen_chars"] = meter.chars
     return trace, eval_predicates(trace), elapsed
 
 
 def _trace_gen_chars(trace: Mapping[str, Any]) -> int:
-    """Count characters the victim GENERATED in one replay — a deterministic cost proxy.
+    """Total characters the victim GENERATED in one replay — a deterministic cost proxy.
 
-    Greedy decode makes generated output identical run-to-run, so summed assistant
-    message length is a noise-free stand-in for replay time (unlike wall-clock, which
-    concurrent GPU load corrupts). The ``(no_tool)`` sentinel marks a turn that emitted
-    no tool call and carries no generation cost, so it is excluded.
+    Greedy decode makes generated output identical run-to-run, so generated length is a
+    noise-free stand-in for the T4 gateway's wall-clock replay budget (unlike measured
+    wall-clock, which concurrent GPU load corrupts).
+
+    Prefers ``raw_gen_chars`` — the full backend ``raw_text`` length summed across the
+    replay's hops, stashed by :func:`replay_trace`. That INCLUDES gpt_oss's harmony
+    ANALYSIS (chain-of-thought) channel, which the SDK agent strips before it reaches
+    the trace's parsed ``assistant_messages``. Those reasoning tokens are real replay
+    cost and the dominant lever on the reasoning model, so counting them lets the
+    optimizer reward low-salience shapes that never spin up deliberation. Falls back to
+    the parsed assistant-message length for traces with no raw count (e.g. test stubs);
+    the ``(no_tool)`` sentinel marks an empty turn and is excluded there.
 
     Args:
         trace: An :func:`replay_trace` trace dict (``env.export_trace_dict()``).
 
     Returns:
-        Total generated assistant characters across the replay's turns.
+        Total generated characters across the replay's turns.
     """
+    raw = trace.get("raw_gen_chars")
+    if raw is not None:
+        return int(raw)
     messages = trace.get("assistant_messages") or []
     return sum(len(m) for m in messages if isinstance(m, str) and m != "(no_tool)")
 
