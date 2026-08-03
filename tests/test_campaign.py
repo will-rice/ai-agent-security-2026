@@ -1342,6 +1342,54 @@ def test_batch_score_metrics_report_private_proxy_shadow_lanes() -> None:
     )
 
 
+def test_robust_public_blends_mean_and_worst_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROBUSTNESS_LAMBDA reweights the objective from mean toward the worst model."""
+    from jed_attack.campaign import config
+    from jed_attack.campaign import optimize_prompts as op
+    from jed_attack.campaign.submission_score import SubmissionScore
+
+    # Lopsided shape: strong on gpt_oss, weak on gemma; mean 0.30, worst 0.10.
+    score = SubmissionScore(
+        public=0.30,
+        total_hops=1,
+        public_by_model={"gpt_oss": 0.50, "gemma_4": 0.10},
+        gen_chars={"gpt_oss": 30.0},
+        fires=True,
+        per_message=[],
+    )
+
+    monkeypatch.setattr(config, "ROBUSTNESS_LAMBDA", 0.0)
+    assert op._robust_public(score) == pytest.approx(0.30)  # mean == score.public
+
+    monkeypatch.setattr(config, "ROBUSTNESS_LAMBDA", 1.0)
+    assert op._robust_public(score) == pytest.approx(0.10)  # worst model alone
+
+    monkeypatch.setattr(config, "ROBUSTNESS_LAMBDA", 0.5)
+    assert op._robust_public(score) == pytest.approx(0.20)  # 0.5*0.30 + 0.5*0.10
+
+    # The objective divides the robust numerator by the bottleneck char cost.
+    assert op._score_public_raw_per_replay_s(score) == pytest.approx(
+        0.20 * op._GEN_CHAR_NORM / 30.0
+    )
+
+    # No per-model boards (e.g. legacy rescore) -> falls back to the mean, never errors.
+    bare = SubmissionScore(public=0.30, total_hops=1, fires=True, per_message=[])
+    assert op._robust_public(bare) == pytest.approx(0.30)
+
+
+def test_robustness_lambda_stamps_distinct_objective_scheme() -> None:
+    """A non-zero robustness weight earns its own scheme tag; L=0 keeps the mean tag."""
+    from jed_attack.campaign import blackboard, config
+
+    assert config.ROBUSTNESS_LAMBDA == 0.0  # default: unchanged live objective
+    assert blackboard.OBJECTIVE_NAME == "public_raw_per_gen_char"
+    assert blackboard.objective_scheme_name(0.0) == "public_raw_per_gen_char"
+    assert blackboard.objective_scheme_name(0.5) == "robust0.5_raw_per_gen_char"
+    assert blackboard.objective_scheme_name(1.0) == "robust1_raw_per_gen_char"
+
+
 def test_make_record_persists_private_proxy_feedback() -> None:
     """Private-proxy shadow notes become DATA for the next proposer generation."""
     from jed_attack.campaign import optimize_prompts as op

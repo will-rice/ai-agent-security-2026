@@ -12,7 +12,7 @@ import asyncio
 import functools
 import json
 import logging
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -26,11 +26,21 @@ from jed_attack.campaign.submission import MessageType
 
 _log = logging.getLogger(__name__)
 
+
 # Tag stamped on every record scored under the CURRENT optimizer objective (public raw
 # per bottleneck generated character). Bump this whenever the objective's denominator
 # changes scale: champion selection prefers rows carrying the current tag so a prior
 # scheme's incomparable magnitudes cannot freeze the champion. See _objective_key.
-OBJECTIVE_NAME = "public_raw_per_gen_char"
+# A non-zero robustness weight reweights the numerator (mean -> worst-model blend),
+# which rescales the objective, so it earns its own tag and a fresh champion pool.
+def objective_scheme_name(robustness_lambda: float) -> str:
+    """Scheme tag for a robustness weight: the mean tag at 0, else a robust-L tag."""
+    if robustness_lambda == 0.0:
+        return "public_raw_per_gen_char"
+    return f"robust{robustness_lambda:g}_raw_per_gen_char"
+
+
+OBJECTIVE_NAME = objective_scheme_name(config.ROBUSTNESS_LAMBDA)
 
 
 @dataclass(frozen=True)
@@ -54,6 +64,9 @@ class Record:
     gen_chars: float = (
         0.0  # bottleneck-model generated chars to fire (the objective's cost)
     )
+    # Per-model public board {model: board}; the mean of these is ``public``. Persisted
+    # so the robustness objective and the incumbent block can see per-victim spread.
+    public_by_model: dict[str, float] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
         """Return a JSON-serializable dict for this record."""
@@ -86,6 +99,10 @@ class Record:
             objective_tiebreaker=float(data.get("objective_tiebreaker", 0.0)),
             objective_name=str(data.get("objective_name", "legacy_public")),
             gen_chars=float(data.get("gen_chars", 0.0)),
+            public_by_model={
+                str(m): float(v)
+                for m, v in dict(data.get("public_by_model", {})).items()
+            },
         )
 
 

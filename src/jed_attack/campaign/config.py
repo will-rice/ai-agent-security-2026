@@ -189,6 +189,17 @@ HOP_BUDGET = 391
 # bonus (submission_score.py).
 NOVELTY_PER_CELL = 2.0
 
+# Cross-model robustness weight for the optimizer objective (hedges the blind private
+# board). The objective's numerator blends the per-model MEAN board (score.public) with
+# the per-model MINIMUM: robust = (1-L)*mean + L*min. L=0.0 is the current mean behavior
+# (a lopsided one-model shape still scores well); L->1.0 rewards only shapes that fire
+# on BOTH victims, which is what transfers to unseen private models. Non-zero L stamps a
+# distinct objective scheme tag (blackboard.OBJECTIVE_NAME) so its rescaled magnitudes
+# cannot out-rank mean-scheme champions. Prototype: leave 0.0 until you flip it on.
+ROBUSTNESS_LAMBDA = float(os.getenv("JED_ROBUSTNESS_LAMBDA", "0.0"))
+if not 0.0 <= ROBUSTNESS_LAMBDA <= 1.0:
+    raise ValueError("JED_ROBUSTNESS_LAMBDA must be in [0.0, 1.0]")
+
 # Tier-2 victim introspection (victim_feedback.introspect_worst): number of the
 # lowest-severity messages in a scored submission to probe with an extra "what
 # change would flip your decision" turn against the victim itself. Bounds the

@@ -167,6 +167,7 @@ def make_record(
         objective_tiebreaker=score.public,
         objective_name=_PUBLIC_THROUGHPUT_OBJECTIVE,
         gen_chars=_gen_chars_cost(score),
+        public_by_model=dict(score.public_by_model),
     )
 
 
@@ -940,10 +941,19 @@ def _render_incumbent(
             if char_cost
             else ""
         )
+        # Per-model board spread makes a lopsided (one-victim) shape visible; a shape
+        # weak on either model is fragile on the blind private board.
+        spread = (
+            " per-model board: "
+            + " ".join(f"{m}={v:g}" for m, v in incumbent.public_by_model.items())
+            if incumbent.public_by_model
+            else ""
+        )
         objective_line = (
             f"optimizer objective = {incumbent.objective:g} public raw per GENERATED "
-            f"CHARACTER{fired_in}; public total = {incumbent.public:g}. FEWER chars "
-            "generated to fire = higher score."
+            f"CHARACTER{fired_in}; public total = {incumbent.public:g}.{spread} FEWER "
+            "chars generated to fire = higher score; firing on BOTH models is more "
+            "robust than a high mean carried by one."
         )
     else:
         objective_line = (
@@ -1234,14 +1244,31 @@ def _batch_refine_objective(scores: list[SubmissionScore]) -> tuple[float, float
         return (0.0, 0.0)
     total_cost = sum(_gen_chars_cost(score) for score in scores)
     public_raw_per_replay_s = _safe_div(
-        sum(score.public * _GEN_CHAR_NORM for score in scores), total_cost
+        sum(_robust_public(score) * _GEN_CHAR_NORM for score in scores), total_cost
     )
     return (public_raw_per_replay_s, mean(score.public for score in scores))
 
 
+def _robust_public(score: SubmissionScore) -> float:
+    """Return the public board reweighted toward the worst model (private-board hedge).
+
+    ``config.ROBUSTNESS_LAMBDA`` blends the cross-model mean (``score.public``) with the
+    per-model minimum: ``(1-L)*mean + L*min``. L=0.0 is the mean (current behavior);
+    L=1.0 is the worst model alone. A shape strong on one victim but weak on the other
+    is penalized, selecting shapes that transfer -- what matters on the blind private
+    board. At L=0 (or when per-model boards are absent) it is exactly ``score.public``,
+    so the objective is unchanged until robustness is deliberately enabled.
+    """
+    lam = config.ROBUSTNESS_LAMBDA
+    if lam == 0.0 or not score.public_by_model:
+        return score.public
+    worst = min(score.public_by_model.values())
+    return (1.0 - lam) * score.public + lam * worst
+
+
 def _score_public_raw_per_replay_s(score: SubmissionScore) -> float:
-    """Return a submission's public raw per generated char (deterministic cost)."""
-    return _safe_div(score.public * _GEN_CHAR_NORM, _gen_chars_cost(score))
+    """Return a submission's (robust) public raw per generated char (det. cost)."""
+    return _safe_div(_robust_public(score) * _GEN_CHAR_NORM, _gen_chars_cost(score))
 
 
 def _empty_batch_score_metrics() -> dict[str, float]:
