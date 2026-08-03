@@ -57,7 +57,13 @@ GREEN_REPLAY_BUDGET_S: dict[str, float] = {"gpt_oss": 300.0, "gemma_4": 60.0}
 # ``artifact_*`` metrics. Disable only when throughput debugging is more important than
 # exact outer-loop telemetry.
 ARTIFACT_SCORE_ENABLED = os.getenv("JED_ARTIFACT_SCORE", "1") != "0"
-ARTIFACT_SCORE_BUDGET_S = float(os.getenv("JED_ARTIFACT_SCORE_BUDGET_S", "9000"))
+# Budget for the telemetry-only artifact re-score. A full 9000s (Kaggle-equivalent)
+# score GPU-locks the lane for ~103 min and, since it also fires on every champion
+# reship, it stalled the whole search for ~1h45m at a time. This score feeds ONLY the
+# wandb lb_est / artifact-champion telemetry, not the search objective, so a short
+# consistent sample is fine: ~600s scores in ~7 min and still tracks relative progress.
+# Raise it (or run a one-off full score) when an exact Kaggle-scale number is needed.
+ARTIFACT_SCORE_BUDGET_S = float(os.getenv("JED_ARTIFACT_SCORE_BUDGET_S", "600"))
 # Also re-score the shipped artifact on a timer, not only on a new-champion reship —
 # otherwise the "artifact score" telemetry goes stale for the entire duration of any
 # objective plateau (it silently did for ~27h). A full score is expensive (~1-2h), so
