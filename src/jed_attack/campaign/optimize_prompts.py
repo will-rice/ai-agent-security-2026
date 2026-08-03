@@ -40,12 +40,13 @@ import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 from statistics import mean
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 import git
 import pydantic
 from dotenv import load_dotenv
 from openai.types.chat import ChatCompletionMessageParam
+from openai.types.shared_params import ResponseFormatJSONSchema
 
 from jed_attack.campaign import (
     artifact_score,
@@ -1336,21 +1337,65 @@ def _batch_predicate_counts(scores: list[SubmissionScore]) -> dict[str, int]:
     return counts
 
 
+# TRUE structured output: the provider is forced to emit JSON matching this schema
+# (constrained decoding), so successive proposers reliably return a valid
+# SubmissionBatch instead of free text that parse-fails. A flat hand-written schema
+# (the pydantic model_json_schema is rejected by strict mode for its refs/unions);
+# _salvage_batch still validates each message against the real Message model afterward.
+_BATCH_SCHEMA = {
+    "name": "submission_batch",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "submissions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "messages": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "properties": {
+                                    "type": {"type": "string"},
+                                    "text": {"type": "string"},
+                                    "hops": {"type": "integer"},
+                                },
+                                "required": ["type", "text", "hops"],
+                            },
+                        }
+                    },
+                    "required": ["messages"],
+                },
+            }
+        },
+        "required": ["submissions"],
+    },
+}
+
+
 async def propose_batch_async(
     prompt: str, provider: providers.Provider, idle_timeout_s: float
 ) -> tuple[list[Submission], str]:
     """Author a batch of submissions on ``provider`` by STREAMING an AsyncOpenAI call.
 
-    No provider reliably honors structured outputs on the nested ``SubmissionBatch``
-    schema (they parse-fail), so we skip ``.parse()`` and stream one ``.create()``,
-    gathering the answer content plus any ``reasoning_content`` deltas, then feed it to
-    :func:`_salvage_batch`. Streaming replaces the wall-clock timeout with an IDLE one
-    (:func:`asyncio.timeout`, rescheduled per chunk): the call is abandoned only if no
-    token arrives for ``idle_timeout_s`` seconds (a stall), never mid-stream, so a
-    slow-but-active thinking model always finishes. The completion budget is
-    ``provider.max_tokens`` (the model's real per-model max, since a batch reply is
-    several submissions long). A CI concurrency 429 (on the initial request) is logged
-    distinctly for the per-key experiment, then re-raised.
+    Uses TRUE structured output: ``response_format`` pins the reply to
+    :data:`_BATCH_SCHEMA` (json_schema constrained decoding), so the model reliably
+    emits a valid ``SubmissionBatch`` rather than free text that parse-fails -- verified
+    across the cheapest models (40-124 valid one-shot in seconds). The streamed
+    content is still fed to :func:`_salvage_batch`, which validates each message against
+    the real :class:`Message` model and drops any stragglers. Streaming replaces the
+    wall-clock timeout with an IDLE one (:func:`asyncio.timeout`, rescheduled per
+    chunk):
+    the call is abandoned only if no token arrives for ``idle_timeout_s`` seconds (a
+    stall), never mid-stream, so a slow-but-active thinking model always finishes. The
+    completion budget is ``provider.max_tokens`` (the model's real per-model max, so
+    a large batch never truncates). A CI concurrency 429 on the initial request is
+    logged distinctly, then re-raised.
 
     Args:
         prompt: The batch-proposer prompt text.
@@ -1372,6 +1417,10 @@ async def propose_batch_async(
             messages=messages,
             max_completion_tokens=provider.max_tokens,
             temperature=_PROPOSER_TEMPERATURE,
+            response_format=cast(
+                "ResponseFormatJSONSchema",
+                {"type": "json_schema", "json_schema": _BATCH_SCHEMA},
+            ),
             stream=True,
         )
     except Exception as exc:
