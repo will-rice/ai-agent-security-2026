@@ -112,6 +112,10 @@ _TEAM_REASONING_K = (
 # alias it here so records are stamped with the current scheme and stale-scale rows from
 # a prior denominator cannot out-rank them (see blackboard.OBJECTIVE_NAME).
 _PUBLIC_THROUGHPUT_OBJECTIVE = blackboard.OBJECTIVE_NAME
+# Char-count normalizer for the public-raw-per-generated-char objective: objective =
+# public * _GEN_CHAR_NORM / bottleneck_gen_chars. Kept as one constant so the objective
+# and the incumbent-block char-cost read-back (public * NORM / objective) stay in sync.
+_GEN_CHAR_NORM = 200.0
 
 
 def make_record(
@@ -924,10 +928,16 @@ def _render_incumbent(
         )
     incumbent_hops = sum(int(message["hops"]) for message in incumbent.messages)
     if incumbent.objective_name == _PUBLIC_THROUGHPUT_OBJECTIVE:
+        # The stored gen_chars is absent on champions predating the field; the
+        # objective is public * _GEN_CHAR_NORM / gen_chars, so back the char cost out
+        # of it. Always showing the concrete target is the point -- we minimize it.
+        char_cost = incumbent.gen_chars or _safe_div(
+            incumbent.public * _GEN_CHAR_NORM, incumbent.objective
+        )
         fired_in = (
-            f" -- fired in {incumbent.gen_chars:g} generated chars on the bottleneck "
+            f" -- fired in ~{char_cost:g} generated chars on the bottleneck gpt_oss "
             "model"
-            if incumbent.gen_chars
+            if char_cost
             else ""
         )
         objective_line = (
@@ -1224,14 +1234,14 @@ def _batch_refine_objective(scores: list[SubmissionScore]) -> tuple[float, float
         return (0.0, 0.0)
     total_cost = sum(_gen_chars_cost(score) for score in scores)
     public_raw_per_replay_s = _safe_div(
-        sum(score.public * 200.0 for score in scores), total_cost
+        sum(score.public * _GEN_CHAR_NORM for score in scores), total_cost
     )
     return (public_raw_per_replay_s, mean(score.public for score in scores))
 
 
 def _score_public_raw_per_replay_s(score: SubmissionScore) -> float:
     """Return a submission's public raw per generated char (deterministic cost)."""
-    return _safe_div(score.public * 200.0, _gen_chars_cost(score))
+    return _safe_div(score.public * _GEN_CHAR_NORM, _gen_chars_cost(score))
 
 
 def _empty_batch_score_metrics() -> dict[str, float]:
