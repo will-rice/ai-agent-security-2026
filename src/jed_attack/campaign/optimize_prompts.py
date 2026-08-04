@@ -1233,6 +1233,12 @@ def _gen_chars_cost(score: SubmissionScore) -> float:
 
 
 _REPLAY_S_FLOOR = 0.01  # floor so a no-timing (test-stub) score never divides by zero
+# Deterministic lower bound on the measured replay time: a candidate CANNOT generate N
+# characters in ~0s, so a glitchy near-zero live measurement (which would spike the
+# objective and freeze a bad champion — observed a firing shape at ~0.005s -> objective
+# 18) is rejected by flooring replay time at gen_chars * this rate. Kept well under the
+# observed ~0.0015 s/char so genuine measurements still dominate the objective.
+_MIN_S_PER_CHAR = 0.001
 
 
 def _replay_s_cost(score: SubmissionScore) -> float:
@@ -1243,12 +1249,13 @@ def _replay_s_cost(score: SubmissionScore) -> float:
     model — the same ground truth the shipped artifact's fill selects on — not a
     generated-char proxy, which can DIVERGE: a token-injection variant with FEWER chars
     can decode SLOWER (measured: an analysis-empty injection replays in 0.40s/146 chars,
-    but a commentary-forge variant backfires to 1.06s/743 chars). Under single-flight
-    scoring this is highly reproducible (<1% variance observed), so it does NOT freeze
-    the champion the way the old concurrent-pool wall-clock did (that freeze is why the
-    objective briefly used gen_chars). Floored to avoid division by zero.
+    but a commentary-forge variant backfires to 1.06s/743 chars). The measurement is
+    floored by a deterministic gen_chars estimate (:data:`_MIN_S_PER_CHAR`) so a glitchy
+    near-zero live timing cannot spike the objective and freeze the champion, while real
+    timings (always well above that floor) dominate and rank shapes by true replay cost.
     """
-    return max(max(score.replay_seconds.values(), default=0.0), _REPLAY_S_FLOOR)
+    measured = max(score.replay_seconds.values(), default=0.0)
+    return max(measured, _gen_chars_cost(score) * _MIN_S_PER_CHAR, _REPLAY_S_FLOOR)
 
 
 def _batch_refine_objective(scores: list[SubmissionScore]) -> tuple[float, float]:

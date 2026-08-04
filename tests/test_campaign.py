@@ -1383,10 +1383,10 @@ def test_robustness_lambda_stamps_distinct_objective_scheme() -> None:
     from jed_attack.campaign import blackboard, config
 
     assert config.ROBUSTNESS_LAMBDA == 0.0  # default: unchanged live objective
-    assert blackboard.OBJECTIVE_NAME == "public_raw_per_replay_s"
-    assert blackboard.objective_scheme_name(0.0) == "public_raw_per_replay_s"
-    assert blackboard.objective_scheme_name(0.5) == "robust0.5_raw_per_replay_s"
-    assert blackboard.objective_scheme_name(1.0) == "robust1_raw_per_replay_s"
+    assert blackboard.OBJECTIVE_NAME == "public_raw_per_replay_s_v2"
+    assert blackboard.objective_scheme_name(0.0) == "public_raw_per_replay_s_v2"
+    assert blackboard.objective_scheme_name(0.5) == "robust0.5_raw_per_replay_s_v2"
+    assert blackboard.objective_scheme_name(1.0) == "robust1_raw_per_replay_s_v2"
 
 
 def test_raw_gen_meter_counts_full_raw_generation() -> None:

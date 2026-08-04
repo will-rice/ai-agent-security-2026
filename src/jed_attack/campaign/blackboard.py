@@ -41,8 +41,8 @@ def objective_scheme_name(robustness_lambda: float) -> str:
     to reset the champion pool onto the corrected metric.
     """
     if robustness_lambda == 0.0:
-        return "public_raw_per_replay_s"
-    return f"robust{robustness_lambda:g}_raw_per_replay_s"
+        return "public_raw_per_replay_s_v2"
+    return f"robust{robustness_lambda:g}_raw_per_replay_s_v2"
 
 
 OBJECTIVE_NAME = objective_scheme_name(config.ROBUSTNESS_LAMBDA)
