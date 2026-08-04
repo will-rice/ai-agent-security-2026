@@ -49,6 +49,7 @@ from openai.types.chat import ChatCompletionMessageParam
 from openai.types.shared_params import ResponseFormatJSONSchema
 
 from jed_attack.campaign import (
+    agentic_proposer,
     artifact_score,
     blackboard,
     config,
@@ -234,7 +235,16 @@ async def worker_loop(
                 top_messages=team,
                 reasoning=reasoning_digest,
             )
-            batch, reasoning = await propose_batch_async(prompt, provider, timeout_s)
+            # Agentic lanes live-test candidates via a tool loop before submitting; all
+            # other lanes stay one-shot. Refinement (below) stays one-shot regardless.
+            if provider.agentic:
+                batch, reasoning = await agentic_proposer.propose_batch_agentic(
+                    prompt, provider, timeout_s
+                )
+            else:
+                batch, reasoning = await propose_batch_async(
+                    prompt, provider, timeout_s
+                )
             if not batch:  # a refusal / no-JSON reply -> skip, rotate to the next model
                 _log.warning("worker %d: empty batch; skipping generation", worker_id)
                 gen += 1
