@@ -113,10 +113,6 @@ _TEAM_REASONING_K = (
 # alias it here so records are stamped with the current scheme and stale-scale rows from
 # a prior denominator cannot out-rank them (see blackboard.OBJECTIVE_NAME).
 _PUBLIC_THROUGHPUT_OBJECTIVE = blackboard.OBJECTIVE_NAME
-# Char-count normalizer for the public-raw-per-generated-char objective: objective =
-# public * _GEN_CHAR_NORM / bottleneck_gen_chars. Kept as one constant so the objective
-# and the incumbent-block char-cost read-back (public * NORM / objective) stay in sync.
-_GEN_CHAR_NORM = 200.0
 
 
 def make_record(
@@ -939,16 +935,15 @@ def _render_incumbent(
         )
     incumbent_hops = sum(int(message["hops"]) for message in incumbent.messages)
     if incumbent.objective_name == _PUBLIC_THROUGHPUT_OBJECTIVE:
-        # The stored gen_chars is absent on champions predating the field; the
-        # objective is public * _GEN_CHAR_NORM / gen_chars, so back the char cost out
-        # of it. Always showing the concrete target is the point -- we minimize it.
-        char_cost = incumbent.gen_chars or _safe_div(
-            incumbent.public * _GEN_CHAR_NORM, incumbent.objective
-        )
+        # The objective is public / replay_s, so back the bottleneck replay-second cost
+        # out of it -- that measured time (not char count) is what the leaderboard's
+        # candidate count divides. gen_chars stays as a secondary readout (a proxy that
+        # can mislead: a token-injection variant with fewer chars may decode slower).
+        replay_s = _safe_div(incumbent.public, incumbent.objective)
         fired_in = (
-            f" -- fired in ~{char_cost:g} generated chars on the bottleneck gpt_oss "
-            "model"
-            if char_cost
+            f" -- fired in ~{replay_s:g}s bottleneck replay"
+            + (f" (~{incumbent.gen_chars:g} gen chars)" if incumbent.gen_chars else "")
+            if replay_s
             else ""
         )
         # Per-model board spread makes a lopsided (one-victim) shape visible; a shape
@@ -960,10 +955,10 @@ def _render_incumbent(
             else ""
         )
         objective_line = (
-            f"optimizer objective = {incumbent.objective:g} public raw per GENERATED "
-            f"CHARACTER{fired_in}; public total = {incumbent.public:g}.{spread} FEWER "
-            "chars generated to fire = higher score; firing on BOTH models is more "
-            "robust than a high mean carried by one."
+            f"optimizer objective = {incumbent.objective:g} public raw per REPLAY "
+            f"SECOND{fired_in}; public total = {incumbent.public:g}.{spread} FASTER "
+            "replay (fewer generated tokens, but VERIFY -- some 'lean' injections "
+            "decode slower) = higher score; fire on BOTH models, not a lopsided mean."
         )
     else:
         objective_line = (
@@ -1237,24 +1232,38 @@ def _gen_chars_cost(score: SubmissionScore) -> float:
     return max(score.gen_chars.values(), default=float(score.total_hops))
 
 
+_REPLAY_S_FLOOR = 0.01  # floor so a no-timing (test-stub) score never divides by zero
+
+
+def _replay_s_cost(score: SubmissionScore) -> float:
+    """Bottleneck-model MEASURED replay wall-clock — the true per-candidate LB cost.
+
+    The public leaderboard's candidate count = time budget / per-candidate replay time,
+    so the objective's cost is the measured replay seconds of the slowest (bottleneck)
+    model — the same ground truth the shipped artifact's fill selects on — not a
+    generated-char proxy, which can DIVERGE: a token-injection variant with FEWER chars
+    can decode SLOWER (measured: an analysis-empty injection replays in 0.40s/146 chars,
+    but a commentary-forge variant backfires to 1.06s/743 chars). Under single-flight
+    scoring this is highly reproducible (<1% variance observed), so it does NOT freeze
+    the champion the way the old concurrent-pool wall-clock did (that freeze is why the
+    objective briefly used gen_chars). Floored to avoid division by zero.
+    """
+    return max(max(score.replay_seconds.values(), default=0.0), _REPLAY_S_FLOOR)
+
+
 def _batch_refine_objective(scores: list[SubmissionScore]) -> tuple[float, float]:
-    """Return the optimizer's public-throughput objective (raw per generated char).
+    """Return the optimizer's public-throughput objective (raw per measured replay-s).
 
     The public surface is replay-time-limited, so the objective rewards public raw per
-    unit of replay cost. The cost denominator is the batch's summed bottleneck-model
-    generated characters (see :func:`_gen_chars_cost`) — a DETERMINISTIC, fine-grained
-    proxy for replay time, NOT measured wall-clock. Wall-clock made the objective
-    non-reproducible: ``best_objective`` is a max over all history, so it latched onto
-    the single least-loaded timing sample and could never be re-earned once the host
-    slowed, freezing the optimizer. Generated chars make an identical submission score
-    identically AND reward leaner firing messages. Mean public stays a secondary
-    tie-breaker.
+    unit of the batch's summed bottleneck-model MEASURED replay seconds (see
+    :func:`_replay_s_cost`) — the ground truth for candidate count, safe from the
+    generated-char proxy's divergence. Mean public stays a secondary tie-breaker.
     """
     if not scores:
         return (0.0, 0.0)
-    total_cost = sum(_gen_chars_cost(score) for score in scores)
+    total_cost = sum(_replay_s_cost(score) for score in scores)
     public_raw_per_replay_s = _safe_div(
-        sum(_robust_public(score) * _GEN_CHAR_NORM for score in scores), total_cost
+        sum(_robust_public(score) for score in scores), total_cost
     )
     return (public_raw_per_replay_s, mean(score.public for score in scores))
 
@@ -1277,8 +1286,8 @@ def _robust_public(score: SubmissionScore) -> float:
 
 
 def _score_public_raw_per_replay_s(score: SubmissionScore) -> float:
-    """Return a submission's (robust) public raw per generated char (det. cost)."""
-    return _safe_div(_robust_public(score) * _GEN_CHAR_NORM, _gen_chars_cost(score))
+    """Return (robust) public raw per measured bottleneck replay-second."""
+    return _safe_div(_robust_public(score), _replay_s_cost(score))
 
 
 def _empty_batch_score_metrics() -> dict[str, float]:

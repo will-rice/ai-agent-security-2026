@@ -1356,6 +1356,7 @@ def test_robust_public_blends_mean_and_worst_model(
         total_hops=1,
         public_by_model={"gpt_oss": 0.50, "gemma_4": 0.10},
         gen_chars={"gpt_oss": 30.0},
+        replay_seconds={"gpt_oss": 0.5, "gemma_4": 0.2},
         fires=True,
         per_message=[],
     )
@@ -1369,10 +1370,8 @@ def test_robust_public_blends_mean_and_worst_model(
     monkeypatch.setattr(config, "ROBUSTNESS_LAMBDA", 0.5)
     assert op._robust_public(score) == pytest.approx(0.20)  # 0.5*0.30 + 0.5*0.10
 
-    # The objective divides the robust numerator by the bottleneck char cost.
-    assert op._score_public_raw_per_replay_s(score) == pytest.approx(
-        0.20 * op._GEN_CHAR_NORM / 30.0
-    )
+    # The objective divides the robust numerator by the bottleneck measured replay-s.
+    assert op._score_public_raw_per_replay_s(score) == pytest.approx(0.20 / 0.5)
 
     # No per-model boards (e.g. legacy rescore) -> falls back to the mean, never errors.
     bare = SubmissionScore(public=0.30, total_hops=1, fires=True, per_message=[])
@@ -1384,10 +1383,10 @@ def test_robustness_lambda_stamps_distinct_objective_scheme() -> None:
     from jed_attack.campaign import blackboard, config
 
     assert config.ROBUSTNESS_LAMBDA == 0.0  # default: unchanged live objective
-    assert blackboard.OBJECTIVE_NAME == "public_raw_per_total_gen_char"
-    assert blackboard.objective_scheme_name(0.0) == "public_raw_per_total_gen_char"
-    assert blackboard.objective_scheme_name(0.5) == "robust0.5_raw_per_total_gen_char"
-    assert blackboard.objective_scheme_name(1.0) == "robust1_raw_per_total_gen_char"
+    assert blackboard.OBJECTIVE_NAME == "public_raw_per_replay_s"
+    assert blackboard.objective_scheme_name(0.0) == "public_raw_per_replay_s"
+    assert blackboard.objective_scheme_name(0.5) == "robust0.5_raw_per_replay_s"
+    assert blackboard.objective_scheme_name(1.0) == "robust1_raw_per_replay_s"
 
 
 def test_raw_gen_meter_counts_full_raw_generation() -> None:
@@ -1908,10 +1907,12 @@ def test_worker_loop_logs_objective_metrics_separately(
     assert len(run.logs) == 1
     metrics = run.logs[0]
     assert metrics["batch_mean_public"] == pytest.approx(9.0)
-    assert metrics["batch_objective_raw_per_replay_s"] == pytest.approx(180.0)
-    assert metrics["best_objective"] == pytest.approx(180.0)
+    # objective = public / measured replay-second = 9.0 / 5.0.
+    assert metrics["batch_objective_raw_per_replay_s"] == pytest.approx(9.0 / 5.0)
+    assert metrics["best_objective"] == pytest.approx(9.0 / 5.0)
     assert metrics["best_objective_public"] == pytest.approx(9.0)
-    assert metrics["refine_objective_gain"] == pytest.approx(160.0)
+    # gain = refined (9.0/5.0) - round0 (10.0/50.0) = 1.8 - 0.2.
+    assert metrics["refine_objective_gain"] == pytest.approx(9.0 / 5.0 - 10.0 / 50.0)
     assert metrics["refine_public_gain"] == pytest.approx(-1.0)
     assert "refine_gain" not in metrics
 
@@ -2693,10 +2694,8 @@ def test_make_record_persists_public_throughput_objective() -> None:
 
     submission = _mk_sub("throughput")
     score = _mk_score(2.0)
+    # Objective = public / bottleneck (max) MEASURED replay-second = 2.0 / 30.0.
     score.replay_seconds = {"gpt_oss": 10.0, "gemma_4": 30.0}
-    score.total_hops = (
-        40  # gen_chars unset here -> denominator falls back to summed hops
-    )
     score.public_by_model = {"gpt_oss": 2.0, "gemma_4": 2.0}
 
     record = op.make_record(
@@ -2708,9 +2707,9 @@ def test_make_record_persists_public_throughput_objective() -> None:
     )
 
     assert record.objective_name == op._PUBLIC_THROUGHPUT_OBJECTIVE
-    assert record.objective == pytest.approx(10.0)
+    assert record.objective == pytest.approx(2.0 / 30.0)
     assert record.objective_tiebreaker == pytest.approx(2.0)
-    assert record.to_json()["objective"] == pytest.approx(10.0)
+    assert record.to_json()["objective"] == pytest.approx(2.0 / 30.0)
 
 
 def test_refine_prompt_contains_entire_batch(
@@ -3789,7 +3788,7 @@ def test_blackboard_prefers_current_scheme_over_stale_scale_champion(
             objective_name=name,
         )
 
-    stale = rec(18.0, "public_raw_per_replay_s", "https://stale.invalid/r")
+    stale = rec(18.0, "public_raw_per_total_gen_char", "https://stale.invalid/r")
     current = rec(0.2, bb.OBJECTIVE_NAME, "https://current.invalid/r")
     board = bb.Blackboard(tmp_path / "board.jsonl", [stale, current])
 
@@ -4411,11 +4410,11 @@ def test_score_submission_captures_bottleneck_gen_chars(
     )
     # (no_tool) and None dropped; only the real assistant string counts, per model.
     assert out.gen_chars == {"gpt_oss": 300.0, "gemma_4": 50.0}
-    # The objective denominator is the bottleneck (max) model's chars, not the sum.
-    assert op._gen_chars_cost(out) == 300.0
-    assert op._score_public_raw_per_replay_s(out) == pytest.approx(
-        out.public * 200.0 / 300.0
-    )
+    assert op._gen_chars_cost(out) == 300.0  # gen_chars still tracked (telemetry)
+    # The objective denominator is now the bottleneck (max) MEASURED replay-second: the
+    # stub reports 1.0s per replay, so both models are 1.0s -> cost 1.0s.
+    assert op._replay_s_cost(out) == pytest.approx(1.0)
+    assert op._score_public_raw_per_replay_s(out) == pytest.approx(out.public / 1.0)
 
 
 def test_score_submission_replays_models_concurrently_and_preserves_results(
