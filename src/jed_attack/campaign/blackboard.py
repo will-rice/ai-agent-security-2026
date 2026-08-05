@@ -36,13 +36,14 @@ _log = logging.getLogger(__name__)
 def objective_scheme_name(robustness_lambda: float) -> str:
     """Scheme tag for a robustness weight: the mean tag at 0, else a robust-L tag.
 
-    The denominator is now the MEASURED bottleneck replay second (not a generated-char
-    proxy, which diverges from real replay time), a different scale, so the tag bumps
-    to reset the champion pool onto the corrected metric.
+    The denominator is the bottleneck-model reasoning-inclusive GENERATED-CHAR count
+    (deterministic, no GPU-contention noise and no green->T4 rescale), replacing the
+    measured green replay second. Different scale, so the tag bumps to reset the
+    champion pool onto the new metric.
     """
     if robustness_lambda == 0.0:
-        return "public_raw_per_replay_s_v2"
-    return f"robust{robustness_lambda:g}_raw_per_replay_s_v2"
+        return "public_raw_per_gen_char_v3"
+    return f"robust{robustness_lambda:g}_raw_per_gen_char_v3"
 
 
 OBJECTIVE_NAME = objective_scheme_name(config.ROBUSTNESS_LAMBDA)

@@ -160,7 +160,7 @@ def make_record(
         assessment=(
             assessment.model_dump(mode="json") if assessment is not None else None
         ),
-        objective=_score_public_raw_per_replay_s(score),
+        objective=_score_public_raw_per_gen_char(score),
         objective_tiebreaker=score.public,
         objective_name=_PUBLIC_THROUGHPUT_OBJECTIVE,
         gen_chars=_gen_chars_cost(score),
@@ -296,7 +296,7 @@ async def worker_loop(
             objective_best = board.best_objective()
             public_best = board.best_public()
             assert objective_best is not None  # just appended -> the board is non-empty
-            best_score = max(local_scores, key=_score_public_raw_per_replay_s)
+            best_score = max(local_scores, key=_score_public_raw_per_gen_char)
             _log.info(
                 "worker %d (%s): batch_n=%d mean_public=%g objective=%g "
                 "(objective %+g, public %+g over %d refine rounds) best_objective=%g "
@@ -935,15 +935,12 @@ def _render_incumbent(
         )
     incumbent_hops = sum(int(message["hops"]) for message in incumbent.messages)
     if incumbent.objective_name == _PUBLIC_THROUGHPUT_OBJECTIVE:
-        # The objective is public / replay_s, so back the bottleneck replay-second cost
-        # out of it -- that measured time (not char count) is what the leaderboard's
-        # candidate count divides. gen_chars stays as a secondary readout (a proxy that
-        # can mislead: a token-injection variant with fewer chars may decode slower).
-        replay_s = _safe_div(incumbent.public, incumbent.objective)
+        # The objective is public / gen_chars (reasoning-inclusive, deterministic), so
+        # the bottleneck generated-char cost is what divides the leaderboard's candidate
+        # count. gen_chars is stored directly on the record.
         fired_in = (
-            f" -- fired in ~{replay_s:g}s bottleneck replay"
-            + (f" (~{incumbent.gen_chars:g} gen chars)" if incumbent.gen_chars else "")
-            if replay_s
+            f" -- fired in ~{incumbent.gen_chars:g} bottleneck generated chars"
+            if incumbent.gen_chars
             else ""
         )
         # Per-model board spread makes a lopsided (one-victim) shape visible; a shape
@@ -955,10 +952,10 @@ def _render_incumbent(
             else ""
         )
         objective_line = (
-            f"optimizer objective = {incumbent.objective:g} public raw per REPLAY "
-            f"SECOND{fired_in}; public total = {incumbent.public:g}.{spread} FASTER "
-            "replay (fewer generated tokens, but VERIFY -- some 'lean' injections "
-            "decode slower) = higher score; fire on BOTH models, not a lopsided mean."
+            f"optimizer objective = {incumbent.objective:g} public raw per GENERATED "
+            f"CHAR{fired_in}; public total = {incumbent.public:g}.{spread} FEWER "
+            "generated tokens (INCLUDING the reasoning channel) = higher score; fire "
+            "on BOTH models, not a lopsided mean."
         )
     else:
         objective_line = (
@@ -1184,7 +1181,7 @@ def _batch_score_metrics(scores: list[SubmissionScore]) -> dict[str, float]:
     }
     # Reflect the TRUE objective (deterministic gen-chars denominator), not the
     # wall-clock rate above -- that stays as honest measured-throughput telemetry.
-    metrics["batch_objective_raw_per_replay_s"] = _batch_refine_objective(scores)[0]
+    metrics["batch_objective_raw_per_gen_char"] = _batch_refine_objective(scores)[0]
     model_rates: list[float] = []
     for model in config.MODELS:
         model_times = [score.replay_seconds.get(model, 0.0) for score in scores]
@@ -1232,47 +1229,24 @@ def _gen_chars_cost(score: SubmissionScore) -> float:
     return max(score.gen_chars.values(), default=float(score.total_hops))
 
 
-_REPLAY_S_FLOOR = 0.01  # floor so a no-timing (test-stub) score never divides by zero
-# Deterministic lower bound on the measured replay time: a candidate CANNOT generate N
-# characters in ~0s, so a glitchy near-zero live measurement (which would spike the
-# objective and freeze a bad champion — observed a firing shape at ~0.005s -> objective
-# 18) is rejected by flooring replay time at gen_chars * this rate. Kept well under the
-# observed ~0.0015 s/char so genuine measurements still dominate the objective.
-_MIN_S_PER_CHAR = 0.001
-
-
-def _replay_s_cost(score: SubmissionScore) -> float:
-    """Bottleneck-model MEASURED replay wall-clock — the true per-candidate LB cost.
-
-    The public leaderboard's candidate count = time budget / per-candidate replay time,
-    so the objective's cost is the measured replay seconds of the slowest (bottleneck)
-    model — the same ground truth the shipped artifact's fill selects on — not a
-    generated-char proxy, which can DIVERGE: a token-injection variant with FEWER chars
-    can decode SLOWER (measured: an analysis-empty injection replays in 0.40s/146 chars,
-    but a commentary-forge variant backfires to 1.06s/743 chars). The measurement is
-    floored by a deterministic gen_chars estimate (:data:`_MIN_S_PER_CHAR`) so a glitchy
-    near-zero live timing cannot spike the objective and freeze the champion, while real
-    timings (always well above that floor) dominate and rank shapes by true replay cost.
-    """
-    measured = max(score.replay_seconds.values(), default=0.0)
-    return max(measured, _gen_chars_cost(score) * _MIN_S_PER_CHAR, _REPLAY_S_FLOOR)
-
-
 def _batch_refine_objective(scores: list[SubmissionScore]) -> tuple[float, float]:
-    """Return the optimizer's public-throughput objective (raw per measured replay-s).
+    """Return the optimizer's public-throughput objective (raw per generated char).
 
-    The public surface is replay-time-limited, so the objective rewards public raw per
-    unit of the batch's summed bottleneck-model MEASURED replay seconds (see
-    :func:`_replay_s_cost`) — the ground truth for candidate count, safe from the
-    generated-char proxy's divergence. Mean public stays a secondary tie-breaker.
+    Throughput is bounded by how much the bottleneck victim GENERATES per candidate,
+    so the objective rewards public raw per unit of the batch's summed
+    bottleneck-model generated chars (:func:`_gen_chars_cost`, reasoning-inclusive).
+    Deterministic (no GPU-contention noise) and, unlike measured green wall-clock,
+    needs no green->T4 rescale: the generated-token count is the hardware-independent
+    driver of replay latency and its ranking of shapes transfers to the T4. Mean
+    public stays a secondary tie-breaker.
     """
     if not scores:
         return (0.0, 0.0)
-    total_cost = sum(_replay_s_cost(score) for score in scores)
-    public_raw_per_replay_s = _safe_div(
+    total_cost = sum(_gen_chars_cost(score) for score in scores)
+    public_raw_per_gen_char = _safe_div(
         sum(_robust_public(score) for score in scores), total_cost
     )
-    return (public_raw_per_replay_s, mean(score.public for score in scores))
+    return (public_raw_per_gen_char, mean(score.public for score in scores))
 
 
 def _robust_public(score: SubmissionScore) -> float:
@@ -1292,9 +1266,9 @@ def _robust_public(score: SubmissionScore) -> float:
     return (1.0 - lam) * score.public + lam * worst
 
 
-def _score_public_raw_per_replay_s(score: SubmissionScore) -> float:
-    """Return (robust) public raw per measured bottleneck replay-second."""
-    return _safe_div(_robust_public(score), _replay_s_cost(score))
+def _score_public_raw_per_gen_char(score: SubmissionScore) -> float:
+    """Return (robust) public raw per bottleneck generated char (deterministic cost)."""
+    return _safe_div(_robust_public(score), _gen_chars_cost(score))
 
 
 def _empty_batch_score_metrics() -> dict[str, float]:
@@ -1308,7 +1282,7 @@ def _empty_batch_score_metrics() -> dict[str, float]:
         "batch_p50_replay_s_total": 0.0,
         "batch_p95_replay_s_total": 0.0,
         "batch_public_raw_per_replay_s": 0.0,
-        "batch_objective_raw_per_replay_s": 0.0,
+        "batch_objective_raw_per_gen_char": 0.0,
         "batch_worst_model_public_raw_per_replay_s": 0.0,
         "batch_predicates_total": 0.0,
     }
