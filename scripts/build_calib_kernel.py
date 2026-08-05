@@ -28,13 +28,16 @@ COMPETITION = "ai-agent-security-multi-step-tool-attacks"
 # Which model(s) to calibrate. gpt_oss ran already; MODELS="gemma" gets the other
 # row's per-template T4 latency. Slug is derived from TITLE, so vary TITLE per run.
 MODELS = os.getenv("JED_CALIB_MODELS", "gemma")
-TITLE = f"JED attack calib probe {MODELS.replace(',', '-')}"  # slug derived from this
+# Default name = calib probe; override for a full-artifact verifier run.
+TITLE = os.getenv(
+    "JED_CALIB_TITLE", f"JED attack calib probe {MODELS.replace(',', '-')}"
+)
 MACHINE_SHAPE = "NvidiaTeslaT4"
-ATTACK_PY = "run/calib/attack.py"  # the calibration template bank
+# Default embeds the calib probe bank; point at the shipped artifact for a real score.
+ATTACK_PY = os.getenv("JED_CALIB_ATTACK_PY", "run/calib/attack.py")
 OUT_ROOT = "run/submission_kernel"
-# a short budget still completes all probes and prints the telemetry (fill exits on
-# the wall deadline, telemetry prints at get_attack end).
-BUDGET_S = 900.0
+# Short budget = calib probe telemetry; 9000 = the real per-model LB budget.
+BUDGET_S = float(os.getenv("JED_CALIB_BUDGET_S", "900"))
 # PUBLIC repos, no HF token needed. env keys the model server reads for a local path.
 GGUF = {
     "gpt_oss": ("GPT_OSS_MODEL_PATH", "unsloth/gpt-oss-20b-GGUF", "gpt-oss-20b-Q4_K_M.gguf"),
