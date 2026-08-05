@@ -164,7 +164,11 @@ class MessageScore:
         severity_by_model: ``{guardrail: {model: severity}}`` — the un-averaged
             per-model severity, so the proposer sees whether a message fired on BOTH
             victims (a message strong on only one model is fragile on the blind LB).
-        trace: ``{guardrail: trace_dict}`` for one model, kept for feedback/diagnosis.
+        trace: ``{guardrail: trace_dict}`` for the bottleneck model, kept for
+            feedback/diagnosis and back-compat with single-model consumers.
+        trace_by_model: ``{guardrail: {model: trace_dict}}`` — EVERY victim's replay
+            trace, so the proposer sees each model's own raw generation (not just the
+            bottleneck's), a prerequisite for per-model specialization.
         feedback: :func:`jed_attack.campaign.victim_feedback.message_feedback` distilled
             from ``severity``/``trace`` — per-guardrail severity plus the failure-mode
             trace summary for whichever guardrail(s) scored this message 0.
@@ -178,6 +182,7 @@ class MessageScore:
     feedback: str
     cell_hashes: dict[str, dict[str, str]] = field(default_factory=dict)
     actions: dict[str, dict[str, list[ActionFact]]] = field(default_factory=dict)
+    trace_by_model: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
 
 
 @dataclass
@@ -438,6 +443,10 @@ def score_submission(
                 },
                 trace={
                     guardrail_name: msg_trace[guardrail_name][feedback_model]
+                    for guardrail_name in guardrails
+                },
+                trace_by_model={
+                    guardrail_name: dict(msg_trace[guardrail_name])
                     for guardrail_name in guardrails
                 },
                 feedback="",
