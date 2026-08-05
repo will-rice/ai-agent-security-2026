@@ -42,8 +42,8 @@ def objective_scheme_name(robustness_lambda: float) -> str:
     champion pool onto the new metric.
     """
     if robustness_lambda == 0.0:
-        return "public_raw_per_gen_char_v3"
-    return f"robust{robustness_lambda:g}_raw_per_gen_char_v3"
+        return "public_raw_per_gen_char_v4"
+    return f"robust{robustness_lambda:g}_raw_per_gen_char_v4"
 
 
 OBJECTIVE_NAME = objective_scheme_name(config.ROBUSTNESS_LAMBDA)
