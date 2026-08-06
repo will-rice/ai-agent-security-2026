@@ -37,6 +37,7 @@ import shutil
 import signal
 import time
 import tomllib
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from statistics import mean
@@ -1229,46 +1230,82 @@ def _gen_chars_cost(score: SubmissionScore) -> float:
     return max(score.gen_chars.values(), default=float(score.total_hops))
 
 
-def _batch_refine_objective(scores: list[SubmissionScore]) -> tuple[float, float]:
-    """Return the optimizer's public-throughput objective (raw per generated char).
+def _robust_blend(values: Sequence[float]) -> float:
+    """Blend the mean of per-model values toward the worst (min) by ROBUSTNESS_LAMBDA.
 
-    Throughput is bounded by how much the bottleneck victim GENERATES per candidate,
-    so the objective rewards public raw per unit of the batch's summed
-    bottleneck-model generated chars (:func:`_gen_chars_cost`, reasoning-inclusive).
-    Deterministic (no GPU-contention noise) and, unlike measured green wall-clock,
-    needs no green->T4 rescale: the generated-token count is the hardware-independent
-    driver of replay latency and its ranking of shapes transfers to the T4. Mean
-    public stays a secondary tie-breaker.
+    L=0.0 is the plain mean -- the public LB IS the mean of the per-model columns, so
+    this is the default. L=1.0 is the worst column alone (a private-board hedge that
+    penalizes a shape strong on one victim but weak on the other). Empty -> 0.0.
+    """
+    if not values:
+        return 0.0
+    m = mean(values)
+    lam = config.ROBUSTNESS_LAMBDA
+    if lam == 0.0:
+        return m
+    return (1.0 - lam) * m + lam * min(values)
+
+
+def _per_model_rates(score: SubmissionScore) -> list[float]:
+    """Each victim's public board per its OWN reasoning-inclusive generated chars.
+
+    This is the per-column throughput proxy: the public LB is the mean of the per-model
+    columns, and each column is throughput-bound by how much THAT model generates per
+    candidate -- so gemma's (much lower) generation cost must be credited too, not
+    hidden under a bottleneck-max denominator that is always gpt_oss. Legacy rows
+    without per-model boards fall back to the mean-public / bottleneck-char single rate.
+    """
+    if not score.public_by_model:
+        return [_safe_div(score.public, _gen_chars_cost(score))]
+    # A model that did NOT fire the scoring predicate contributes 0. Otherwise a
+    # degenerate near-empty generation (tiny gen_chars carrying only a stray novelty
+    # cell, e.g. gemma emitting ~1 char and scoring 0.01) blows its rate up and crowns a
+    # lopsided shape that FAILS that column -- exactly what the LB penalizes.
+    return [
+        _safe_div(score.public_by_model.get(m, 0.0), score.gen_chars.get(m, 0.0))
+        if _score_fires_model(score, m)
+        else 0.0
+        for m in config.MODELS
+    ]
+
+
+def _batch_refine_objective(scores: list[SubmissionScore]) -> tuple[float, float]:
+    """Return the optimizer's public-throughput objective (mean per-model raw/gen-char).
+
+    Pools each model's raw and generated chars across the batch, forms the per-model
+    rate, and MEAN-aggregates -- mirroring the public LB (mean of the two columns, each
+    throughput-bound by that model's own generation). Generated chars are deterministic
+    (no GPU-contention noise) and hardware-independent, so the ranking transfers to the
+    T4. Mean public stays a secondary tie-breaker.
     """
     if not scores:
         return (0.0, 0.0)
-    total_cost = sum(_gen_chars_cost(score) for score in scores)
-    public_raw_per_gen_char = _safe_div(
-        sum(_robust_public(score) for score in scores), total_cost
-    )
-    return (public_raw_per_gen_char, mean(score.public for score in scores))
-
-
-def _robust_public(score: SubmissionScore) -> float:
-    """Return the public board reweighted toward the worst model (private-board hedge).
-
-    ``config.ROBUSTNESS_LAMBDA`` blends the cross-model mean (``score.public``) with the
-    per-model minimum: ``(1-L)*mean + L*min``. L=0.0 is the mean (current behavior);
-    L=1.0 is the worst model alone. A shape strong on one victim but weak on the other
-    is penalized, selecting shapes that transfer -- what matters on the blind private
-    board. At L=0 (or when per-model boards are absent) it is exactly ``score.public``,
-    so the objective is unchanged until robustness is deliberately enabled.
-    """
-    lam = config.ROBUSTNESS_LAMBDA
-    if lam == 0.0 or not score.public_by_model:
-        return score.public
-    worst = min(score.public_by_model.values())
-    return (1.0 - lam) * score.public + lam * worst
+    if any(score.public_by_model for score in scores):
+        rates = [
+            _safe_div(
+                sum(s.public_by_model.get(m, 0.0) for s in scores),
+                sum(s.gen_chars.get(m, 0.0) for s in scores),
+            )
+            for m in config.MODELS
+        ]
+    else:  # legacy rows: pooled mean-public over bottleneck chars
+        rates = [
+            _safe_div(
+                sum(s.public for s in scores),
+                sum(_gen_chars_cost(s) for s in scores),
+            )
+        ]
+    return (_robust_blend(rates), mean(score.public for score in scores))
 
 
 def _score_public_raw_per_gen_char(score: SubmissionScore) -> float:
-    """Return (robust) public raw per bottleneck generated char (deterministic cost)."""
-    return _safe_div(_robust_public(score), _gen_chars_cost(score))
+    """Return the mean over victims of public raw per that model's generated char.
+
+    Mirrors the public LB (mean of the per-model columns). Replaces the bottleneck-max
+    denominator, which -- because gpt_oss always generates more than gemma -- only ever
+    optimized gpt_oss and left gemma's (higher-throughput) column cost invisible.
+    """
+    return _robust_blend(_per_model_rates(score))
 
 
 def _empty_batch_score_metrics() -> dict[str, float]:

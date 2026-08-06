@@ -27,23 +27,24 @@ from jed_attack.campaign.submission import MessageType
 _log = logging.getLogger(__name__)
 
 
-# Tag stamped on every record scored under the CURRENT optimizer objective (public raw
-# per bottleneck generated character). Bump this whenever the objective's denominator
-# changes scale: champion selection prefers rows carrying the current tag so a prior
-# scheme's incomparable magnitudes cannot freeze the champion. See _objective_key.
-# A non-zero robustness weight reweights the numerator (mean -> worst-model blend),
-# which rescales the objective, so it earns its own tag and a fresh champion pool.
+# Tag stamped on every record scored under the CURRENT optimizer objective (the MEAN
+# over victims of each model's public board per its OWN generated char). Bump this
+# whenever the objective changes scale: champion selection prefers rows carrying the
+# current tag so a prior scheme's incomparable magnitudes cannot freeze the champion.
+# See _objective_key. A non-zero robustness weight blends the mean rate toward the
+# worst model's rate, which rescales the objective, so it earns its own tag and pool.
 def objective_scheme_name(robustness_lambda: float) -> str:
     """Scheme tag for a robustness weight: the mean tag at 0, else a robust-L tag.
 
-    The denominator is the bottleneck-model reasoning-inclusive GENERATED-CHAR count
-    (deterministic, no GPU-contention noise and no green->T4 rescale), replacing the
-    measured green replay second. Different scale, so the tag bumps to reset the
-    champion pool onto the new metric.
+    The objective is the MEAN of the per-model rates (public board / that model's
+    reasoning-inclusive generated chars), mirroring the public LB (mean of the two
+    columns). This replaces the bottleneck-max denominator, which -- since gpt_oss
+    always generates more than gemma -- only optimized gpt_oss and hid gemma's cost.
+    Different scale, so the tag bumps to reset the champion pool onto the new metric.
     """
     if robustness_lambda == 0.0:
-        return "public_raw_per_gen_char_v4"
-    return f"robust{robustness_lambda:g}_raw_per_gen_char_v4"
+        return "public_raw_per_gen_char_v6"
+    return f"robust{robustness_lambda:g}_raw_per_gen_char_v6"
 
 
 OBJECTIVE_NAME = objective_scheme_name(config.ROBUSTNESS_LAMBDA)

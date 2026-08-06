@@ -1342,40 +1342,71 @@ def test_batch_score_metrics_report_private_proxy_shadow_lanes() -> None:
     )
 
 
-def test_robust_public_blends_mean_and_worst_model(
+def test_objective_means_per_model_rates_with_robustness_blend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """ROBUSTNESS_LAMBDA reweights the objective from mean toward the worst model."""
+    """Objective = MEAN of per-model (public/gen_chars) rates; robustness -> min."""
     from jed_attack.campaign import config
     from jed_attack.campaign import optimize_prompts as op
     from jed_attack.campaign.submission_score import SubmissionScore
 
-    # Lopsided shape: strong on gpt_oss, weak on gemma; mean 0.30, worst 0.10.
-    score = SubmissionScore(
-        public=0.30,
-        total_hops=1,
-        public_by_model={"gpt_oss": 0.50, "gemma_4": 0.10},
-        gen_chars={"gpt_oss": 30.0},
-        replay_seconds={"gpt_oss": 0.5, "gemma_4": 0.2},
-        fires=True,
-        per_message=[],
-    )
+    # _robust_blend: L=0 -> mean, L=1 -> worst, L=0.5 -> halfway.
+    monkeypatch.setattr(config, "ROBUSTNESS_LAMBDA", 0.0)
+    assert op._robust_blend([0.30, 0.10]) == pytest.approx(0.20)
+    monkeypatch.setattr(config, "ROBUSTNESS_LAMBDA", 1.0)
+    assert op._robust_blend([0.30, 0.10]) == pytest.approx(0.10)
+    monkeypatch.setattr(config, "ROBUSTNESS_LAMBDA", 0.5)
+    assert op._robust_blend([0.30, 0.10]) == pytest.approx(0.15)
 
     monkeypatch.setattr(config, "ROBUSTNESS_LAMBDA", 0.0)
-    assert op._robust_public(score) == pytest.approx(0.30)  # mean == score.public
 
-    monkeypatch.setattr(config, "ROBUSTNESS_LAMBDA", 1.0)
-    assert op._robust_public(score) == pytest.approx(0.10)  # worst model alone
+    def _score(
+        pub_gpt: float,
+        pub_gem: float,
+        gen_gpt: float,
+        gen_gem: float,
+        *,
+        gemma_fires: bool = True,
+    ) -> "SubmissionScore":
+        from jed_attack.campaign.submission import MessageType
+        from jed_attack.campaign.submission_score import MessageScore
 
-    monkeypatch.setattr(config, "ROBUSTNESS_LAMBDA", 0.5)
-    assert op._robust_public(score) == pytest.approx(0.20)  # 0.5*0.30 + 0.5*0.10
+        sev: dict[str, dict[str, float]] = {"optimal": {"gpt_oss": 16.0}}
+        if gemma_fires:
+            sev["optimal"]["gemma_4"] = 16.0
+        ms = MessageScore(
+            message="m",
+            type=MessageType.EXFIL,
+            severity={"optimal": 16.0},
+            severity_by_model=sev,
+            trace={},
+            feedback="",
+        )
+        return SubmissionScore(
+            public=(pub_gpt + pub_gem) / 2,
+            total_hops=1,
+            public_by_model={"gpt_oss": pub_gpt, "gemma_4": pub_gem},
+            gen_chars={"gpt_oss": gen_gpt, "gemma_4": gen_gem},
+            fires=True,
+            per_message=[ms],
+        )
 
-    # The objective divides the robust numerator by the bottleneck generated-char count.
-    assert op._score_public_raw_per_gen_char(score) == pytest.approx(0.20 / 30.0)
+    # Both fire: MEAN of per-model rates -- gemma's own (lower) gen cost is credited,
+    # not hidden under a bottleneck-max. rate_gpt=0.60/60=0.01, rate_gemma=0.20/10=0.02.
+    both = _score(0.60, 0.20, 60.0, 10.0)
+    assert op._score_public_raw_per_gen_char(both) == pytest.approx((0.01 + 0.02) / 2)
 
-    # No per-model boards (e.g. legacy rescore) -> falls back to the mean, never errors.
+    # Lopsided: gemma did NOT fire (a stray cell at tiny gen). Its rate is GATED to 0,
+    # so it cannot beat a both-firing shape despite gemma's near-zero gen_chars.
+    lop = _score(0.09, 0.01, 806.0, 1.0, gemma_fires=False)
+    assert op._score_public_raw_per_gen_char(lop) == pytest.approx((0.09 / 806.0) / 2)
+    assert op._score_public_raw_per_gen_char(lop) < op._score_public_raw_per_gen_char(
+        both
+    )
+
+    # No per-model boards (legacy rescore) -> single mean-public / bottleneck rate.
     bare = SubmissionScore(public=0.30, total_hops=1, fires=True, per_message=[])
-    assert op._robust_public(bare) == pytest.approx(0.30)
+    assert op._score_public_raw_per_gen_char(bare) == pytest.approx(0.30 / 1.0)
 
 
 def test_robustness_lambda_stamps_distinct_objective_scheme() -> None:
@@ -1383,10 +1414,10 @@ def test_robustness_lambda_stamps_distinct_objective_scheme() -> None:
     from jed_attack.campaign import blackboard, config
 
     assert config.ROBUSTNESS_LAMBDA == 0.0  # default: unchanged live objective
-    assert blackboard.OBJECTIVE_NAME == "public_raw_per_gen_char_v4"
-    assert blackboard.objective_scheme_name(0.0) == "public_raw_per_gen_char_v4"
-    assert blackboard.objective_scheme_name(0.5) == "robust0.5_raw_per_gen_char_v4"
-    assert blackboard.objective_scheme_name(1.0) == "robust1_raw_per_gen_char_v4"
+    assert blackboard.OBJECTIVE_NAME == "public_raw_per_gen_char_v6"
+    assert blackboard.objective_scheme_name(0.0) == "public_raw_per_gen_char_v6"
+    assert blackboard.objective_scheme_name(0.5) == "robust0.5_raw_per_gen_char_v6"
+    assert blackboard.objective_scheme_name(1.0) == "robust1_raw_per_gen_char_v6"
 
 
 def test_raw_gen_meter_counts_full_raw_generation() -> None:
@@ -1869,6 +1900,9 @@ def test_worker_loop_logs_objective_metrics_separately(
     fast_score.gen_chars = {"gpt_oss": 5.0, "gemma_4": 5.0}
     fast_score.total_hops = 10
     fast_score.public_by_model = {"gpt_oss": 9.0, "gemma_4": 9.0}
+    # Both fire on both victims (per-model rate is gated on firing).
+    for s in (slow_score, fast_score):
+        s.per_message[0].severity_by_model["optimal"]["gemma_4"] = 16.0
     submissions = iter([slow, fast])
     scores = iter([slow_score, fast_score])
 
@@ -2694,9 +2728,11 @@ def test_make_record_persists_public_throughput_objective() -> None:
 
     submission = _mk_sub("throughput")
     score = _mk_score(2.0)
-    # Objective = public / bottleneck (max) generated-char count = 2.0 / 30.0.
+    # _mk_score's per_message fires gpt_oss only, so gemma's rate is gated to 0:
+    # objective = mean(2/10, 0).
     score.gen_chars = {"gpt_oss": 10.0, "gemma_4": 30.0}
     score.public_by_model = {"gpt_oss": 2.0, "gemma_4": 2.0}
+    expected = (2.0 / 10.0 + 0.0) / 2
 
     record = op.make_record(
         submission,
@@ -2707,9 +2743,9 @@ def test_make_record_persists_public_throughput_objective() -> None:
     )
 
     assert record.objective_name == op._PUBLIC_THROUGHPUT_OBJECTIVE
-    assert record.objective == pytest.approx(2.0 / 30.0)
+    assert record.objective == pytest.approx(expected)
     assert record.objective_tiebreaker == pytest.approx(2.0)
-    assert record.to_json()["objective"] == pytest.approx(2.0 / 30.0)
+    assert record.to_json()["objective"] == pytest.approx(expected)
 
 
 def test_refine_prompt_contains_entire_batch(
@@ -4410,10 +4446,13 @@ def test_score_submission_captures_bottleneck_gen_chars(
     )
     # (no_tool) and None dropped; only the real assistant string counts, per model.
     assert out.gen_chars == {"gpt_oss": 300.0, "gemma_4": 50.0}
-    # The objective denominator is the bottleneck (max) reasoning-inclusive gen-char
-    # count: gpt_oss 300 > gemma_4 50, so the cost is 300.
+    # _gen_chars_cost stays the bottleneck (max) for telemetry, but the OBJECTIVE is the
+    # mean of per-model rates (each model's public board over its OWN gen chars).
     assert op._gen_chars_cost(out) == 300.0
-    assert op._score_public_raw_per_gen_char(out) == pytest.approx(out.public / 300.0)
+    assert op._score_public_raw_per_gen_char(out) == pytest.approx(
+        (out.public_by_model["gpt_oss"] / 300.0 + out.public_by_model["gemma_4"] / 50.0)
+        / 2
+    )
 
 
 def test_score_submission_replays_models_concurrently_and_preserves_results(
