@@ -1,7 +1,7 @@
 # Fill-on-Dump Submission — Design Spec
 
 **Date:** 2026-08-06 (rev 6 — supersedes the portfolio-objective design)
-**Status:** Approved (dialogue), pending written review
+**Status:** Implemented (2026-08-06) on branch `wr/fill-on-dump-submission`
 **Goal:** Make the shipped submission the *materialized candidate list itself*. The proposer proposes **templates**; the model **fills them on dump** into the full URL-stamped candidate list, serialized to JSON; a **thin, fixed `attack.py`** loads that JSON and does nothing but the grade-time budget trim. Scored == shipped, by construction.
 
 ---
