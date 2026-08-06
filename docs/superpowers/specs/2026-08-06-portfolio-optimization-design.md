@@ -1,75 +1,75 @@
 # Portfolio-as-Unit Optimization — Design Spec
 
-**Date:** 2026-08-06
+**Date:** 2026-08-06 (rev 2)
 **Status:** Draft for review
-**Goal:** Optimize the whole **submission** (a portfolio of shapes) as the scored unit — so what the optimizer maximizes is what actually ships — and make the **private board** a first-class objective, not a heuristic afterthought.
+**Goal:** Make the **batch the optimized unit** — the proposer already emits a batch of N submissions, so score/refine/ship that batch *as one portfolio*, optimized for the real 4-column LB (`gpt_oss/gemma × public/private`) rather than public throughput of one shape.
 
 ---
 
-## 1. The gap this closes
+## 1. What already exists (and the actual gap)
 
-Today the optimizer and the artifact are **two disconnected layers** (confirmed against the code):
+The machinery is mostly here already:
 
-- **Optimizer** scores individual *shapes* — each unit is a single-message candidate, ranked by `mean_m(public_m / gen_chars_m)` (public throughput only).
-- **Artifact** (`attack.py`) is a live-fill *algorithm* that, at grade time, multiplies shapes into ~2000 candidates. It just shipped a diverse top-K set (`SHIP_TOP_K`, `_FILL_DIVERSITY_K`) as a heuristic private hedge — but that top-K is chosen by the *public* objective and a naive dedup, **not optimized for private survival**.
+- **The proposer emits a structured batch of N submissions** (`{"submissions": [...]}`).
+- **A batch-level objective already exists** — `_batch_refine_objective` pools raw/gen-char across the batch, and the refine loop hill-climbs the *whole batch* as a unit.
 
-So two things are missing:
-1. **The unit of optimization is a shape, not the submission.** The private-board value of a *portfolio* (diversity → survival against a held-out guardrail) is never scored, so the search can't trade public throughput for private robustness intelligently.
-2. **The private board — which sets the final ranking — has no objective at all.** `GATE_GUARDRAILS` scores only the public `OptimalGuardrail`; the private column is invisible to the search.
+So "score the submission as a unit" is **not** new plumbing. The gaps are narrow:
 
-This spec makes the **portfolio** the unit and adds a **private-proxy** objective, so the search optimizes the real 4-column LB (`gpt_oss/gemma × public/private`), not just public throughput of one shape.
+1. **The batch is dissolved, not shipped.** After scoring, each of the N is appended as an **independent Record** and the champion is the *single best shape*. The batch stops being a unit the moment it's scored.
+2. **The objective is public-only.** `_batch_refine_objective` optimizes pooled public throughput. There is **no private dimension** anywhere — no `SECRET_MARKER`-payload survival test, nothing for the board that sets final ranking.
+3. **The shipped submission is a *different* set.** Today it's the top-K distinct shapes pulled from the *whole blackboard* (a post-hoc heuristic), then live-filled into ~2000 candidates. It is not the batch the objective refined.
+
+The fix: keep the **batch as the unit end-to-end** — refine it, score it on *both* guardrails, keep the best *batch* as the champion portfolio, and ship exactly that. This reuses the existing batch scoring at **no extra search cost**; the only new work is a private-proxy guardrail (shared by any design) and extending the batch objective to include private coverage.
 
 ---
 
 ## 2. The two objectives a portfolio must trade
 
-- **Public throughput** (have it): each firing candidate scores the same ~18 raw, so the row is `~0.09 × candidates`, maximized by the *leanest* shapes. Shape diversity is *neutral* here. We already score this per shape.
-- **Private survival** (missing): the private board is a **static replay of the returned candidates against a held-out, undisclosed guardrail**. A monoculture survives-or-dies as a unit; a diverse portfolio scores whatever fraction of its distinct shapes the held-out defense fails to block. **Diversity is only valuable here.**
+- **Public throughput** (have it): each firing candidate scores the same ~18 raw, so the row is `~0.09 × candidates`, maximized by the *leanest* shapes. Shape diversity is *neutral* here. `_batch_refine_objective` already proxies this (pooled raw / pooled gen-char, per model).
+- **Private survival** (missing): the private board is a **static replay of the returned candidates against a held-out, undisclosed guardrail**. A monoculture survives-or-dies as a unit; a diverse batch scores whatever fraction of its distinct shapes the held-out defense fails to block. **Diversity is only valuable here.**
 
-The portfolio objective is therefore a trade: spend a little public throughput (slightly-less-lean shapes) to raise the expected private coverage. You cannot optimize that trade without *measuring* private survival — hence the prerequisite below.
-
----
-
-## 3. Prerequisite: a private-proxy guardrail
-
-The real private guardrail is held out. To optimize private we replay each shape against a **proxy** for it and score survival. Add it to `GATE_GUARDRAILS` alongside `optimal`:
-
-- **Candidate proxies** (the competition says "stricter"; the forum speculates an LLM-judge):
-  1. The SDK's `RulesGuardrail` baseline (`aicomp_sdk.attacks.baselines.guardrail_rules`) — inspects the `http.post` `data` payload and denies `secret_exfil`.
-  2. An LLM-judge over the trace (we already run a judge service; repurpose it as a guardrail-style verdict).
-- **What it reveals (critical):** if the proxy blocks by inspecting the `SECRET_MARKER` payload, then **every exfil shape scores 0 on private regardless of framing** — framing diversity is worthless and the private lever is **predicate** diversity (the benign `email.send` **deputy**, no secret; already flagged in `lb-lever-plan` lever 2). If the proxy blocks by framing/heuristics, framing diversity is the lever. **The proxy is what tells us which diversity matters** — so it must land first.
-
-Scoring cost: adding a second guardrail doubles per-shape replay work. `score_submission` already loops guardrails, so this is a config addition, not new plumbing.
+The batch objective must trade these: spend a little public throughput (slightly-less-lean shapes) to raise expected private coverage. That trade is unmeasurable without a private score — hence the prerequisite.
 
 ---
 
-## 4. Architecture: curation, not full re-search (recommended)
+## 3. Prerequisite: a private-proxy guardrail (shared by every design)
 
-Two ways to make the portfolio the unit:
+The real private guardrail is held out. Add a **proxy** to `GATE_GUARDRAILS` alongside `optimal` and replay each shape against it:
 
-**Option A — full portfolio scoring (the literal mental model).** The proposer emits a SET of K shapes; the scorer estimates the *whole submission's* public throughput + private coverage; the objective is the combined 4-column LB estimate; the champion portfolio IS the artifact.
-- Pro: exactly optimizes what ships.
-- Con: **K× scoring cost** per unit, a fill-throughput model to estimate candidate count, and a much larger proposer output. Heavy.
+- **Candidates** (the competition says "stricter"; the forum speculates an LLM-judge):
+  1. `RulesGuardrail` baseline (`aicomp_sdk.attacks.baselines.guardrail_rules`) — inspects the `http.post` `data` payload and denies `secret_exfil`.
+  2. An LLM-judge-as-guardrail (reuse the existing judge service for a verdict).
+- **What its first measurement decides (load-bearing):** if the proxy blocks by inspecting the `SECRET_MARKER` payload, then **every exfil shape scores 0 on private regardless of framing** — framing diversity is worthless and the private lever is **predicate** diversity (the benign `email.send` **deputy**, no secret; `lb-lever-plan` lever 2). If it blocks by framing/heuristics, framing diversity is the lever. **This single result tells us what the batch should diversify over.**
 
-**Option B — keep the fast per-shape search, add a portfolio CURATOR (recommended).** The per-shape search stays as-is (cheap, fast, finds diverse lean shapes on public). A new **curation** step selects the shipped top-K to **maximize a portfolio objective over BOTH guardrails**, replacing the naive `top_distinct_shapes` dedup:
-- `curate(k)` = pick the K shapes that maximize `public_throughput(portfolio)` + `λ · private_coverage(portfolio)`, where `private_coverage` = count of distinct shapes surviving the private proxy (a set-cover / greedy submodular pick, so redundant shapes aren't chosen).
-- The artifact ships the curated set; the fill round-robins across it (already built).
-- Pro: reuses the fast search; the *portfolio* is optimized (for both columns) even though *shapes* are searched. Curation is cheap (scores an existing pool, not a live search).
-- Con: not a single monolithic unit — but it produces the same shipped artifact Option A would, at a fraction of the cost.
-
-**Recommendation: Option B.** It closes the gap (the shipped portfolio is optimized, private included) without the K× search blow-up, and it degrades gracefully — with `λ=0` it's today's public-only top-K.
+Cost: `score_submission` already loops guardrails, so this is a config addition (a second guardrail = 2× replay per shape) — the same added cost for *any* design.
 
 ---
 
-## 5. The portfolio objective (Option B)
+## 4. Design: the batch IS the portfolio (Option A)
+
+Make the batch the unit through the whole pipeline:
+
+1. **Author** — the proposer already emits N shapes; the diverse prompt already makes them structurally distinct. Unchanged.
+2. **Score** — each shape is scored on **both** guardrails (public + private-proxy), as now, per model. Unchanged plumbing, one added guardrail.
+3. **Refine** — the batch hill-climb (`_refine_batch`) already re-authors and keeps the better *batch*; swap its accept criterion to the **portfolio objective** (§5). Reuses the existing loop.
+4. **Champion = the best-scoring BATCH.** Rank whole *batches* by the portfolio objective (§5) and keep the single best batch as the champion — exactly analogous to today's `best_objective`, but the unit is a batch (a set of shapes), not one shape. No cross-batch accumulation, no curation of a top-K from the whole blackboard.
+5. **Ship the champion batch, verbatim.** `assemble.build` already accepts a list of shapes and the fill already round-robins across them (the diverse-fill work just landed). Feed it the champion batch's shapes directly. What was scored is what ships.
+
+**Why this is the better design (and free):** the batch already IS a portfolio; we're just (a) scoring it on private too, (b) ranking whole batches by a portfolio objective, and (c) shipping the winning batch instead of dissolving it into per-shape records and re-curating. There's **no extra search cost** — we already score N shapes per batch — and it exactly matches "what you optimize is what ships." The post-hoc top-K curation (`top_distinct_shapes`, `SHIP_TOP_K`) becomes unnecessary and is removed: the shipped set is the champion batch.
+
+(The earlier draft's "Option B — curate a top-K from the whole blackboard" is now redundant: it existed only because the batch was being dissolved. Keeping the batch whole is strictly cleaner.)
+
+---
+
+## 5. The portfolio (batch) objective
 
 ```
-score(portfolio) = public_throughput(portfolio) + λ · private_coverage(portfolio)
+score(batch) = public_throughput(batch) + λ · private_coverage(batch)
 ```
 
-- **`public_throughput`**: the fill is round-robin across K shapes, so throughput ≈ `budget / mean_k(cost_shape)` per model, meaned over models (reuse the per-model rate machinery). The top-K are all lean, so this is ~flat vs the champion.
-- **`private_coverage`**: replay each candidate shape under the private proxy; count DISTINCT shapes that still fire the scored predicate. Greedy submodular selection maximizes distinct survivors (adding a shape that survives where others don't beats a redundant one). If the proxy is payload-based (exfil all die), coverage is dominated by the **deputy** shape — so curation automatically reserves the deputy slice, tuned by measured survival instead of the fixed `_DEPUTY_FRAC=0.10`.
-- **`λ`**: the public↔private weight. Start conservative (public dominates, since public is the known board), raise as private-proxy fidelity grows. `λ=0` reproduces today's behavior — a safe default and a clean A/B.
+- **`public_throughput(batch)`**: the fill round-robins across the batch's firing shapes, so throughput ≈ `budget / mean_shape(cost)` per model, meaned over models — essentially the current `_batch_refine_objective` (pooled per-model raw/gen-char). Extend it to consume the batch's shapes as the fill set.
+- **`private_coverage(batch)`**: number of **distinct** shapes in the batch that still fire the scored predicate under the private proxy (submodular — a shape that survives where others don't is worth more than a redundant one). If the proxy is payload-based (exfil all die), coverage is carried by the **deputy** shape, so the objective naturally pulls a deputy into the batch instead of the fixed `_DEPUTY_FRAC`.
+- **`λ`**: the public↔private weight. `λ=0` is today's public-only batch objective (a clean A/B and safe default); raise it as private-proxy fidelity is validated.
 
 ---
 
@@ -78,49 +78,47 @@ score(portfolio) = public_throughput(portfolio) + λ · private_coverage(portfol
 | Area | File | Change |
 |---|---|---|
 | Private proxy | `guardrails.py` | add a `private` entry to `GATE_GUARDRAILS` (RulesGuardrail or judge-as-guardrail) |
-| Per-shape private score | `submission_score.py` | already loops guardrails; expose per-guardrail per-model board + firing so curation can read private survival |
-| Record persistence | `blackboard.py` `Record` | persist `private_by_model` (per-model private-proxy board) alongside `public_by_model` |
-| Curator | `blackboard.py` | replace `top_distinct_shapes(k)` with `curate_portfolio(k, λ)` — greedy public+private submodular pick over the current-scheme firing pool |
-| Ship path | `blackboard.py` `append`/`reship_best` | ship `curate_portfolio` output |
-| Objective scale tag | `blackboard.py` | bump scheme when `λ>0` changes the ship objective (as with prior objective changes) |
-| Config | `config.py` | `PORTFOLIO_LAMBDA`, private-proxy id |
+| Per-shape private score | `submission_score.py` | already loops guardrails; surface per-guardrail per-model board + firing |
+| Batch objective | `optimize_prompts.py` `_batch_refine_objective` | add `λ · private_coverage`; consume the batch's shapes as the fill set for the public term |
+| Refine accept | `optimize_prompts.py` `_refine_batch` | accept on the portfolio objective (already batch-level) |
+| Champion = best batch | `blackboard.py` | persist scored **batches** (a set of shapes + the batch's portfolio objective) and select the best batch; the per-shape record path stays for feedback/telemetry |
+| Ship path | `blackboard.py` `append`/`reship_best` | ship the champion batch's shapes; **remove** `top_distinct_shapes`/`SHIP_TOP_K` curation |
+| Scheme tag | `blackboard.py` | bump when `λ>0` changes the ship objective |
+| Config | `config.py` | `PORTFOLIO_LAMBDA`, private-proxy id (the proposer's batch size is the portfolio size) |
 | Fill | `assemble.py` | unchanged (already round-robins the shipped set) |
-
-Explicitly **not** Option A: no proposer-emits-sets, no live portfolio search — the per-shape search is retained.
 
 ---
 
 ## 7. Risks & mitigations
 
-- **Private-proxy ≠ real private guardrail.** The proxy is a guess. Mitigation: keep `λ` low until a real private submission validates the proxy's direction; never let private optimization *regress* public (cap the public cost of curation). Treat the proxy's biggest signal — "does exfil survive at all?" — as the load-bearing bit, not exact scores.
-- **Curation over-fits to the proxy.** Greedy submodular coverage with a hard public-throughput floor; the portfolio must never drop public below the champion-monoculture minus a small band.
-- **Scoring cost (2nd guardrail).** Doubles replay; acceptable (curation scores an existing pool, not a re-search). Cache per-shape private verdicts on the Record so curation is cheap.
-- **The exfil-payload trap.** If the proxy shows all exfil dies on private, do NOT ship a framing-diverse exfil-only portfolio thinking it hedges — it doesn't. Curation must then weight the deputy predicate, which is the actual private scorer under a payload-inspecting guardrail.
+- **Private-proxy ≠ real private guardrail.** It's a guess. Keep `λ` low until a real private submission validates its direction; never let private optimization regress public (floor the public term). The load-bearing signal is "does exfil survive at all?", not exact scores.
+- **Best-batch coarseness.** The champion is one batch, so its quality is bounded by what the proposer put in that single batch (vs. cherry-picking across all batches). Mitigation: show the champion batch as the incumbent so the proposer *improves on it* each generation, and let the refine loop hill-climb within a batch — the best batch converges to a strong portfolio without cross-batch curation.
+- **Scoring cost (2nd guardrail).** 2× replay per shape — the same for any design; cache per-shape private verdicts on the Record.
+- **The exfil-payload trap.** If the proxy shows all exfil dies on private, a framing-diverse exfil-only batch does NOT hedge — the objective must then weight the deputy predicate, which the `private_coverage` term does automatically.
 
 ---
 
 ## 8. Testing
 
-- `curate_portfolio` picks distinct-surviving shapes (greedy coverage), respects the public floor, and with `λ=0` equals `top_distinct_shapes`.
+- `_batch_refine_objective` with `λ>0` rewards a batch that adds a distinct private-surviving shape over one that adds a redundant public-lean shape; `λ=0` equals today's public-only batch objective.
 - Private-proxy guardrail: an exfil shape carrying `SECRET_MARKER` scores 0 under a payload-inspecting proxy; a deputy shape (no secret) survives.
-- `Record` round-trips `private_by_model`.
+- Champion is a *set* of shapes; `append`/`reship_best` ship that set; round-trips through the blackboard.
 - Scheme-tag bump when `λ>0`; champion pool resets.
-- `score_submission` returns per-guardrail per-model boards.
 
 ---
 
 ## 9. Rollout
 
-1. Land the private-proxy guardrail (`λ=0`, pure telemetry) — see whether exfil survives it at all. **This single measurement decides framing-vs-predicate diversity.**
-2. Persist `private_by_model`; add `curate_portfolio` behind `λ=0` (== current top-K).
-3. Raise `λ` only after step 1 tells us private survival is real and which predicate carries it.
-4. Validate on Kaggle before trusting the private direction (the proxy is a guess).
+1. Land the private-proxy guardrail at `λ=0` (pure telemetry). **Its first result decides framing-vs-predicate diversity.**
+2. Track the best *batch* + ship it (replacing `top_distinct_shapes`), still `λ=0` — behavior-equivalent to today, now batch-as-unit.
+3. Raise `λ` only after step 1 shows private survival is real and which predicate carries it.
+4. Validate on Kaggle before trusting the private direction.
 
 ---
 
 ## 10. Open decisions for review
 
-1. **Proxy choice:** `RulesGuardrail` baseline vs the LLM-judge-as-guardrail. Recommend starting with `RulesGuardrail` (deterministic, cheap, and it directly tests the payload-inspection hypothesis).
-2. **Option B vs A:** curation (recommended) vs full portfolio search. Recommend B unless a real private score shows curation leaves large gains on the table.
-3. **`λ` schedule:** fixed small constant vs adaptive (raise as proxy fidelity is validated). Recommend fixed-small first.
-4. **Deputy as a first-class portfolio slot** vs the fixed `_DEPUTY_FRAC`: fold it into `curate_portfolio` so its share is measured, not hard-coded. Recommend folding in.
+1. **Proxy choice:** `RulesGuardrail` (deterministic, cheap, directly tests the payload hypothesis) vs LLM-judge-as-guardrail. Recommend `RulesGuardrail` first.
+2. **`λ` schedule:** fixed small constant vs adaptive. Recommend fixed-small first.
+3. **Batch/champion granularity:** RESOLVED — ship the best-scoring *batch* as the portfolio (analogous to `best_objective`, unit = batch). The champion batch is shown as the incumbent so the proposer improves on it each generation; no cross-batch accumulation or curation.
+4. **Deputy as a measured batch slot** (via `private_coverage`) vs the fixed `_DEPUTY_FRAC`. Recommend folding it into the objective.
