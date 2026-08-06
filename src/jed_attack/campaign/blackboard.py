@@ -36,15 +36,14 @@ _log = logging.getLogger(__name__)
 def objective_scheme_name(robustness_lambda: float) -> str:
     """Scheme tag for a robustness weight: the mean tag at 0, else a robust-L tag.
 
-    The objective is the MEAN of the per-model rates (public board / that model's
-    reasoning-inclusive generated chars), mirroring the public LB (mean of the two
-    columns). This replaces the bottleneck-max denominator, which -- since gpt_oss
-    always generates more than gemma -- only optimized gpt_oss and hid gemma's cost.
-    Different scale, so the tag bumps to reset the champion pool onto the new metric.
+    The objective is now the projected filled+trimmed public board (LB points), not the
+    per-gen-char rate. Different scale, so the ``v7`` bump retires the v6 champion pool:
+    v7 firing rows outrank all v6 rows regardless of magnitude, so a fresh
+    projected-board champion takes over.
     """
     if robustness_lambda == 0.0:
-        return "public_raw_per_gen_char_v6"
-    return f"robust{robustness_lambda:g}_raw_per_gen_char_v6"
+        return "public_raw_per_gen_char_v7"
+    return f"robust{robustness_lambda:g}_raw_per_gen_char_v7"
 
 
 OBJECTIVE_NAME = objective_scheme_name(config.ROBUSTNESS_LAMBDA)
@@ -113,14 +112,19 @@ class Record:
         )
 
 
-def _shapes_json(shapes: list[str]) -> str:
-    """Serialize message shapes as the shipped one-message candidate list JSON.
+def _champion_json(record: "Record") -> str:
+    """Serialize a champion record's messages as the filled candidate-list JSON.
 
-    Bridges the legacy ship path onto :func:`assemble.build`'s embedded-JSON contract:
-    each shape becomes a one-message chain. (Task 5 replaces this with the champion's
-    full ``Submission.to_shipped_json`` fill.)
+    Fills the record's message shapes into the shipped candidate list via the shared
+    :mod:`fill` round-robin -- the same one the scorer projects -- so what ships matches
+    what was scored. Fills directly (no ``Submission`` re-validation) so a persisted
+    record always ships.
     """
-    return json.dumps([[text] for text in shapes], separators=(",", ":"))
+    templates = [
+        fill.templatize(str(m["text"])) or str(m["text"]) for m in record.messages
+    ]
+    chains = fill.ordered_chains(templates, config.SHIP_CANDIDATE_CAP)
+    return json.dumps([list(chain) for chain in chains], separators=(",", ":"))
 
 
 def _severity_sum(entry: dict) -> float:
@@ -309,43 +313,6 @@ class Blackboard:
                 break
         return out
 
-    def top_distinct_shapes(self, k: int) -> list[str]:
-        """The k highest-objective DISTINCT firing single-message shapes, best first.
-
-        Deduped by templatized form (its URL normalized to ``{u}``), so different URLs
-        of one shape count once. Shipping this top-K set instead of only the champion
-        makes the artifact fill a DIVERSE portfolio: one shape x many URLs is
-        public-optimal but fragile on the blind private board's held-out guardrail; a
-        spread of near-optimal shapes hedges it. Falls back to the champion if empty.
-        """
-        seen: set[str] = set()
-        shapes: list[str] = []
-        ranked = sorted(
-            (
-                r
-                for r in self._records
-                if r.valid
-                and r.fires
-                and r.objective_name == OBJECTIVE_NAME
-                and len(r.messages) == 1
-            ),
-            key=_objective_key,
-            reverse=True,
-        )
-        for record in ranked:
-            text = str(record.messages[0]["text"])
-            key = fill.templatize(text) or text
-            if key in seen:
-                continue
-            seen.add(key)
-            shapes.append(text)
-            if len(shapes) >= k:
-                break
-        if shapes:
-            return shapes
-        best = self.best_objective()
-        return [str(m["text"]) for m in best.messages] if best is not None else []
-
     async def append(self, record: Record, out_dir: Path, reship: bool = True) -> bool:
         """Append a record, persist it, and (optionally) reship on a new best.
 
@@ -368,9 +335,7 @@ class Blackboard:
                 handle.write(json.dumps(record.to_json(), sort_keys=True) + "\n")
                 handle.flush()
             if reship and self.best_objective() is record and record is not prior_best:
-                assemble.build(
-                    _shapes_json(self.top_distinct_shapes(config.SHIP_TOP_K)), out_dir
-                )
+                assemble.build(_champion_json(record), out_dir)
                 return True
             return False
 
@@ -383,20 +348,15 @@ class Blackboard:
         Args:
             out_dir: Where :func:`assemble.build` writes ``attack.py``.
         """
-        if self.best_objective() is not None:
-            assemble.build(
-                _shapes_json(self.top_distinct_shapes(config.SHIP_TOP_K)), out_dir
-            )
+        best = self.best_objective()
+        if best is not None:
+            assemble.build(_champion_json(best), out_dir)
 
     def reship_champions(self, public_out_dir: Path, robust_out_dir: Path) -> None:
         """Rewrite exact-public and robust champion artifacts independently."""
         public = self.best_public()
         robust = self.best_robust()
         if public is not None:
-            assemble.build(
-                _shapes_json([m["text"] for m in public.messages]), public_out_dir
-            )
+            assemble.build(_champion_json(public), public_out_dir)
         if robust is not None:
-            assemble.build(
-                _shapes_json([m["text"] for m in robust.messages]), robust_out_dir
-            )
+            assemble.build(_champion_json(robust), robust_out_dir)
