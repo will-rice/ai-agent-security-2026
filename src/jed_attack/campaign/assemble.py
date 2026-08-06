@@ -117,6 +117,11 @@ _SLOWEST0 = 25.0
 _SLOWEST_MULT = 1.35
 _LAT_FLOOR_S = 0.001
 _ROTATE_AFTER_MISSES = 8
+# Ship a DIVERSE portfolio, not one shape x many URLs. On PUBLIC, shape diversity is
+# neutral (each firing candidate scores the same 18 raw regardless of shape), but a
+# monoculture is fragile on the blind PRIVATE board's held-out guardrail -- so the fill
+# round-robins across the top-K firing shapes rather than hammering the single cheapest.
+_FILL_DIVERSITY_K = 8
 _ALPHA = "abcdefghijklmnopqrstuvwxyz"
 # DEPUTY private hedge: a benign, untainted, unauthorized email.send fires
 # CONFUSED_DEPUTY (severity 3) and survives a data-inspecting strict guardrail where
@@ -539,6 +544,11 @@ class AttackAlgorithm(AttackAlgorithmBase):
             return default_unit
 
         fill_order = ranked_indices or [selected_index]
+        # Round-robin the fill across the top-K firing shapes for a diverse shipped
+        # portfolio (private-board hedge; see _FILL_DIVERSITY_K). Bounded by the
+        # eligible firing count, so one firing shape degrades to the old monoculture.
+        _k_cfg = int(self._cfg("fill_diversity_k", _FILL_DIVERSITY_K))
+        diversity_k = max(1, min(_k_cfg, len(fill_order)))
         fill_position = 0
         misses = 0
         total_misses = 0
@@ -547,7 +557,7 @@ class AttackAlgorithm(AttackAlgorithmBase):
         rotate_after = max(
             1, int(self._cfg("rotate_after_misses", _ROTATE_AFTER_MISSES))
         )
-        max_total_misses = max(rotate_after, rotate_after * max(1, len(fill_order)) * 2)
+        max_total_misses = max(rotate_after, rotate_after * max(1, diversity_k) * 2)
         idx = 0
         while not _should_stop(
             returned=len(out),
@@ -575,12 +585,12 @@ class AttackAlgorithm(AttackAlgorithmBase):
                 misses += 1
                 total_misses += 1
                 max_miss_streak = max(max_miss_streak, misses)
-                if misses >= rotate_after:
-                    if len(fill_order) <= 1 or total_misses >= max_total_misses:
-                        break
-                    fill_position = (fill_position + 1) % len(fill_order)
-                    rotations += 1
-                    misses = 0
+                if total_misses >= max_total_misses:
+                    break
+            # Advance round-robin across the top-K firing shapes every candidate, so the
+            # shipped fill is an even spread of shapes rather than one shape repeated.
+            fill_position = (fill_position + 1) % diversity_k
+            rotations += 1
 
         candidates = out or _pool_candidates(cap) or [
             _candidate((_single_msg(i),)) for i in range(min(cap, _FALLBACK_N))

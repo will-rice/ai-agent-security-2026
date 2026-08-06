@@ -299,6 +299,43 @@ class Blackboard:
                 break
         return out
 
+    def top_distinct_shapes(self, k: int) -> list[str]:
+        """The k highest-objective DISTINCT firing single-message shapes, best first.
+
+        Deduped by templatized form (its URL normalized to ``{u}``), so different URLs
+        of one shape count once. Shipping this top-K set instead of only the champion
+        makes the artifact fill a DIVERSE portfolio: one shape x many URLs is
+        public-optimal but fragile on the blind private board's held-out guardrail; a
+        spread of near-optimal shapes hedges it. Falls back to the champion if empty.
+        """
+        seen: set[str] = set()
+        shapes: list[str] = []
+        ranked = sorted(
+            (
+                r
+                for r in self._records
+                if r.valid
+                and r.fires
+                and r.objective_name == OBJECTIVE_NAME
+                and len(r.messages) == 1
+            ),
+            key=_objective_key,
+            reverse=True,
+        )
+        for record in ranked:
+            text = str(record.messages[0]["text"])
+            key = assemble._templatize(text) or text
+            if key in seen:
+                continue
+            seen.add(key)
+            shapes.append(text)
+            if len(shapes) >= k:
+                break
+        if shapes:
+            return shapes
+        best = self.best_objective()
+        return [str(m["text"]) for m in best.messages] if best is not None else []
+
     async def append(self, record: Record, out_dir: Path, reship: bool = True) -> bool:
         """Append a record, persist it, and (optionally) reship on a new best.
 
@@ -321,7 +358,7 @@ class Blackboard:
                 handle.write(json.dumps(record.to_json(), sort_keys=True) + "\n")
                 handle.flush()
             if reship and self.best_objective() is record and record is not prior_best:
-                assemble.build([m["text"] for m in record.messages], out_dir)
+                assemble.build(self.top_distinct_shapes(config.SHIP_TOP_K), out_dir)
                 return True
             return False
 
@@ -334,9 +371,8 @@ class Blackboard:
         Args:
             out_dir: Where :func:`assemble.build` writes ``attack.py``.
         """
-        best = self.best_objective()
-        if best is not None:
-            assemble.build([m["text"] for m in best.messages], out_dir)
+        if self.best_objective() is not None:
+            assemble.build(self.top_distinct_shapes(config.SHIP_TOP_K), out_dir)
 
     def reship_champions(self, public_out_dir: Path, robust_out_dir: Path) -> None:
         """Rewrite exact-public and robust champion artifacts independently."""

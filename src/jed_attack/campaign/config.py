@@ -150,6 +150,11 @@ TEAM_PROPOSERS: tuple[str, ...] = team_proposers_from_env(
 # under-counted locally and wrongly gated out. Single-post scores are unchanged.
 EVAL_HOPS = 8
 
+# How many distinct top-objective firing shapes the artifact ships (a diverse portfolio
+# for the blind private board, vs one champion shape x many URLs). The grade-time fill
+# round-robins across the firing ones; see assemble._FILL_DIVERSITY_K.
+SHIP_TOP_K = 8
+
 # Adversarial refinement: max per-generation batch hill-climb rounds. After scoring a
 # batch, the lane re-authors the WHOLE batch against its real per-message scores,
 # re-scores every submission, and keeps the higher-mean-public batch, up to this many
