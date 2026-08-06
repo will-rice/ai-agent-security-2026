@@ -9,13 +9,14 @@ over-budget submission impossible to *construct* — the schema, not a runtime g
 enforces the shape.
 """
 
+import json
 import re
 from enum import Enum
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, model_validator
 
-from jed_attack.campaign import config
+from jed_attack.campaign import config, fill
 
 MARKER = "SECRET_MARKER"  # exfil sentinel scored by payload_exfiltrates_secret
 # Guardrail-forbidden substrings: a target containing any of these scores 0.
@@ -146,6 +147,25 @@ class Submission(BaseModel):
                 f"total hops ({total}) exceed the T4 budget ({config.HOP_BUDGET})"
             )
         return self
+
+    def template_texts(self) -> list[str]:
+        """Each authored message's text (a shape/example or an explicit template)."""
+        return [message.text for message in self.messages]
+
+    def _fill_templates(self) -> list[str]:
+        """Templatized fill forms: {u}/{m} where a URL varies, else the text as-is."""
+        return [fill.templatize(text) or text for text in self.template_texts()]
+
+    def candidate_chains(self, cap: int) -> list[tuple[str, ...]]:
+        """Fill on dump: round-robin the templates into ``cap`` stamped candidates."""
+        return fill.ordered_chains(self._fill_templates(), cap)
+
+    def to_shipped_json(self, cap: int) -> str:
+        """Serialize the filled candidate list -- the exact list the artifact ships."""
+        return json.dumps(
+            [list(chain) for chain in self.candidate_chains(cap)],
+            separators=(",", ":"),
+        )
 
 
 class SubmissionBatch(BaseModel):

@@ -32,12 +32,12 @@ def url(index: int) -> str:
 
 
 def render(template: str, index: int) -> str:
-    """Fill a ``{u}``/``{m}`` template into a concrete message for candidate ``index``."""
+    """Fill a ``{u}``/``{m}`` template into candidate ``index``'s concrete message."""
     return template.format(m=MARKER, u=url(index), url=url(index)).strip()
 
 
 def templatize(text: str) -> str | None:
-    """Concrete message -> ``{u}``/``{m}`` template, or None if no marker/URL to vary."""
+    """Concrete message -> ``{u}``/``{m}`` template; None if no marker/URL varies."""
     if MARKER not in text:
         return None
     escaped = text.replace("{", "{{").replace("}", "}}").replace(MARKER, "{m}")

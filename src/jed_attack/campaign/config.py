@@ -200,6 +200,11 @@ BLACKBOARD_LOG = CAMPAIGN_ROOT / "blackboard.jsonl"
 MAX_SHIP_MESSAGES = 30
 HOP_BUDGET = 391
 
+# Candidates the dump materializes into the shipped JSON. The artifact trims this to the
+# real T4 budget at grade time (over-budget is impossible; the tail is dropped). Mirrors
+# assemble's historical hard cap.
+SHIP_CANDIDATE_CAP = 2000
+
 # Max submissions per proposer generation. A proposer left uncapped emits huge batches
 # (200+) which, at ~one replay per submission per model, stretch a generation to an hour
 # and starve the search of iterations. This is the JSON-schema ``maxItems`` the proposer
