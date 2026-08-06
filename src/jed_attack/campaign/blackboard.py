@@ -16,7 +16,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from jed_attack.campaign import assemble, config
+from jed_attack.campaign import assemble, config, fill
 from jed_attack.campaign.judge_policy import (
     CandidateObjective,
     JudgeAssessment,
@@ -111,6 +111,16 @@ class Record:
                 for m, v in dict(data.get("public_by_model", {})).items()
             },
         )
+
+
+def _shapes_json(shapes: list[str]) -> str:
+    """Serialize message shapes as the shipped one-message candidate list JSON.
+
+    Bridges the legacy ship path onto :func:`assemble.build`'s embedded-JSON contract:
+    each shape becomes a one-message chain. (Task 5 replaces this with the champion's
+    full ``Submission.to_shipped_json`` fill.)
+    """
+    return json.dumps([[text] for text in shapes], separators=(",", ":"))
 
 
 def _severity_sum(entry: dict) -> float:
@@ -324,7 +334,7 @@ class Blackboard:
         )
         for record in ranked:
             text = str(record.messages[0]["text"])
-            key = assemble._templatize(text) or text
+            key = fill.templatize(text) or text
             if key in seen:
                 continue
             seen.add(key)
@@ -358,7 +368,9 @@ class Blackboard:
                 handle.write(json.dumps(record.to_json(), sort_keys=True) + "\n")
                 handle.flush()
             if reship and self.best_objective() is record and record is not prior_best:
-                assemble.build(self.top_distinct_shapes(config.SHIP_TOP_K), out_dir)
+                assemble.build(
+                    _shapes_json(self.top_distinct_shapes(config.SHIP_TOP_K)), out_dir
+                )
                 return True
             return False
 
@@ -372,13 +384,19 @@ class Blackboard:
             out_dir: Where :func:`assemble.build` writes ``attack.py``.
         """
         if self.best_objective() is not None:
-            assemble.build(self.top_distinct_shapes(config.SHIP_TOP_K), out_dir)
+            assemble.build(
+                _shapes_json(self.top_distinct_shapes(config.SHIP_TOP_K)), out_dir
+            )
 
     def reship_champions(self, public_out_dir: Path, robust_out_dir: Path) -> None:
         """Rewrite exact-public and robust champion artifacts independently."""
         public = self.best_public()
         robust = self.best_robust()
         if public is not None:
-            assemble.build([m["text"] for m in public.messages], public_out_dir)
+            assemble.build(
+                _shapes_json([m["text"] for m in public.messages]), public_out_dir
+            )
         if robust is not None:
-            assemble.build([m["text"] for m in robust.messages], robust_out_dir)
+            assemble.build(
+                _shapes_json([m["text"] for m in robust.messages]), robust_out_dir
+            )
