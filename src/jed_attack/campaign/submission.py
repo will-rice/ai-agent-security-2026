@@ -87,11 +87,13 @@ class Message(BaseModel):
     )
     hops: int = Field(
         ge=1,
-        le=config.EVAL_HOPS,
+        le=1,
         description=(
-            "Declared replay cost: the total number of URL/address targets in text "
-            "(URLs plus .invalid addresses, even off-type targets). Must equal "
-            f"that count exactly; allowed range is 1-{config.EVAL_HOPS}."
+            "Declared replay cost: MUST be exactly 1 -- every message is a single-post "
+            "with exactly ONE URL/address target. Multi-target messages are rejected: "
+            "each candidate drives one tool call, so per-candidate T4 cost stays a "
+            "fixed overhead plus generation, and diversity comes from distinct shapes "
+            "not multi-hop packs."
         ),
     )
 
