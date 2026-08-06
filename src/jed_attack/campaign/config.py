@@ -232,6 +232,18 @@ ROBUSTNESS_LAMBDA = float(os.getenv("JED_ROBUSTNESS_LAMBDA", "0.0"))
 if not 0.0 <= ROBUSTNESS_LAMBDA <= 1.0:
     raise ValueError("JED_ROBUSTNESS_LAMBDA must be in [0.0, 1.0]")
 
+# Structural-diversity weight in the objective: adds PORTFOLIO_LAMBDA * (distinct firing
+# templates / SHIP_CANDIDATE_CAP) to the projected board. 0.0 (default) = board only.
+PORTFOLIO_LAMBDA = float(os.getenv("JED_PORTFOLIO_LAMBDA", "0.0"))
+if PORTFOLIO_LAMBDA < 0.0:
+    raise ValueError("JED_PORTFOLIO_LAMBDA must be >= 0.0")
+
+# Per-model deterministic gen-char budget the objective fills to (the char analogue of
+# the T4 wall-clock budget). Calibrate so the projected candidate count matches the
+# current champion's real fill; below the cap the ranking matches the old per-gen-char
+# rate, at the cap it saturates. Tune from measured fills.
+FILL_BUDGET_CHARS: dict[str, float] = {"gpt_oss": 600000.0, "gemma_4": 120000.0}
+
 # Tier-2 victim introspection (victim_feedback.introspect_worst): number of the
 # lowest-severity messages in a scored submission to probe with an extra "what
 # change would flip your decision" turn against the victim itself. Bounds the

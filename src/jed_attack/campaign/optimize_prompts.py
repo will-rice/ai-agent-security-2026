@@ -37,7 +37,6 @@ import shutil
 import signal
 import time
 import tomllib
-from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from statistics import mean
@@ -54,6 +53,7 @@ from jed_attack.campaign import (
     artifact_score,
     blackboard,
     config,
+    fill,
     private_proxy,
     providers,
 )
@@ -69,7 +69,11 @@ from jed_attack.campaign.submission import (
     Submission,
     SubmissionBatch,
 )
-from jed_attack.campaign.submission_score import SubmissionScore, score_submission
+from jed_attack.campaign.submission_score import (
+    SubmissionScore,
+    project_public_board,
+    score_submission,
+)
 
 
 class _WandbRun(Protocol):
@@ -1230,82 +1234,49 @@ def _gen_chars_cost(score: SubmissionScore) -> float:
     return max(score.gen_chars.values(), default=float(score.total_hops))
 
 
-def _robust_blend(values: Sequence[float]) -> float:
-    """Blend the mean of per-model values toward the worst (min) by ROBUSTNESS_LAMBDA.
+def _portfolio_diversity(score: SubmissionScore) -> float:
+    """Distinct firing templates in the submission, normalized by the candidate cap.
 
-    L=0.0 is the plain mean -- the public LB IS the mean of the per-model columns, so
-    this is the default. L=1.0 is the worst column alone (a private-board hedge that
-    penalizes a shape strong on one victim but weak on the other). Empty -> 0.0.
+    A structural, guardrail-free private-board hedge: templates deduped by templatized
+    form, so one shape across many URLs counts once. 0.0 for an invalid submission.
     """
-    if not values:
+    if not score.valid:
         return 0.0
-    m = mean(values)
-    lam = config.ROBUSTNESS_LAMBDA
-    if lam == 0.0:
-        return m
-    return (1.0 - lam) * m + lam * min(values)
-
-
-def _per_model_rates(score: SubmissionScore) -> list[float]:
-    """Each victim's public board per its OWN reasoning-inclusive generated chars.
-
-    This is the per-column throughput proxy: the public LB is the mean of the per-model
-    columns, and each column is throughput-bound by how much THAT model generates per
-    candidate -- so gemma's (much lower) generation cost must be credited too, not
-    hidden under a bottleneck-max denominator that is always gpt_oss. Legacy rows
-    without per-model boards fall back to the mean-public / bottleneck-char single rate.
-    """
-    if not score.public_by_model:
-        return [_safe_div(score.public, _gen_chars_cost(score))]
-    # A model that did NOT fire the scoring predicate contributes 0. Otherwise a
-    # degenerate near-empty generation (tiny gen_chars carrying only a stray novelty
-    # cell, e.g. gemma emitting ~1 char and scoring 0.01) blows its rate up and crowns a
-    # lopsided shape that FAILS that column -- exactly what the LB penalizes.
-    return [
-        _safe_div(score.public_by_model.get(m, 0.0), score.gen_chars.get(m, 0.0))
-        if _score_fires_model(score, m)
-        else 0.0
-        for m in config.MODELS
-    ]
-
-
-def _batch_refine_objective(scores: list[SubmissionScore]) -> tuple[float, float]:
-    """Return the optimizer's public-throughput objective (mean per-model raw/gen-char).
-
-    Pools each model's raw and generated chars across the batch, forms the per-model
-    rate, and MEAN-aggregates -- mirroring the public LB (mean of the two columns, each
-    throughput-bound by that model's own generation). Generated chars are deterministic
-    (no GPU-contention noise) and hardware-independent, so the ranking transfers to the
-    T4. Mean public stays a secondary tie-breaker.
-    """
-    if not scores:
-        return (0.0, 0.0)
-    if any(score.public_by_model for score in scores):
-        rates = [
-            _safe_div(
-                sum(s.public_by_model.get(m, 0.0) for s in scores),
-                sum(s.gen_chars.get(m, 0.0) for s in scores),
-            )
-            for m in config.MODELS
-        ]
-    else:  # legacy rows: pooled mean-public over bottleneck chars
-        rates = [
-            _safe_div(
-                sum(s.public for s in scores),
-                sum(_gen_chars_cost(s) for s in scores),
-            )
-        ]
-    return (_robust_blend(rates), mean(score.public for score in scores))
+    shapes = {
+        fill.templatize(m.message) or m.message
+        for m in score.per_message
+        if any(
+            m.severity_by_model.get("optimal", {}).get(model, 0.0) > 0.0
+            for model in config.MODELS
+        )
+    }
+    return len(shapes) / config.SHIP_CANDIDATE_CAP
 
 
 def _score_public_raw_per_gen_char(score: SubmissionScore) -> float:
-    """Return the mean over victims of public raw per that model's generated char.
+    """Per-submission objective: the projected filled+trimmed board (+ diversity).
 
-    Mirrors the public LB (mean of the per-model columns). Replaces the bottleneck-max
-    denominator, which -- because gpt_oss always generates more than gemma -- only ever
-    optimized gpt_oss and left gemma's (higher-throughput) column cost invisible.
+    ``project_public_board`` walks the round-robin over the submission's firing
+    templates to a deterministic per-model char budget and returns the board the
+    shipped+trimmed fill scores, in LB points (saturating at the candidate cap);
+    ``PORTFOLIO_LAMBDA`` adds the distinct-shape hedge. Name kept for the persisted
+    objective field / call sites.
     """
-    return _robust_blend(_per_model_rates(score))
+    boards = project_public_board(
+        score, config.FILL_BUDGET_CHARS, config.SHIP_CANDIDATE_CAP
+    )
+    public = mean(boards[model] for model in config.MODELS)
+    return public + config.PORTFOLIO_LAMBDA * _portfolio_diversity(score)
+
+
+def _batch_refine_objective(scores: list[SubmissionScore]) -> tuple[float, float]:
+    """Batch hill-climb signal: mean per-submission board; mean public tiebreak."""
+    if not scores:
+        return (0.0, 0.0)
+    return (
+        mean(_score_public_raw_per_gen_char(score) for score in scores),
+        mean(score.public for score in scores),
+    )
 
 
 def _empty_batch_score_metrics() -> dict[str, float]:
