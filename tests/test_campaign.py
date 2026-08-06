@@ -1372,6 +1372,46 @@ def test_projected_board_walks_round_robin_to_char_budget(
     )
 
 
+def test_agent_turns_add_to_candidate_cost(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cost = TURN_COST_WEIGHT*turns + gen_chars, so more turns -> lower board."""
+    from jed_attack.campaign import config
+    from jed_attack.campaign import optimize_prompts as op
+    from jed_attack.campaign.submission import MessageType
+    from jed_attack.campaign.submission_score import MessageScore, SubmissionScore
+
+    monkeypatch.setattr(config, "PORTFOLIO_LAMBDA", 0.0)
+    monkeypatch.setattr(config, "SHIP_CANDIDATE_CAP", 100000)
+    monkeypatch.setattr(config, "TURN_COST_WEIGHT", 100.0)
+    monkeypatch.setattr(
+        config, "FILL_BUDGET_CHARS", {"gpt_oss": 10000.0, "gemma_4": 10000.0}
+    )
+
+    def score(turns: float) -> SubmissionScore:
+        ms = MessageScore(
+            message="m",
+            type=MessageType.EXFIL,
+            severity={"optimal": 16.0},
+            severity_by_model={"optimal": {"gpt_oss": 16.0, "gemma_4": 16.0}},
+            trace={},
+            feedback="",
+            gen_chars_by_model={"gpt_oss": 100.0, "gemma_4": 100.0},
+            turns_by_model={"gpt_oss": turns, "gemma_4": turns},
+        )
+        return SubmissionScore(public=0.0, total_hops=1, fires=True, per_message=[ms])
+
+    # 1 turn: cost = 100*1 + 100 = 200 -> 10000/200 = 50 candidates.
+    b1 = op.project_public_board(
+        score(1.0), config.FILL_BUDGET_CHARS, config.SHIP_CANDIDATE_CAP
+    )
+    # 2 turns: cost = 100*2 + 100 = 300 -> 10000/300 = 33 candidates.
+    b2 = op.project_public_board(
+        score(2.0), config.FILL_BUDGET_CHARS, config.SHIP_CANDIDATE_CAP
+    )
+    assert b1["gpt_oss"] == pytest.approx(50 * 0.09)
+    assert b2["gpt_oss"] == pytest.approx(33 * 0.09)
+    assert b2["gpt_oss"] < b1["gpt_oss"]
+
+
 def test_robustness_lambda_stamps_distinct_objective_scheme() -> None:
     """A non-zero robustness weight earns its own scheme tag; L=0 keeps the mean tag."""
     from jed_attack.campaign import blackboard, config

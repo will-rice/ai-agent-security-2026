@@ -239,6 +239,12 @@ if PORTFOLIO_LAMBDA < 0.0:
 # rate, at the cap it saturates. Tune from measured fills.
 FILL_BUDGET_CHARS: dict[str, float] = {"gpt_oss": 600000.0, "gemma_4": 120000.0}
 
+# Char-equivalent cost charged per AGENT TURN in the per-candidate cost
+# (TURN_COST_WEIGHT * agent_turns + gen_chars). Turns carry the fixed per-round overhead
+# (prefill + tool exec + IPC) that raw generated-char length misses. An imperfect T4
+# predictor but directionally correct: fewer turns AND fewer chars are leaner.
+TURN_COST_WEIGHT = 150.0
+
 # Tier-2 victim introspection (victim_feedback.introspect_worst): number of the
 # lowest-severity messages in a scored submission to probe with an extra "what
 # change would flip your decision" turn against the victim itself. Bounds the
