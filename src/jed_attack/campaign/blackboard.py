@@ -33,20 +33,28 @@ _log = logging.getLogger(__name__)
 # current tag so a prior scheme's incomparable magnitudes cannot freeze the champion.
 # See _objective_key. A non-zero robustness weight blends the mean rate toward the
 # worst model's rate, which rescales the objective, so it earns its own tag and pool.
-def objective_scheme_name(robustness_lambda: float) -> str:
-    """Scheme tag for a robustness weight: the mean tag at 0, else a robust-L tag.
+def objective_scheme_name(
+    robustness_lambda: float, portfolio_lambda: float = 0.0
+) -> str:
+    """Scheme tag for the current objective weights.
 
-    The objective is now the projected filled+trimmed public board (LB points), not the
-    per-gen-char rate. Different scale, so the ``v7`` bump retires the v6 champion pool:
-    v7 firing rows outrank all v6 rows regardless of magnitude, so a fresh
-    projected-board champion takes over.
+    The objective is the projected filled+trimmed public board (LB points), cost
+    ``TURN_COST_WEIGHT*agent_turns + gen_chars`` per candidate, plus a PORTFOLIO_LAMBDA
+    distinct-shape diversity bonus. The ``v8`` bump retires the earlier per-gen-char
+    pools; a non-zero robustness or portfolio weight rescales it, so each earns its own
+    tag and champion pool.
     """
-    if robustness_lambda == 0.0:
-        return "public_raw_per_gen_char_v7"
-    return f"robust{robustness_lambda:g}_raw_per_gen_char_v7"
+    base = "public_raw_per_gen_char_v8"
+    if robustness_lambda != 0.0:
+        base = f"robust{robustness_lambda:g}_raw_per_gen_char_v8"
+    if portfolio_lambda != 0.0:
+        base = f"portfolio{portfolio_lambda:g}_{base}"
+    return base
 
 
-OBJECTIVE_NAME = objective_scheme_name(config.ROBUSTNESS_LAMBDA)
+OBJECTIVE_NAME = objective_scheme_name(
+    config.ROBUSTNESS_LAMBDA, config.PORTFOLIO_LAMBDA
+)
 
 
 @dataclass(frozen=True)

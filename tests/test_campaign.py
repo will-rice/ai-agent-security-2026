@@ -1365,11 +1365,10 @@ def test_projected_board_walks_round_robin_to_char_budget(
         == 0.0
     )
 
-    # lambda > 0 adds the distinct-shape hedge: 2 distinct firing shapes / cap.
+    # lambda > 0 adds the distinct-shape hedge: 2 distinct firing shapes (capped),
+    # weighted in board points -> 0.5 * min(2, DIVERSITY_SHAPE_CAP) = 1.0.
     monkeypatch.setattr(config, "PORTFOLIO_LAMBDA", 0.5)
-    assert op._score_public_raw_per_gen_char(score) == pytest.approx(
-        0.9 + 0.5 * (2 / config.SHIP_CANDIDATE_CAP)
-    )
+    assert op._score_public_raw_per_gen_char(score) == pytest.approx(0.9 + 0.5 * 2)
 
 
 def test_agent_turns_add_to_candidate_cost(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1413,14 +1412,20 @@ def test_agent_turns_add_to_candidate_cost(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_robustness_lambda_stamps_distinct_objective_scheme() -> None:
-    """A non-zero robustness weight earns its own scheme tag; L=0 keeps the mean tag."""
+    """A non-zero robustness or portfolio weight earns its own scheme tag/pool."""
     from jed_attack.campaign import blackboard, config
 
-    assert config.ROBUSTNESS_LAMBDA == 0.0  # default: unchanged live objective
-    assert blackboard.OBJECTIVE_NAME == "public_raw_per_gen_char_v7"
-    assert blackboard.objective_scheme_name(0.0) == "public_raw_per_gen_char_v7"
-    assert blackboard.objective_scheme_name(0.5) == "robust0.5_raw_per_gen_char_v7"
-    assert blackboard.objective_scheme_name(1.0) == "robust1_raw_per_gen_char_v7"
+    assert blackboard.objective_scheme_name(0.0) == "public_raw_per_gen_char_v8"
+    assert blackboard.objective_scheme_name(0.5) == "robust0.5_raw_per_gen_char_v8"
+    assert blackboard.objective_scheme_name(1.0) == "robust1_raw_per_gen_char_v8"
+    assert (
+        blackboard.objective_scheme_name(0.0, 2.0)
+        == "portfolio2_public_raw_per_gen_char_v8"
+    )
+    # OBJECTIVE_NAME reflects the live weights (portfolio diversity is on by default).
+    assert blackboard.OBJECTIVE_NAME == blackboard.objective_scheme_name(
+        config.ROBUSTNESS_LAMBDA, config.PORTFOLIO_LAMBDA
+    )
 
 
 def test_raw_gen_meter_counts_full_raw_generation() -> None:
@@ -3117,7 +3122,7 @@ def test_blackboard_ships_champion_as_filled_json(tmp_path: Path) -> None:
     assert src.count("http.post") > 5
     assert "SECRET_MARKER" in src
     assert not hasattr(board, "top_distinct_shapes")
-    assert bb.OBJECTIVE_NAME == "public_raw_per_gen_char_v7"
+    assert "_v8" in bb.OBJECTIVE_NAME
 
 
 def test_blackboard_prefers_current_scheme_over_stale_scale_champion(

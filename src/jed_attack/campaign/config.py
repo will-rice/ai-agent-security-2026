@@ -227,11 +227,16 @@ ROBUSTNESS_LAMBDA = float(os.getenv("JED_ROBUSTNESS_LAMBDA", "0.0"))
 if not 0.0 <= ROBUSTNESS_LAMBDA <= 1.0:
     raise ValueError("JED_ROBUSTNESS_LAMBDA must be in [0.0, 1.0]")
 
-# Structural-diversity weight in the objective: adds PORTFOLIO_LAMBDA * (distinct firing
-# templates / SHIP_CANDIDATE_CAP) to the projected board. 0.0 (default) = board only.
-PORTFOLIO_LAMBDA = float(os.getenv("JED_PORTFOLIO_LAMBDA", "0.0"))
+# Structural-diversity weight: adds PORTFOLIO_LAMBDA * min(distinct firing shapes,
+# DIVERSITY_SHAPE_CAP) BOARD POINTS to the projected board. Local scoring cannot predict
+# T4 per-candidate speed (irreducible Kaggle-server variance), so diversity is the lever
+# we DO control: a round-robin of distinct shapes averages out per-shape T4 variance and
+# hedges the blind private board. Weight is board-point-equivalents per shape.
+PORTFOLIO_LAMBDA = float(os.getenv("JED_PORTFOLIO_LAMBDA", "2.0"))
 if PORTFOLIO_LAMBDA < 0.0:
     raise ValueError("JED_PORTFOLIO_LAMBDA must be >= 0.0")
+# Distinct-shape count past which extra diversity is marginal (the bonus caps here).
+DIVERSITY_SHAPE_CAP = 8
 
 # Per-model deterministic gen-char budget the objective fills to (the char analogue of
 # the T4 wall-clock budget). Calibrate so the projected candidate count matches the

@@ -1235,10 +1235,12 @@ def _gen_chars_cost(score: SubmissionScore) -> float:
 
 
 def _portfolio_diversity(score: SubmissionScore) -> float:
-    """Distinct firing templates in the submission, normalized by the candidate cap.
+    """Distinct firing shapes in the submission, capped -- a private/variance hedge.
 
-    A structural, guardrail-free private-board hedge: templates deduped by templatized
-    form, so one shape across many URLs counts once. 0.0 for an invalid submission.
+    Templates deduped by templatized form (one shape across many URLs counts once),
+    capped at ``DIVERSITY_SHAPE_CAP`` (marginal hedge beyond that). Returned as a raw
+    count so ``PORTFOLIO_LAMBDA`` reads as board-points per distinct shape. 0.0 for an
+    invalid submission.
     """
     if not score.valid:
         return 0.0
@@ -1250,7 +1252,7 @@ def _portfolio_diversity(score: SubmissionScore) -> float:
             for model in config.MODELS
         )
     }
-    return len(shapes) / config.SHIP_CANDIDATE_CAP
+    return float(min(len(shapes), config.DIVERSITY_SHAPE_CAP))
 
 
 def _score_public_raw_per_gen_char(score: SubmissionScore) -> float:
