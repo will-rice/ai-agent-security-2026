@@ -2,10 +2,9 @@
 
 
 def test_jed_attack_imports() -> None:
-    """The renamed package and its subpackages import cleanly."""
+    """The package and its live harness subpackage import cleanly."""
     import jed_attack
     import jed_attack.harness
-    import jed_attack.submission
 
     assert jed_attack.__version__
 

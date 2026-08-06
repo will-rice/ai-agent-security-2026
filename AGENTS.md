@@ -30,10 +30,11 @@ repeat confirmed-firing candidates to fill the ~200–300 replay-budget ceiling)
 
 ## Setup: two local model APIs (run once, keep resident)
 
-> **Superseded:** the live optimizer scores **in-process** (loads the GGUFs itself via
+> **Superseded for scoring:** the live optimizer scores **in-process** (loads the GGUFs itself via
 > llama-cpp-python; see `campaign/submission_score.py` and `scripts/run_optimizer.sh`), so the
-> served `llama-server` endpoints below are no longer needed for scoring. This section is retained
-> only for the retired `scripts/experiment.py` dev loop.
+> served `llama-server` endpoints below are no longer needed for scoring. They still back the
+> optimizer's victim-introspection feedback (`campaign/victim_feedback.py`); `docs/serving.md` has
+> the details.
 
 The real models run as two `llama-server` endpoints (llama.cpp, OpenAI-compatible). Use the exact
 `Q4_K_M` GGUFs so behavior matches Kaggle. On the GPU host:
@@ -49,26 +50,17 @@ export GEMMA_BASE_URL=http://localhost:8081/v1
 `docs/serving.md` has the full launch details. The harness reaches these via
 `jed_attack.harness.models.llama_server_agent_factory`.
 
-## The experiment loop (your inner loop)
+## The loop (your inner loop)
 
 ```bash
 # Fast mechanics check (CPU, deterministic agent, ALLOW guardrail) — run after EVERY code change:
 uv run python -m pytest -q
-
-# Real-model experiment — scores the attack against both served models, records to the archive:
-uv run python -m jed_attack.scripts.experiment --budget-s 900          # both models
-uv run python -m jed_attack.scripts.experiment --model gpt_oss --budget-s 900   # one model
 ```
 
-`experiment` prints per-model normalized scores and appends `(config, scores)` to
-`runs/runs.jsonl` (via `jed_attack.harness.report.save_run`). Compare successive runs there to
-know whether a change helped. Keep changes that raise the score; revert changes that don't.
-
-**NOTE: the served-endpoint experiment loop above is RETIRED.** The live loop is the in-process
-optimizer (`scripts/run_optimizer.sh` → `campaign/optimize_prompts.py`), which authors submissions,
-scores them in-process against the local GGUFs, and reships `run/build_next/attack.py` via
-`campaign/assemble.py`. Change the attack through `assemble.py`'s `_TEMPLATE` and the optimizer's
-proposer prompts — not `submission/*` (retired).
+The live loop is the in-process optimizer (`scripts/run_optimizer.sh` →
+`campaign/optimize_prompts.py`), which authors submissions, scores them in-process against the local
+GGUFs, and reships `run/build_next/attack.py` via `campaign/assemble.py`. Change the attack through
+`assemble.py`'s `_TEMPLATE` and the optimizer's proposer prompts.
 
 ## Hard guardrails (do NOT violate)
 
@@ -84,9 +76,9 @@ proposer prompts — not `submission/*` (retired).
 4. **Do not overfit the public guardrail.** Candidates are scored against a stricter hidden
    private guardrail too. Prefer robust attacks.
 5. **The shipped attack is `run/build_next/attack.py`** (reshipped automatically by
-   `campaign/assemble.py`), NOT `dist/attack.py`. After changing the attack, confirm the campaign
-   tests that exec the rendered artifact pass (`uv run pytest tests/test_campaign.py`) and that it
-   still imports only `aicomp_sdk` + stdlib.
+   `campaign/assemble.py`). After changing the attack, confirm the campaign tests that exec the
+   rendered artifact pass (`uv run pytest tests/test_campaign.py`) and that it still imports only
+   `aicomp_sdk` + stdlib.
 6. **Do not change** the SDK vendoring (`vendor/`), the runner's scoring path
    (`harness/runner.py`), or the model-factory fidelity wiring (`harness/models.py`) — those keep
    local scores matching the leaderboard. Extend the attack, not the measurement.
@@ -107,14 +99,9 @@ proposer prompts — not `submission/*` (retired).
 - Attack authoring/optimization: `src/jed_attack/campaign/optimize_prompts.py` (the in-process LLM
   optimizer team); it reships the current best via `src/jed_attack/campaign/assemble.py`.
 - Shipped artifact: `run/build_next/attack.py`, rendered from `assemble.py`'s `_TEMPLATE`
-  (self-contained; imports only `aicomp_sdk` + stdlib). This — not `dist/attack.py` — is submitted.
+  (self-contained; imports only `aicomp_sdk` + stdlib). This is what is submitted.
 - Scoring: **in-process** against local GGUFs via `src/jed_attack/campaign/submission_score.py`
   (no served endpoints; see `scripts/run_optimizer.sh`).
 - Submission: the `submit-kernel` skill (`.claude/skills/submit-kernel/{build_kernel,submit}.py`),
   which embeds `run/build_next/attack.py`.
 - Objective & design: `docs/strategy.md`, `docs/campaign.md`, `docs/superpowers/specs/`.
-
-**RETIRED — do not edit or ship:** `src/jed_attack/submission/*`,
-`src/jed_attack/scripts/build_submission.py`, and `dist/attack.py` are a dead parallel attack
-codebase kept alive only by their own tests. Nothing in the live loop imports them; editing them
-and rebuilding `dist/attack.py` ships nothing.
