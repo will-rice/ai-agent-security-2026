@@ -1,5 +1,16 @@
 # Autonomous Competition System — Architecture Design
 
+> **⏸ SHELVED 2026-08-07 — do not build without re-deciding.** The premise was that the
+> local objective doesn't predict the real board. That turned out too strong: within a run,
+> `best_objective` climbs by *reducing gen_chars*, which is real T4 throughput (fewer
+> generated tokens → faster replay → more candidates fit the budget; `T4_s ≈
+> 0.0525·gen_chars + 2.9·turns`). The only genuine gap left — "fires locally but not on
+> T4" — is caught by a five-second pre-submit check, not this five-subsystem build. The
+> working search (min-over-models objective + incumbent-shape hill-climbing + explicit
+> imperative, restored 2026-08-07) is an adequate proxy. **Revisit only if data forces it:**
+> the search plateaus, or a real submission badly underperforms its projected estimate
+> (proxy chasing mirages). Until then this is over-engineering (YAGNI).
+
 **Goal:** A fully autonomous system that wins the `ai-agent-security-multi-step-tool-attacks`
 Kaggle competition — it searches, calibrates against the real T4, decides when to spend a
 submission slot, and submits, with a human only setting policy once.

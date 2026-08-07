@@ -1,5 +1,13 @@
 # Keystone: Calibration + Transfer Model Implementation Plan
 
+> **⏸ SHELVED 2026-08-07 — do not execute without re-deciding.** Parent spec
+> (`2026-08-07-autonomous-competition-system-design.md`) is shelved: `best_objective`
+> tracks real throughput (gen_chars reduction), so recalibrating the objective is premature.
+> Revisit only if the search plateaus or a submission badly underperforms its estimate. If
+> resumed, prefer the lighter form discussed on 2026-08-07: a calibration-verified
+> *submission gate* (Tasks 1, 6, 7, 8) that measures the champion on the real T4 before
+> spending a slot — NOT the objective rewrite (Tasks 4–5), which touches the working search.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make `best_objective` predict the real T4 board by feeding free calib-kernel measurements into a transfer model that recalibrates the local objective's budget, cost, and per-shape-family corrections.
