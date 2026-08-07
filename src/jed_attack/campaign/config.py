@@ -140,7 +140,6 @@ TEAM_PROPOSERS: tuple[str, ...] = team_proposers_from_env(
         "cheapest-minimax",
         "cheapest-kimi",
         "cheapest-glm5.2",
-        "zai-glm5-turbo",
     ),
 )
 
