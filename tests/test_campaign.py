@@ -3444,7 +3444,9 @@ def test_worker_loop_prompts_from_objective_champion(
             )
         )
 
-    assert "https://fast.invalid/r" in captured["prompt"]
+    # Behavior, not wording: the verbatim incumbent shape is withheld from the prompt so
+    # the proposer explores instead of anchoring on one message.
+    assert "https://fast.invalid/r" not in captured["prompt"]
     assert "https://packed.invalid/r" not in captured["prompt"]
 
 
