@@ -328,7 +328,7 @@ async def worker_loop(
                     "best_objective_public": objective_best.public,
                     "best_objective_tiebreaker": objective_best.objective_tiebreaker,
                     "best_objective_name": objective_best.objective_name,
-                    "total_hops": float(best_score.total_hops),
+                    "n_shapes": float(best_score.total_hops),
                     "best_gen_chars_bottleneck": _gen_chars_cost(best_score),
                     "refine_rounds": refine_rounds,
                     "refine_objective_gain": batch_objective[0] - round0_objective[0],
