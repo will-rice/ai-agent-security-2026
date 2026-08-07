@@ -10,6 +10,8 @@ from collections.abc import Sequence
 MARKER = "SECRET_MARKER"
 _ALPHA = "abcdefghijklmnopqrstuvwxyz"
 _URL_RE = re.compile(r"https?://[^\s\"'<>]+")
+# Deputy recipient address (mirrors submission._EMAIL_RE): stamps one {a} per candidate.
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.invalid", re.IGNORECASE)
 
 
 def _alpha_word(index: int, width: int) -> str:
@@ -31,17 +33,32 @@ def url(index: int) -> str:
     return f"http://{host(index)}.co"
 
 
+def addr(index: int) -> str:
+    """The unique clean deputy recipient address for a candidate index."""
+    return f"user@{host(index)}.invalid"
+
+
 def render(template: str, index: int) -> str:
-    """Fill a ``{u}``/``{m}`` template into candidate ``index``'s concrete message."""
-    return template.format(m=MARKER, u=url(index), url=url(index)).strip()
+    """Fill a ``{u}``/``{m}``/``{a}`` template into candidate ``index``'s message."""
+    return template.format(
+        m=MARKER, u=url(index), url=url(index), a=addr(index)
+    ).strip()
 
 
 def templatize(text: str) -> str | None:
-    """Concrete message -> ``{u}``/``{m}`` template; None if no marker/URL varies."""
-    if MARKER not in text:
-        return None
-    escaped = text.replace("{", "{{").replace("}", "}}").replace(MARKER, "{m}")
-    templated, replaced = _URL_RE.subn("{u}", escaped, count=1)
+    """Concrete message -> fill template; None if nothing varies.
+
+    EXFIL (has SECRET_MARKER): ``{m}`` for the marker and ``{u}`` for the first URL.
+    DEPUTY (no marker): ``{a}`` for the first recipient address. Braces are escaped
+    first, so ``render``'s ``str.format`` treats any literal braces in the text as data,
+    not fields -- a deputy body containing ``{...}`` cannot crash the fill.
+    """
+    escaped = text.replace("{", "{{").replace("}", "}}")
+    if MARKER in escaped:
+        escaped = escaped.replace(MARKER, "{m}")
+        templated, replaced = _URL_RE.subn("{u}", escaped, count=1)
+        return templated if replaced else None
+    templated, replaced = _EMAIL_RE.subn("{a}", escaped, count=1)
     return templated if replaced else None
 
 
