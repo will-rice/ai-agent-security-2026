@@ -238,15 +238,14 @@ if PORTFOLIO_LAMBDA < 0.0:
 # Distinct-shape count past which extra diversity is marginal (the bonus caps here).
 DIVERSITY_SHAPE_CAP = 8
 
-# Per-candidate cost = agent_turns + CHAR_TIEBREAK * gen_chars. CHAR_TIEBREAK is small
-# enough that the char term is always < 1, so ranking is strictly TURNS-FIRST with chars
-# only breaking ties among equal-turn shapes -- no invented turn<->char exchange rate.
-# Turns dominate because each is a fixed T4 round-trip (~15s); a wrap-up-free 1-turn
-# shape ~halves cost, which chars can never express.
-CHAR_TIEBREAK = 1e-4
-# Per-model budget in candidate-cost units (~agent turns): 9000s / per-turn seconds
-# (gpt ~16.5s/turn -> ~545, gemma ~7s/turn -> ~1285, from the T4 calib). N = budget/cost
-FILL_BUDGET_CHARS: dict[str, float] = {"gpt_oss": 545.0, "gemma_4": 1285.0}
+# Per-candidate cost = gen_chars + TURN_COST_WEIGHT * agent_turns, the T4 cost model fit
+# from the 2026-08-07 sweep (T4_s ~ 0.0525*chars + 2.9*turns, so a turn ~= 55 chars).
+# GENERATION dominates -- it separates the fast forge (~176 chars) from slow natural
+# language (~500) and tracks the real 2x. Fitted, not guessed.
+TURN_COST_WEIGHT = 55.0
+# Per-model budget in gen-char units: 9000s / 0.0525 s-per-char ~= 171k. N = budget/cost
+# (gemma shares the fit until measured on its own).
+FILL_BUDGET_CHARS: dict[str, float] = {"gpt_oss": 171000.0, "gemma_4": 171000.0}
 
 # Tier-2 victim introspection (victim_feedback.introspect_worst): number of the
 # lowest-severity messages in a scored submission to probe with an extra "what
