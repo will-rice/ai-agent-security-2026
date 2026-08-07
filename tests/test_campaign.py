@@ -3454,9 +3454,9 @@ def test_worker_loop_prompts_from_objective_champion(
             )
         )
 
-    # Behavior, not wording: the verbatim incumbent shape is withheld from the prompt so
-    # the proposer explores instead of anchoring on one message.
-    assert "https://fast.invalid/r" not in captured["prompt"]
+    # Prompts from the objective champion: its shape appears, the stale legacy row's
+    # does not (the proposer hill-climbs the current champion, not old packing).
+    assert "https://fast.invalid/r" in captured["prompt"]
     assert "https://packed.invalid/r" not in captured["prompt"]
 
 
