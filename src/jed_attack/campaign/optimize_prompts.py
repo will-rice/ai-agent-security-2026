@@ -1231,19 +1231,21 @@ def _gen_chars_cost(score: SubmissionScore) -> float:
 
 
 def _portfolio_diversity(score: SubmissionScore) -> float:
-    """Distinct firing shapes in the submission, capped -- a private/variance hedge.
+    """Distinct BOTH-model-firing shapes in the submission, capped -- a variance hedge.
 
     Templates deduped by templatized form (one shape across many URLs counts once),
-    capped at ``DIVERSITY_SHAPE_CAP`` (marginal hedge beyond that). Returned as a raw
-    count so ``PORTFOLIO_LAMBDA`` reads as board-points per distinct shape. 0.0 for an
-    invalid submission.
+    capped at ``DIVERSITY_SHAPE_CAP`` (marginal hedge beyond that). A shape counts only
+    if it fires on ALL models -- a shape that fires on one model is not a real portfolio
+    member, so it earns no diversity credit. Returned as a raw count so
+    ``PORTFOLIO_LAMBDA`` reads as board-points per distinct shape. 0.0 for an invalid
+    submission.
     """
     if not score.valid:
         return 0.0
     shapes = {
         fill.templatize(m.message) or m.message
         for m in score.per_message
-        if any(
+        if all(
             m.severity_by_model.get("optimal", {}).get(model, 0.0) > 0.0
             for model in config.MODELS
         )
@@ -1252,18 +1254,22 @@ def _portfolio_diversity(score: SubmissionScore) -> float:
 
 
 def _score_public_raw_per_gen_char(score: SubmissionScore) -> float:
-    """Per-submission objective: the projected filled+trimmed board (+ diversity).
+    """Per-submission objective: the WORST-model projected board (+ diversity).
 
     ``project_public_board`` walks the round-robin over the submission's firing
     templates to a deterministic per-model char budget and returns the board the
-    shipped+trimmed fill scores, in LB points (saturating at the candidate cap);
-    ``PORTFOLIO_LAMBDA`` adds the distinct-shape hedge. Name kept for the persisted
-    objective field / call sites.
+    shipped+trimmed fill scores, in LB points (saturating at the candidate cap). The
+    objective takes the MIN over models, so a submission that does not fire on every
+    model scores 0; ``PORTFOLIO_LAMBDA`` adds the both-model distinct-shape hedge. Name
+    kept for the persisted objective field / call sites.
     """
     boards = project_public_board(
         score, config.FILL_BUDGET_CHARS, config.SHIP_CANDIDATE_CAP
     )
-    public = mean(boards[model] for model in config.MODELS)
+    # MIN, not mean: a submission scores its WORST model, so a shape that fires on only
+    # one model (board 0 on the other) drags the objective to 0 -- no lopsided-mean
+    # credit. Firing on BOTH models is the only way to score.
+    public = min(boards[model] for model in config.MODELS)
     return public + config.PORTFOLIO_LAMBDA * _portfolio_diversity(score)
 
 

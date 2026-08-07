@@ -1365,6 +1365,11 @@ def test_projected_board_walks_round_robin_to_char_budget(
         )["gemma_4"]
         == 0.0
     )
+    # ...and the whole objective is 0, even with the diversity hedge on: min over models
+    # zeroes the non-firing side, and a one-model shape earns no diversity credit.
+    monkeypatch.setattr(config, "PORTFOLIO_LAMBDA", 2.0)
+    assert op._score_public_raw_per_gen_char(lop) == pytest.approx(0.0)
+    monkeypatch.setattr(config, "PORTFOLIO_LAMBDA", 0.0)
 
     # lambda > 0 adds the distinct-shape hedge: 2 distinct firing shapes (capped),
     # weighted in board points -> 0.5 * min(2, DIVERSITY_SHAPE_CAP) = 1.0.
@@ -1419,12 +1424,12 @@ def test_robustness_lambda_stamps_distinct_objective_scheme() -> None:
     """A non-zero robustness or portfolio weight earns its own scheme tag/pool."""
     from jed_attack.campaign import blackboard, config
 
-    assert blackboard.objective_scheme_name(0.0) == "public_raw_per_gen_char_v10"
-    assert blackboard.objective_scheme_name(0.5) == "robust0.5_raw_per_gen_char_v10"
-    assert blackboard.objective_scheme_name(1.0) == "robust1_raw_per_gen_char_v10"
+    assert blackboard.objective_scheme_name(0.0) == "public_raw_per_gen_char_v11"
+    assert blackboard.objective_scheme_name(0.5) == "robust0.5_raw_per_gen_char_v11"
+    assert blackboard.objective_scheme_name(1.0) == "robust1_raw_per_gen_char_v11"
     assert (
         blackboard.objective_scheme_name(0.0, 2.0)
-        == "portfolio2_public_raw_per_gen_char_v10"
+        == "portfolio2_public_raw_per_gen_char_v11"
     )
     # OBJECTIVE_NAME reflects the live weights (portfolio diversity is on by default).
     assert blackboard.OBJECTIVE_NAME == blackboard.objective_scheme_name(
@@ -1832,15 +1837,20 @@ def test_refine_accepts_lower_public_when_raw_per_replay_second_improves(
 
     slow = _mk_sub("slow")
     fast = _mk_sub("fast")
+    # Both fire on BOTH models -- the objective is the min over models, so a one-model
+    # shape would score 0 and this board comparison would be meaningless.
+    both = {"optimal": {"gpt_oss": 10.0, "gemma_4": 10.0}}
     slow_score = _mk_score(10.0)
     slow_score.gen_chars = {"gpt_oss": 50.0, "gemma_4": 50.0}
     slow_score.per_message[0].gen_chars_by_model = {"gpt_oss": 50.0, "gemma_4": 50.0}
     slow_score.per_message[0].turns_by_model = {"gpt_oss": 2.0, "gemma_4": 2.0}
+    slow_score.per_message[0].severity_by_model = both
     slow_score.total_hops = 100
     fast_score = _mk_score(9.0)
     fast_score.gen_chars = {"gpt_oss": 5.0, "gemma_4": 5.0}
     fast_score.per_message[0].gen_chars_by_model = {"gpt_oss": 5.0, "gemma_4": 5.0}
     fast_score.per_message[0].turns_by_model = {"gpt_oss": 1.0, "gemma_4": 1.0}
+    fast_score.per_message[0].severity_by_model = both
     fast_score.total_hops = 10
     # Budget-bind both so the cheaper shape fits more candidates -> higher board.
     monkeypatch.setattr(
@@ -3132,7 +3142,7 @@ def test_blackboard_ships_champion_as_filled_json(tmp_path: Path) -> None:
     assert src.count("http.post") > 5
     assert "SECRET_MARKER" in src
     assert not hasattr(board, "top_distinct_shapes")
-    assert "_v10" in bb.OBJECTIVE_NAME
+    assert "_v11" in bb.OBJECTIVE_NAME
 
 
 def test_blackboard_prefers_current_scheme_over_stale_scale_champion(

@@ -38,15 +38,17 @@ def objective_scheme_name(
 ) -> str:
     """Scheme tag for the current objective weights.
 
-    The objective is the projected filled+trimmed public board (LB points), with cost
+    The objective is the projected filled+trimmed public board (LB points), taken as the
+    MIN over models (a shape that does not fire on every model scores 0), with cost
     ``gen_chars + TURN_COST_WEIGHT*agent_turns`` (chars-primary, fitted from the T4
-    sweep), plus a PORTFOLIO_LAMBDA distinct-shape diversity bonus. The ``v10`` bump
-    retires the earlier pools (forge now allowed); a non-zero robustness or portfolio
-    weight rescales it, so each earns its own tag and champion pool.
+    sweep), plus a PORTFOLIO_LAMBDA both-model distinct-shape diversity bonus. The
+    ``v11`` bump retires the mean-over-models v10 pool (whose stored magnitudes are not
+    comparable to the min); a non-zero robustness or portfolio weight rescales it, so
+    each earns its own tag and champion pool.
     """
-    base = "public_raw_per_gen_char_v10"
+    base = "public_raw_per_gen_char_v11"
     if robustness_lambda != 0.0:
-        base = f"robust{robustness_lambda:g}_raw_per_gen_char_v10"
+        base = f"robust{robustness_lambda:g}_raw_per_gen_char_v11"
     if portfolio_lambda != 0.0:
         base = f"portfolio{portfolio_lambda:g}_{base}"
     return base
