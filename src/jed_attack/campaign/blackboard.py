@@ -38,15 +38,15 @@ def objective_scheme_name(
 ) -> str:
     """Scheme tag for the current objective weights.
 
-    The objective is the projected filled+trimmed public board (LB points), cost
-    ``TURN_COST_WEIGHT*agent_turns + gen_chars`` per candidate, plus a PORTFOLIO_LAMBDA
-    distinct-shape diversity bonus. The ``v8`` bump retires the earlier per-gen-char
+    The objective is the projected filled+trimmed public board (LB points), with a
+    per-candidate cost ``agent_turns + CHAR_TIEBREAK*gen_chars`` (turns-first), plus a
+    PORTFOLIO_LAMBDA distinct-shape diversity bonus. The ``v9`` bump retires the earlier
     pools; a non-zero robustness or portfolio weight rescales it, so each earns its own
     tag and champion pool.
     """
-    base = "public_raw_per_gen_char_v8"
+    base = "public_raw_per_gen_char_v9"
     if robustness_lambda != 0.0:
-        base = f"robust{robustness_lambda:g}_raw_per_gen_char_v8"
+        base = f"robust{robustness_lambda:g}_raw_per_gen_char_v9"
     if portfolio_lambda != 0.0:
         base = f"portfolio{portfolio_lambda:g}_{base}"
     return base

@@ -1309,7 +1309,7 @@ def test_projected_board_walks_round_robin_to_char_budget(
 
     monkeypatch.setattr(config, "PORTFOLIO_LAMBDA", 0.0)
     monkeypatch.setattr(config, "SHIP_CANDIDATE_CAP", 1000)
-    # both models: 100 chars per candidate; budget 1000 chars -> 10 candidates fit.
+    # both models: cost 100 (turns) per candidate; budget 1000 -> 10 candidates fit.
     monkeypatch.setattr(
         config, "FILL_BUDGET_CHARS", {"gpt_oss": 1000.0, "gemma_4": 1000.0}
     )
@@ -1322,7 +1322,8 @@ def test_projected_board_walks_round_robin_to_char_budget(
             severity_by_model={"optimal": {"gpt_oss": 16.0, "gemma_4": 16.0}},
             trace={},
             feedback="",
-            gen_chars_by_model={"gpt_oss": 100.0, "gemma_4": 100.0},
+            gen_chars_by_model={"gpt_oss": 0.0, "gemma_4": 0.0},
+            turns_by_model={"gpt_oss": 100.0, "gemma_4": 100.0},
         )
 
     score = SubmissionScore(
@@ -1354,7 +1355,8 @@ def test_projected_board_walks_round_robin_to_char_budget(
                 severity_by_model={"optimal": {"gpt_oss": 16.0}},  # gemma absent
                 trace={},
                 feedback="",
-                gen_chars_by_model={"gpt_oss": 100.0, "gemma_4": 100.0},
+                gen_chars_by_model={"gpt_oss": 0.0, "gemma_4": 0.0},
+                turns_by_model={"gpt_oss": 100.0, "gemma_4": 100.0},
             )
         ],
     )
@@ -1380,12 +1382,12 @@ def test_agent_turns_add_to_candidate_cost(monkeypatch: pytest.MonkeyPatch) -> N
 
     monkeypatch.setattr(config, "PORTFOLIO_LAMBDA", 0.0)
     monkeypatch.setattr(config, "SHIP_CANDIDATE_CAP", 100000)
-    monkeypatch.setattr(config, "TURN_COST_WEIGHT", 100.0)
+    monkeypatch.setattr(config, "CHAR_TIEBREAK", 1e-4)
     monkeypatch.setattr(
-        config, "FILL_BUDGET_CHARS", {"gpt_oss": 10000.0, "gemma_4": 10000.0}
+        config, "FILL_BUDGET_CHARS", {"gpt_oss": 600.0, "gemma_4": 600.0}
     )
 
-    def score(turns: float) -> SubmissionScore:
+    def score(turns: float, chars: float) -> SubmissionScore:
         ms = MessageScore(
             message="m",
             type=MessageType.EXFIL,
@@ -1393,34 +1395,41 @@ def test_agent_turns_add_to_candidate_cost(monkeypatch: pytest.MonkeyPatch) -> N
             severity_by_model={"optimal": {"gpt_oss": 16.0, "gemma_4": 16.0}},
             trace={},
             feedback="",
-            gen_chars_by_model={"gpt_oss": 100.0, "gemma_4": 100.0},
+            gen_chars_by_model={"gpt_oss": chars, "gemma_4": chars},
             turns_by_model={"gpt_oss": turns, "gemma_4": turns},
         )
         return SubmissionScore(public=0.0, total_hops=1, fires=True, per_message=[ms])
 
-    # 1 turn: cost = 100*1 + 100 = 200 -> 10000/200 = 50 candidates.
-    b1 = op.project_public_board(
-        score(1.0), config.FILL_BUDGET_CHARS, config.SHIP_CANDIDATE_CAP
-    )
-    # 2 turns: cost = 100*2 + 100 = 300 -> 10000/300 = 33 candidates.
-    b2 = op.project_public_board(
-        score(2.0), config.FILL_BUDGET_CHARS, config.SHIP_CANDIDATE_CAP
-    )
-    assert b1["gpt_oss"] == pytest.approx(50 * 0.09)
-    assert b2["gpt_oss"] == pytest.approx(33 * 0.09)
-    assert b2["gpt_oss"] < b1["gpt_oss"]
+    def board(sub: SubmissionScore) -> float:
+        return op.project_public_board(
+            sub, config.FILL_BUDGET_CHARS, config.SHIP_CANDIDATE_CAP
+        )["gpt_oss"]
+
+    # 1 turn: cost = 1 + 1e-4*100 = 1.01 -> 600/1.01 = 594 candidates.
+    b1 = board(score(1.0, 100.0))
+    # 2 turns: cost = 2.01 -> 600/2.01 = 298 candidates (~half -> turns dominate).
+    b2 = board(score(2.0, 100.0))
+    assert b1 == pytest.approx(594 * 0.09)
+    assert b2 == pytest.approx(298 * 0.09)
+    assert b2 < b1
+    # chars only break ties AMONG equal-turn shapes: fewer chars, same turns -> higher.
+    b_lean = board(score(1.0, 10.0))  # cost = 1.001 -> 599 candidates
+    assert b_lean == pytest.approx(599 * 0.09)
+    assert (
+        b1 < b_lean < board(score(0.0, 0.0))
+    )  # 1-turn beats 2-turn, chars only tiebreak
 
 
 def test_robustness_lambda_stamps_distinct_objective_scheme() -> None:
     """A non-zero robustness or portfolio weight earns its own scheme tag/pool."""
     from jed_attack.campaign import blackboard, config
 
-    assert blackboard.objective_scheme_name(0.0) == "public_raw_per_gen_char_v8"
-    assert blackboard.objective_scheme_name(0.5) == "robust0.5_raw_per_gen_char_v8"
-    assert blackboard.objective_scheme_name(1.0) == "robust1_raw_per_gen_char_v8"
+    assert blackboard.objective_scheme_name(0.0) == "public_raw_per_gen_char_v9"
+    assert blackboard.objective_scheme_name(0.5) == "robust0.5_raw_per_gen_char_v9"
+    assert blackboard.objective_scheme_name(1.0) == "robust1_raw_per_gen_char_v9"
     assert (
         blackboard.objective_scheme_name(0.0, 2.0)
-        == "portfolio2_public_raw_per_gen_char_v8"
+        == "portfolio2_public_raw_per_gen_char_v9"
     )
     # OBJECTIVE_NAME reflects the live weights (portfolio diversity is on by default).
     assert blackboard.OBJECTIVE_NAME == blackboard.objective_scheme_name(
@@ -1829,10 +1838,12 @@ def test_refine_accepts_lower_public_when_raw_per_replay_second_improves(
     slow_score = _mk_score(10.0)
     slow_score.gen_chars = {"gpt_oss": 50.0, "gemma_4": 50.0}
     slow_score.per_message[0].gen_chars_by_model = {"gpt_oss": 50.0, "gemma_4": 50.0}
+    slow_score.per_message[0].turns_by_model = {"gpt_oss": 2.0, "gemma_4": 2.0}
     slow_score.total_hops = 100
     fast_score = _mk_score(9.0)
     fast_score.gen_chars = {"gpt_oss": 5.0, "gemma_4": 5.0}
     fast_score.per_message[0].gen_chars_by_model = {"gpt_oss": 5.0, "gemma_4": 5.0}
+    fast_score.per_message[0].turns_by_model = {"gpt_oss": 1.0, "gemma_4": 1.0}
     fast_score.total_hops = 10
     # Budget-bind both so the cheaper shape fits more candidates -> higher board.
     monkeypatch.setattr(
@@ -1909,11 +1920,13 @@ def test_worker_loop_logs_objective_metrics_separately(
     slow_score = _mk_score(10.0)
     slow_score.gen_chars = {"gpt_oss": 50.0, "gemma_4": 50.0}
     slow_score.per_message[0].gen_chars_by_model = {"gpt_oss": 50.0, "gemma_4": 50.0}
+    slow_score.per_message[0].turns_by_model = {"gpt_oss": 2.0, "gemma_4": 2.0}
     slow_score.total_hops = 100
     slow_score.public_by_model = {"gpt_oss": 10.0, "gemma_4": 10.0}
     fast_score = _mk_score(9.0)
     fast_score.gen_chars = {"gpt_oss": 5.0, "gemma_4": 5.0}
     fast_score.per_message[0].gen_chars_by_model = {"gpt_oss": 5.0, "gemma_4": 5.0}
+    fast_score.per_message[0].turns_by_model = {"gpt_oss": 1.0, "gemma_4": 1.0}
     fast_score.total_hops = 10
     fast_score.public_by_model = {"gpt_oss": 9.0, "gemma_4": 9.0}
     # Both fire on both victims (the projected board is per firing template per model).
@@ -3122,7 +3135,7 @@ def test_blackboard_ships_champion_as_filled_json(tmp_path: Path) -> None:
     assert src.count("http.post") > 5
     assert "SECRET_MARKER" in src
     assert not hasattr(board, "top_distinct_shapes")
-    assert "_v8" in bb.OBJECTIVE_NAME
+    assert "_v9" in bb.OBJECTIVE_NAME
 
 
 def test_blackboard_prefers_current_scheme_over_stale_scale_champion(

@@ -395,20 +395,20 @@ def _firing_templates(
     """``(board, cost)`` per message that fires on ``model``.
 
     ``board`` is one candidate's contribution: ``(severity + NOVELTY_PER_CELL) / 200``.
-    ``cost`` is the per-candidate T4-cost proxy ``TURN_COST_WEIGHT * agent_turns +
-    gen_chars``: turns carry the fixed per-round overhead (prefill + tool exec + IPC)
-    that generated-char length alone misses, gen_chars the deliberation volume. An
-    imperfect T4 predictor (local generation can differ from the T4's) but directionally
-    correct -- fewer turns and fewer chars are leaner, so the objective minimizes both.
+    ``cost = agent_turns + CHAR_TIEBREAK * gen_chars`` is LEXICOGRAPHIC: the char term
+    is always < 1, so ranking is turns-first (each turn is a fixed ~15s T4 round-trip)
+    with gen_chars only breaking ties among equal-turn shapes -- no invented turn<->char
+    exchange rate. An imperfect T4 predictor (local generation can differ from the T4's)
+    but directionally correct: fewer turns then fewer chars are leaner.
     """
     out: list[tuple[float, float]] = []
     for message in per_message:
         severity = message.severity_by_model.get("optimal", {}).get(model, 0.0)
         if severity > 0.0:
             board = (severity + config.NOVELTY_PER_CELL) / 200.0
-            cost = config.TURN_COST_WEIGHT * message.turns_by_model.get(
-                model, 0.0
-            ) + message.gen_chars_by_model.get(model, 0.0)
+            cost = message.turns_by_model.get(model, 0.0) + (
+                config.CHAR_TIEBREAK * message.gen_chars_by_model.get(model, 0.0)
+            )
             out.append((board, cost))
     return out
 

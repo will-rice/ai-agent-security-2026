@@ -238,17 +238,15 @@ if PORTFOLIO_LAMBDA < 0.0:
 # Distinct-shape count past which extra diversity is marginal (the bonus caps here).
 DIVERSITY_SHAPE_CAP = 8
 
-# Per-model deterministic gen-char budget the objective fills to (the char analogue of
-# the T4 wall-clock budget). Calibrate so the projected candidate count matches the
-# current champion's real fill; below the cap the ranking matches the old per-gen-char
-# rate, at the cap it saturates. Tune from measured fills.
-FILL_BUDGET_CHARS: dict[str, float] = {"gpt_oss": 600000.0, "gemma_4": 120000.0}
-
-# Char-equivalent cost charged per AGENT TURN in the per-candidate cost
-# (TURN_COST_WEIGHT * agent_turns + gen_chars). Turns carry the fixed per-round overhead
-# (prefill + tool exec + IPC) that raw generated-char length misses. An imperfect T4
-# predictor but directionally correct: fewer turns AND fewer chars are leaner.
-TURN_COST_WEIGHT = 150.0
+# Per-candidate cost = agent_turns + CHAR_TIEBREAK * gen_chars. CHAR_TIEBREAK is small
+# enough that the char term is always < 1, so ranking is strictly TURNS-FIRST with chars
+# only breaking ties among equal-turn shapes -- no invented turn<->char exchange rate.
+# Turns dominate because each is a fixed T4 round-trip (~15s); a wrap-up-free 1-turn
+# shape ~halves cost, which chars can never express.
+CHAR_TIEBREAK = 1e-4
+# Per-model budget in candidate-cost units (~agent turns): 9000s / per-turn seconds
+# (gpt ~16.5s/turn -> ~545, gemma ~7s/turn -> ~1285, from the T4 calib). N = budget/cost
+FILL_BUDGET_CHARS: dict[str, float] = {"gpt_oss": 545.0, "gemma_4": 1285.0}
 
 # Tier-2 victim introspection (victim_feedback.introspect_worst): number of the
 # lowest-severity messages in a scored submission to probe with an extra "what
