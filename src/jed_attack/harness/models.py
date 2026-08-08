@@ -3,8 +3,7 @@
 The competition scores against GGUF models served via llama.cpp. The SDK's
 built-in ``agent_selection='gpt_oss'`` uses the *transformers* backend, so for
 fidelity we build a custom agent factory that wraps ``LlamaCppChatTemplateBackend``
-around the same Q4_K_M GGUF files, matching
-``kaggle_evaluation/jed_attack_134815/gguf_model_server.py``.
+around the same Q4_K_M GGUF files.
 """
 
 import json
@@ -141,16 +140,15 @@ def gguf_agent_factory(
     so building a new backend per call would reload the multi-GB GGUF each time.
     Sharing one backend is only correct if the caller resets the backend's KV cache
     between logically-independent replays -- the llama.cpp completion call is NOT
-    stateless per turn (see :class:`ResidentAgentFactory`). Wiring matches Kaggle's
-    ``gguf_model_server.py`` (``HFBackendConfig`` built directly, ``max_new_tokens``
-    1024, ``supports_tools=True``).
+    stateless per turn (see :class:`ResidentAgentFactory`).
 
     Args:
         model_key: ``"gpt_oss"`` or ``"gemma_4"``.
         model_path: Local path to the GGUF file.
-        n_ctx: llama.cpp context window (Kaggle uses 8192).
+        n_ctx: llama.cpp context window.
         n_gpu_layers: GPU offload layer count (-1 = all).
-        max_new_tokens: Generation cap (Kaggle uses 1024).
+        max_new_tokens: Generation cap (256 and 1024 give identical results -- each
+            agent turn stays under 256 tokens, so the cap never binds).
         main_gpu: If set, loads the whole model onto this GPU (single-process
             placement, e.g. gpt_oss on GPU 0 and gemma on GPU 1 in one process).
             ``None`` keeps the SDK's default placement.
@@ -319,7 +317,7 @@ def llama_server_agent_factory(
         model_key: ``"gpt_oss"`` or ``"gemma_4"``.
         base_url: The server's OpenAI base, e.g. ``http://localhost:8080/v1``.
         model: The ``model`` field to send in requests.
-        max_new_tokens: Generation cap (Kaggle uses 1024).
+        max_new_tokens: Generation cap.
 
     Returns:
         A zero-arg callable returning a fresh SDK agent bound to the server.
