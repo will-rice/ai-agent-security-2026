@@ -41,14 +41,15 @@ def objective_scheme_name(
     The objective is the projected filled+trimmed public board (LB points), taken as the
     MIN over models (a shape that does not fire on every model scores 0), with cost
     ``gen_chars + TURN_COST_WEIGHT*agent_turns`` (chars-primary, fitted from the T4
-    sweep), plus a PORTFOLIO_LAMBDA both-model distinct-shape diversity bonus. The
-    ``v11`` bump retires the mean-over-models v10 pool (whose stored magnitudes are not
-    comparable to the min); a non-zero robustness or portfolio weight rescales it, so
-    each earns its own tag and champion pool.
+    sweep). Diversity is a LEXICOGRAPHIC tiebreaker (``objective_tiebreaker`` = distinct
+    both-model shapes), NOT added to the objective. The ``v12`` bump retires the
+    additive v11 pool (whose stored ``objective`` folded in the diversity bonus and so
+    is not comparable to the throughput-only objective); a non-zero robustness weight
+    rescales it and a non-zero portfolio weight tags diversity-on, each its own pool.
     """
-    base = "public_raw_per_gen_char_v11"
+    base = "public_raw_per_gen_char_v12"
     if robustness_lambda != 0.0:
-        base = f"robust{robustness_lambda:g}_raw_per_gen_char_v11"
+        base = f"robust{robustness_lambda:g}_raw_per_gen_char_v12"
     if portfolio_lambda != 0.0:
         base = f"portfolio{portfolio_lambda:g}_{base}"
     return base

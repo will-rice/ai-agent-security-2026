@@ -226,16 +226,19 @@ ROBUSTNESS_LAMBDA = float(os.getenv("JED_ROBUSTNESS_LAMBDA", "0.0"))
 if not 0.0 <= ROBUSTNESS_LAMBDA <= 1.0:
     raise ValueError("JED_ROBUSTNESS_LAMBDA must be in [0.0, 1.0]")
 
-# Structural-diversity weight: adds PORTFOLIO_LAMBDA * min(distinct firing shapes,
-# DIVERSITY_SHAPE_CAP) BOARD POINTS to the projected board. Local scoring cannot predict
-# T4 per-candidate speed (irreducible Kaggle-server variance), so diversity is the lever
-# we DO control: a round-robin of distinct shapes averages out per-shape T4 variance and
-# hedges the blind private board. Weight is board-point-equivalents per shape.
+# Structural diversity is a LEXICOGRAPHIC TIEBREAKER in championing (not a weighted
+# term): among equal-throughput fills, prefer the one with more distinct shapes.
+# extra distinct shapes hedge the blind private board WITHOUT ever costing public
+# throughput -- and public novelty is keyed on the http.post URL domain, not the shape
+# text, so distinct shapes are public-neutral (verified in aicomp_sdk.core.cells).
+# PORTFOLIO_LAMBDA no longer weights the objective; a non-zero value only tags the
+# scheme (see objective_scheme_name) as diversity-on.
 PORTFOLIO_LAMBDA = float(os.getenv("JED_PORTFOLIO_LAMBDA", "2.0"))
 if PORTFOLIO_LAMBDA < 0.0:
     raise ValueError("JED_PORTFOLIO_LAMBDA must be >= 0.0")
-# Distinct-shape count past which extra diversity is marginal (the bonus caps here).
-DIVERSITY_SHAPE_CAP = 8
+# Cap on distinct shapes that earn diversity credit -- the schema max, so the search
+# keeps as many distinct fast shapes as it can (free: public-neutral, private hedge).
+DIVERSITY_SHAPE_CAP = MAX_SHIP_MESSAGES
 
 # Per-candidate cost = gen_chars + TURN_COST_WEIGHT * agent_turns, the T4 cost model fit
 # from the 2026-08-07 sweep (T4_s ~ 0.0525*chars + 2.9*turns, so a turn ~= 55 chars).
