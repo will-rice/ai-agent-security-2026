@@ -18,6 +18,7 @@ from aicomp_sdk.attacks.contracts import (
 )
 from aicomp_sdk.core.env.api import AttackEnvProtocol
 from aicomp_sdk.core.runtime_history import RuntimeHistory
+from aicomp_sdk.evaluation.ops import unique_canonical_cell_count
 
 from jed_attack.campaign import config
 from jed_attack.campaign import submission_score as resident_score
@@ -86,6 +87,10 @@ def score_artifact_metrics(
     raws = [result.score_raw for result, _, _ in per_model.values()]
     findings = [result.findings_count for result, _, _ in per_model.values()]
     cells = [result.unique_cells for result, _, _ in per_model.values()]
+    canonical_cells = {
+        model: unique_canonical_cell_count(result.findings)
+        for model, (result, _, _) in per_model.items()
+    }
     replay_s = [result.time_taken for result, _, _ in per_model.values()]
     candidate_counts = [count for _, count, _ in per_model.values()]
     lb_estimates = {
@@ -105,6 +110,7 @@ def score_artifact_metrics(
         "artifact_score_raw": mean(raws) if raws else 0.0,
         "artifact_findings": sum(findings),
         "artifact_unique_cells": sum(cells),
+        "artifact_unique_canonical_cells": sum(canonical_cells.values()),
         "artifact_time_taken_s": sum(replay_s),
         "artifact_candidate_count_mean": mean(candidate_counts)
         if candidate_counts
@@ -133,6 +139,7 @@ def score_artifact_metrics(
             f"artifact_{model}_raw": result.score_raw,
             f"artifact_{model}_findings": result.findings_count,
             f"artifact_{model}_unique_cells": result.unique_cells,
+            f"artifact_{model}_unique_canonical_cells": canonical_cells[model],
             f"artifact_{model}_time_taken_s": result.time_taken,
             f"artifact_{model}_candidate_count": candidate_count,
             f"artifact_{model}_severity": report.severity_total,

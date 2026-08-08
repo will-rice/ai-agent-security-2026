@@ -1205,6 +1205,33 @@ def _batch_score_metrics(scores: list[SubmissionScore]) -> dict[str, float]:
         metrics[f"batch_firing_rate_{model}"] = _rate(
             sum(_score_fires_model(score, model) for score in scores), len(scores)
         )
+        # SDK-component telemetry (template-level proxy for score_raw = severity +
+        # NOVELTY_PER_CELL*unique_cells): mean per-submission severity sum and unique
+        # score cells (the score-driving, domain-based cell hashes) for this model.
+        metrics[f"batch_severity_{model}"] = _mean_or_zero(
+            [
+                sum(
+                    m.severity_by_model.get("optimal", {}).get(model, 0.0)
+                    for m in score.per_message
+                )
+                for score in scores
+            ]
+        )
+        metrics[f"batch_unique_cells_{model}"] = _mean_or_zero(
+            [
+                float(
+                    len(
+                        {
+                            m.cell_hashes.get("optimal", {}).get(model)
+                            for m in score.per_message
+                            if m.severity_by_model.get("optimal", {}).get(model, 0.0)
+                            > 0.0
+                        }
+                    )
+                )
+                for score in scores
+            ]
+        )
     metrics["batch_worst_model_public_raw_per_replay_s"] = (
         min(model_rates) if model_rates else 0.0
     )
