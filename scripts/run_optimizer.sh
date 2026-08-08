@@ -48,9 +48,7 @@ sleep 1
 tmux new-session -d -s "$SESSION" -c "$REPO" \
   "exec bash -lc 'mkdir -p run/logs; \
     export JED_CAMPAIGN_ROOT=\"$REPO/run\" JED_WANDB=1 \
-      JED_ARTIFACT_SCORE=1 \
-      JED_ARTIFACT_SCORE_BUDGET_S=600 \
-      JED_ARTIFACT_SCORE_EVERY_S=3600 \
+      JED_ARTIFACT_SCORE=0 \
       CUDA_DEVICE_ORDER=PCI_BUS_ID \
       DYLAN_JUDGE_URL=http://192.168.1.220:8100 \
       LD_LIBRARY_PATH=\"/usr/local/cuda-12.8/lib64:\${LD_LIBRARY_PATH:-}\"; \
