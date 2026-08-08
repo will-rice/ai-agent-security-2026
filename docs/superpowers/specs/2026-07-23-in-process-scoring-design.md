@@ -33,6 +33,8 @@ Determinism is the crucial win: noisy scores can't steer the optimizer (the refi
 
 Already loads the GGUF once and returns a factory over a shared backend (matches Kaggle's `gguf_model_server.py`: n_ctx 8192, max_new_tokens 1024, tools on). Add a `main_gpu: int | None = None` parameter that, when set, forwards `llama_kwargs={"main_gpu": main_gpu, "split_mode": llama_cpp.LLAMA_SPLIT_MODE_NONE}` to `from_model_path` so the model loads entirely on that GPU. (`from_model_path` accepts `llama_kwargs` and forwards them to `Llama` — verified.)
 
+> **Correction (2026-08-08):** the `max_new_tokens 1024` claim is unverified — the installed `aicomp_sdk` has NO `gguf_model_server.py` (that file was a docs excerpt), and every real SDK agent defaults to `256`. It also does not matter: a direct experiment (`cap_experiment.py`) showed **256 and 1024 give byte-identical results** (each agent turn is under 256 tokens, so the cap never binds). `max_new_tokens` is not a source of local↔T4 divergence, and there is no such divergence for the forge — same GGUF + greedy decode = identical behavior locally and on the T4.
+
 ### `submission_score.py` — swap the backend, drop HTTP failover
 
 Today: `resolve_endpoints(model)` returns HTTP endpoints, and `agent_factories[(model, endpoint)] = llama_server_agent_factory(...)`, replayed via `replay_trace_failover` across endpoints.
