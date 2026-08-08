@@ -3695,6 +3695,30 @@ def test_message_feedback_splits_severity_by_model() -> None:
     assert "exfil" in fb  # the message type is surfaced
 
 
+def test_eval_predicates_safe_swallows_typeerror(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A candidate whose data arg breaks the SDK predicate scores non-firing."""
+    from jed_attack.campaign import submission_score as ss
+
+    def boom(trace: object) -> object:
+        raise TypeError("argument of type 'int' is not iterable")
+
+    monkeypatch.setattr(ss, "eval_predicates", boom)
+    assert ss._eval_predicates_safe({"tool_events": []}) == []
+
+
+def test_eval_predicates_safe_passes_normal_predicates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A normal trace's predicates pass through unchanged."""
+    from jed_attack.campaign import submission_score as ss
+
+    fired = [{"name": "EXFILTRATION", "severity": 5}]
+    monkeypatch.setattr(ss, "eval_predicates", lambda trace: fired)
+    assert ss._eval_predicates_safe({}) == fired
+
+
 def test_score_submission_replays_each_message_no_dedup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
