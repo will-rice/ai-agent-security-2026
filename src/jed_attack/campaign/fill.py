@@ -3,35 +3,18 @@
 LOCAL-ONLY: runs at dump/score time. The SHIPPED attack.py never imports this -- it
 carries the already-stamped candidate list as JSON.
 
-This module OWNS the canonical target regexes (``_URL_RE``, ``_EMAIL_RE``,
-``TARGET_RE``): ``submission.py`` imports them from here rather than defining its own,
-so typing (``infer_message_type``), validation (``_validate_exfil``/``target_count``),
-and fill-time templatizing all agree on what counts as a URL/address target. A
-narrower/broader split here previously let an incidental non-target URL in a DEPUTY
-body (e.g. ``"...at http://dash.internal succeeded."``) get templatized to ``{u}``
-instead of the real ``{a}`` recipient address, collapsing every stamped candidate's
-address to one. ``submission.py`` imports ``fill`` (see its module docstring), so this
-module must NOT import ``submission`` back -- it stays the single, dependency-free
-owner of the regexes.
+The target regexes (``_URL_RE``, ``_EMAIL_RE``, ``TARGET_RE``) live in
+:mod:`jed_attack.campaign.targets` -- the single home shared with ``submission`` so
+typing, validation, target counting, and templatizing can never disagree on what a
+target is.
 """
 
-import re
 from collections.abc import Sequence
+
+from jed_attack.campaign.targets import _EMAIL_RE, _URL_RE
 
 MARKER = "SECRET_MARKER"
 _ALPHA = "abcdefghijklmnopqrstuvwxyz"
-# A rendered exfil target (``https://….invalid…`` or short ``http://….co`` URL) or
-# deputy target (``user@host.invalid`` address). ``TARGET_RE`` is the union
-# ``submission.target_count`` uses to count every driven tool call. Kept narrow (only
-# ``.invalid``/``.co`` hosts) so an incidental URL elsewhere in a message body (e.g. a
-# DEPUTY notification mentioning an internal dashboard link) is never mistaken for a
-# fill target.
-_URL_RE = re.compile(
-    r"https?://(?:[^\s\"'<>]+\.invalid(?:/[^\s\"'<>]*)?|[\w.-]+\.co(?:/[^\s\"'<>]*)?)",
-    re.IGNORECASE,
-)
-_EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.invalid", re.IGNORECASE)
-TARGET_RE = re.compile(f"{_URL_RE.pattern}|{_EMAIL_RE.pattern}", re.IGNORECASE)
 
 
 def _alpha_word(index: int, width: int) -> str:
