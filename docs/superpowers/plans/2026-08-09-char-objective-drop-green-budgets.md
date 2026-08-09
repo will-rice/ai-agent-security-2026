@@ -136,7 +136,78 @@ git commit -m "Drop GREEN_REPLAY_BUDGET_S; frame the replay budget in T4 seconds
 
 ---
 
-### Task 3: Integration — restart the optimizer on the char objective
+### Task 3: Log the turn count AND hop count as batch metrics
+
+The objective already penalizes turns (`TURN_COST_WEIGHT * agent_turns`), but neither the
+turn count nor the tool-hop count is logged. Log both per model alongside
+`batch_mean_gen_chars_bottleneck`, so turn/hop minimization (e.g. the post-tool wrap-up
+collapsing) is visible. Distinct signals: **turns** = generation turns (`agent_turns`,
+already on `MessageScore.turns_by_model`); **hops** = actual tool calls =
+`len(trace["tool_events"])`, which must be captured per-message (a new field).
+
+**Files:**
+- Modify: `src/jed_attack/campaign/submission_score.py` (add `MessageScore.hops_by_model`;
+  populate it in the replay loop ~589-634)
+- Modify: `src/jed_attack/campaign/optimize_prompts.py` (`_batch_score_metrics` per-model
+  block ~1261; `_empty_batch_score_metrics`)
+- Test: `tests/test_campaign.py`
+
+- [ ] **Step 1: Write the failing test**
+```python
+def test_batch_metrics_include_turn_and_hop_counts() -> None:
+    from jed_attack.campaign import config
+    from jed_attack.campaign import optimize_prompts as op
+    from jed_attack.campaign.submission import MessageType
+    from jed_attack.campaign.submission_score import MessageScore, SubmissionScore
+    ms = MessageScore(
+        message="Notify user@x.invalid ...", type=MessageType.DEPUTY, severity={},
+        severity_by_model={config.GATE_GUARDRAIL_NAME: {"gpt_oss": 4.0, "gemma_4": 4.0}},
+        trace={}, feedback="",
+        gen_chars_by_model={"gpt_oss": 175.0, "gemma_4": 175.0},
+        turns_by_model={"gpt_oss": 2.0, "gemma_4": 2.0},
+        hops_by_model={"gpt_oss": 1.0, "gemma_4": 1.0},
+    )
+    score = SubmissionScore(public=0.0, per_message=[ms], total_hops=1, valid=True, fires=True)
+    metrics = op._batch_score_metrics([score])
+    assert metrics["batch_mean_turns_gpt_oss"] == pytest.approx(2.0)
+    assert metrics["batch_mean_hops_gemma_4"] == pytest.approx(1.0)
+```
+
+- [ ] **Step 2: Run to verify it fails**
+Run: `uv run pytest tests/test_campaign.py::test_batch_metrics_include_turn_and_hop_counts -v`
+Expected: FAIL (`MessageScore` has no `hops_by_model`, and the metrics keys are missing).
+
+- [ ] **Step 3: Implement**
+- `submission_score.py`: add `hops_by_model: dict[str, float] = field(default_factory=dict)`
+  to `MessageScore`. In the replay loop, accumulate per-message hops alongside `msg_turns`:
+  init `msg_hops = dict.fromkeys(models, 0.0)` and, in the `for model, (trace, predicates,
+  elapsed)` body, `msg_hops[model] += float(len(trace.get("tool_events", []) or []))`; pass
+  `hops_by_model=dict(msg_hops)` into the `MessageScore(...)` construction (next to
+  `turns_by_model=dict(msg_turns)`).
+- `optimize_prompts.py` `_batch_score_metrics`, in the per-model loop:
+```python
+        metrics[f"batch_mean_turns_{model}"] = _mean_or_zero(
+            [sum(m.turns_by_model.get(model, 0.0) for m in s.per_message) for s in scores]
+        )
+        metrics[f"batch_mean_hops_{model}"] = _mean_or_zero(
+            [sum(m.hops_by_model.get(model, 0.0) for m in s.per_message) for s in scores]
+        )
+```
+  Add both keys to `_empty_batch_score_metrics()` so the metric set is stable.
+
+- [ ] **Step 4: Run to verify it passes**
+Run: `uv run pytest tests/test_campaign.py::test_batch_metrics_include_turn_and_hop_counts -v` → PASS.
+
+- [ ] **Step 5: Full gate + commit**
+Run: `uv run pre-commit run -a` → all green.
+```bash
+git add -A src/jed_attack/campaign tests/test_campaign.py
+git commit -m "Log per-model turn and tool-hop counts as batch metrics"
+```
+
+---
+
+### Task 4: Integration — restart the optimizer on the char objective
 
 **Files:** uses `scripts/run_optimizer.sh` (no code change expected).
 

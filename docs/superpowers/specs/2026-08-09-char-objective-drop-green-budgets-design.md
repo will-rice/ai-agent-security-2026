@@ -16,6 +16,12 @@ Chars are a **better proxy than green wall-clock time** for T4 replay cost, so:
 
 ## Why
 
+- **Efficiency:** the char projection is pure arithmetic over data `score_submission`
+  already produces (gen_chars, turns, severity, cells), so it costs **zero extra replays
+  per submission** — versus the sampled objective's +80 replays each. Because it's that
+  cheap, the ~6× objective-call sites no longer need memoization, so the caching layer
+  (`sampled_board_by_model`) is deleted too. Net: each generation's cost drops back to just
+  the shape replays.
 - Green replay wall-clock is ~28× faster than the T4 gateway **and** noisy (a prior
   measured-time objective spiked when one shape glitch-measured at ~0.005 s). It is a
   worse, noisier proxy than the deterministic `gen_chars` (T4 generation time ≈ 0.0525·chars,
@@ -49,6 +55,10 @@ telemetry). Rewire it back to the objective and delete the green path.
   - `prompts.toml` — update the `{{TIME_BUDGET}}` token doc accordingly.
 - `blackboard.objective_scheme_name` base: `..._sum_sampled_v15` → `..._sum_v16` (retire the
   sampled pool; back to the char projection under a fresh tag).
+- **Log the turn count.** The objective already penalizes turns (`TURN_COST_WEIGHT *
+  agent_turns`), but the count isn't logged. Add a per-model `batch_mean_turns_{model}`
+  wandb metric alongside `batch_mean_gen_chars_bottleneck`, so turn minimization (e.g. the
+  post-tool wrap-up collapsing) is visible.
 
 ## Kept (unchanged)
 The char cost model — `cost = gen_chars + TURN_COST_WEIGHT * agent_turns` (`TURN_COST_WEIGHT
