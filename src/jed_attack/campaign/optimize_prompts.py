@@ -1292,25 +1292,26 @@ def _portfolio_diversity(score: SubmissionScore) -> float:
 
 
 def _score_public_raw_per_gen_char(score: SubmissionScore) -> float:
-    """Per-submission objective: the WORST-model projected throughput board (LB points).
+    """Per-submission objective: the SUM of the per-model projected boards (LB points).
 
     ``project_public_board`` walks the round-robin over the submission's firing
     templates to a deterministic per-model char budget and returns the board the
     shipped+trimmed fill scores, in LB points (saturating at the candidate cap). The
-    objective takes the MIN over models, so a submission that does not fire on every
-    model scores 0. Diversity is NOT added here: it is a LEXICOGRAPHIC tiebreaker
-    (``Record.objective_tiebreaker`` = distinct both-model shapes), so keeping more
-    distinct shapes can never trade away a single point of throughput -- and for
-    uniform-speed forge fills, equal throughput lets diversity accumulate freely. Name
-    kept for the persisted objective field / call sites.
+    objective SUMS the models: the private board columns (``gpt_oss_private``,
+    ``gemma_private``) are INDEPENDENT, so a shape that fires on only one model still
+    earns that model's column and must not be zeroed. This lets the search mix a shape
+    family strong on one victim (e.g. read-exfil EXFILTRATION on gpt_oss) with one
+    strong on both (deputy CONFUSED_DEPUTY), maximizing the combined private board.
+    Diversity is NOT added here: it is a LEXICOGRAPHIC tiebreaker
+    (``Record.objective_tiebreaker``). Name kept for the persisted objective field /
+    call sites.
     """
     boards = project_public_board(
         score, config.FILL_BUDGET_CHARS, config.SHIP_CANDIDATE_CAP
     )
-    # MIN, not mean: a submission scores its WORST model, so a shape that fires on only
-    # one model (board 0 on the other) drags the objective to 0. Firing on BOTH models
-    # is the only way to score.
-    return min(boards[model] for model in config.MODELS)
+    # SUM, not min: the per-model columns are scored independently, so a shape firing on
+    # only one model earns that column instead of being dragged to 0 by the other.
+    return sum(boards[model] for model in config.MODELS)
 
 
 def _batch_refine_objective(scores: list[SubmissionScore]) -> tuple[float, float]:

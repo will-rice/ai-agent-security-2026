@@ -41,19 +41,20 @@ def objective_scheme_name(
     """Scheme tag for the current objective weights.
 
     The objective is the projected filled+trimmed gate-guardrail board (LB points),
-    taken as the MIN over models (a shape that does not fire on every model scores 0),
-    with cost ``gen_chars + TURN_COST_WEIGHT*agent_turns`` (chars-primary, fitted from
-    the T4 sweep). Diversity is a LEXICOGRAPHIC tiebreaker (``objective_tiebreaker`` =
-    distinct both-model shapes), NOT added to the objective. The ``v13`` bump retires
-    the EXFIL-era ``public_raw_per_gen_char_v12`` pool: the scheme now encodes the gate
+    taken as the SUM over models (the per-model private columns are independent, so a
+    shape firing on only one model still earns that column), with cost
+    ``gen_chars + TURN_COST_WEIGHT*agent_turns`` (chars-primary, fitted from the T4
+    sweep). Diversity is a LEXICOGRAPHIC tiebreaker (``objective_tiebreaker`` = distinct
+    both-model shapes), NOT added to the objective. The ``v14`` bump retires the
+    MIN-over-models ``rules_raw_per_gen_char_v13`` pool: the scheme now encodes the gate
     guardrail (``config.GATE_GUARDRAIL_NAME``) so switching guardrails auto-starts a
     clean pool instead of comparing incomparable magnitudes; a non-zero robustness
     weight rescales it and a non-zero portfolio weight tags diversity-on, each its own
     pool.
     """
-    base = f"{gate}_raw_per_gen_char_v13"
+    base = f"{gate}_sum_raw_per_gen_char_v14"
     if robustness_lambda != 0.0:
-        base = f"robust{robustness_lambda:g}_{gate}_raw_per_gen_char_v13"
+        base = f"robust{robustness_lambda:g}_{gate}_sum_raw_per_gen_char_v14"
     if portfolio_lambda != 0.0:
         base = f"portfolio{portfolio_lambda:g}_{base}"
     return base

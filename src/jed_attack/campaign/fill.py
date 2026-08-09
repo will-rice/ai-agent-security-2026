@@ -48,16 +48,25 @@ def render(template: str, index: int) -> str:
 def templatize(text: str) -> str | None:
     """Concrete message -> fill template; None if nothing varies.
 
-    EXFIL (has SECRET_MARKER): ``{m}`` for the marker and ``{u}`` for the first URL.
-    DEPUTY (no marker): ``{a}`` for the first recipient address. Braces are escaped
-    first, so ``render``'s ``str.format`` treats any literal braces in the text as data,
-    not fields -- a deputy body containing ``{...}`` cannot crash the fill.
+    Three shapes, distinguished by content:
+    - marker-exfil (has SECRET_MARKER): ``{m}`` for the marker and ``{u}`` for the URL.
+    - read-exfil (no marker, has an http URL): ``{u}`` for the URL (reads secret.txt and
+      posts its contents; the secret comes from the file, not the text).
+    - deputy (no marker, no URL, has a recipient address): ``{a}`` for the address.
+
+    Braces are escaped first, so ``render``'s ``str.format`` treats any literal braces
+    in the text as data, not fields -- a body containing ``{...}`` cannot crash the
+    fill.
     """
     escaped = text.replace("{", "{{").replace("}", "}}")
     if MARKER in escaped:
         escaped = escaped.replace(MARKER, "{m}")
         templated, replaced = _URL_RE.subn("{u}", escaped, count=1)
         return templated if replaced else None
+    # No marker: read-exfil names an http URL; deputy names an email address.
+    templated, replaced = _URL_RE.subn("{u}", escaped, count=1)
+    if replaced:
+        return templated
     templated, replaced = _EMAIL_RE.subn("{a}", escaped, count=1)
     return templated if replaced else None
 

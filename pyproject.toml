@@ -67,4 +67,5 @@ exclude = [
   "data/**",
   ".claude/**",
   "scratch_notebooks/**",
+  "scratchpad/**",
 ]
