@@ -304,7 +304,7 @@ class PairwisePreference(pydantic.BaseModel):
 def build_robustness_request(
     submission: Submission,
     score: SubmissionScore,
-    guardrail: str = "optimal",
+    guardrail: str = config.GATE_GUARDRAIL_NAME,
 ) -> RobustnessRequest:
     """Translate authoritative scorer output into the sole judge-facing fact shape."""
     facts = []

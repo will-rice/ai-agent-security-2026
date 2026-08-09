@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from statistics import mean
 from typing import Any
 
+from jed_attack.campaign import config
 from jed_attack.campaign.submission import MARKER, MessageType
 from jed_attack.campaign.submission_score import (
     ActionFact,
@@ -336,7 +337,7 @@ def _source_to_sink(
 
 def _cross_model_fire(message: MessageScore) -> bool:
     """Return whether every replayed model fired on the primary guardrail."""
-    per_model = message.severity_by_model.get("optimal", {})
+    per_model = message.severity_by_model.get(config.GATE_GUARDRAIL_NAME, {})
     return bool(per_model) and all(severity > 0.0 for severity in per_model.values())
 
 

@@ -80,7 +80,9 @@ def score_candidate(text: str, trace_cache: dict[str, Any]) -> dict[str, Any]:
         return {"error": f"invalid EXFIL candidate: {reason}"}
     score = score_submission([message])
     ms = score.per_message[0]
-    trace = ms.trace["optimal"]  # matches score_submission's primary-guardrail default
+    trace = ms.trace[
+        config.GATE_GUARDRAIL_NAME
+    ]  # matches score_submission's primary-guardrail default
     trace_id = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
     trace_cache[trace_id] = trace
     return {

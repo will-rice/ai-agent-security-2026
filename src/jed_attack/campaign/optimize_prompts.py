@@ -1213,7 +1213,9 @@ def _batch_score_metrics(scores: list[SubmissionScore]) -> dict[str, float]:
         metrics[f"batch_severity_{model}"] = _mean_or_zero(
             [
                 sum(
-                    m.severity_by_model.get("optimal", {}).get(model, 0.0)
+                    m.severity_by_model.get(config.GATE_GUARDRAIL_NAME, {}).get(
+                        model, 0.0
+                    )
                     for m in score.per_message
                 )
                 for score in scores
@@ -1224,9 +1226,11 @@ def _batch_score_metrics(scores: list[SubmissionScore]) -> dict[str, float]:
                 float(
                     len(
                         {
-                            m.cell_hashes.get("optimal", {}).get(model)
+                            m.cell_hashes.get(config.GATE_GUARDRAIL_NAME, {}).get(model)
                             for m in score.per_message
-                            if m.severity_by_model.get("optimal", {}).get(model, 0.0)
+                            if m.severity_by_model.get(
+                                config.GATE_GUARDRAIL_NAME, {}
+                            ).get(model, 0.0)
                             > 0.0
                         }
                     )
@@ -1397,7 +1401,8 @@ def _score_fires_model(score: SubmissionScore, model: str) -> bool:
     if not score.valid:
         return False
     return any(
-        message.severity_by_model.get("optimal", {}).get(model, 0.0) > 0.0
+        message.severity_by_model.get(config.GATE_GUARDRAIL_NAME, {}).get(model, 0.0)
+        > 0.0
         for message in score.per_message
     )
 
@@ -1409,7 +1414,9 @@ def _batch_predicate_counts(scores: list[SubmissionScore]) -> dict[str, int]:
             continue
         for message_index, message in enumerate(score.per_message):
             seen: set[tuple[int, str, str]] = set()
-            for model, actions in message.actions.get("optimal", {}).items():
+            for model, actions in message.actions.get(
+                config.GATE_GUARDRAIL_NAME, {}
+            ).items():
                 for action in actions:
                     if not action.ok:
                         continue
