@@ -72,6 +72,7 @@ from jed_attack.campaign.submission import (
 from jed_attack.campaign.submission_score import (
     SubmissionScore,
     project_public_board,
+    sampled_board,
     score_submission,
 )
 
@@ -1186,9 +1187,22 @@ def _batch_score_metrics(scores: list[SubmissionScore]) -> dict[str, float]:
             sum(score.public * 200.0 for score in scores), total_replay
         ),
     }
-    # Reflect the TRUE objective (deterministic gen-chars denominator), not the
-    # wall-clock rate above -- that stays as honest measured-throughput telemetry.
+    # Reflect the TRUE objective (measured sampled-replay board), not the wall-clock
+    # rate above -- that stays as honest measured-throughput telemetry.
     metrics["batch_objective_raw_per_gen_char"] = _batch_refine_objective(scores)[0]
+    # Retired gen-char PROJECTION, kept only as telemetry: how the old cost-model
+    # estimate would have scored this batch, for comparison against the measured
+    # sampled-replay objective above (project_public_board itself is unchanged).
+    metrics["batch_mean_legacy_projected_board"] = _mean_or_zero(
+        [
+            sum(
+                project_public_board(
+                    score, config.FILL_BUDGET_CHARS, config.SHIP_CANDIDATE_CAP
+                ).values()
+            )
+            for score in scores
+        ]
+    )
     model_rates: list[float] = []
     for model in config.MODELS:
         model_times = [score.replay_seconds.get(model, 0.0) for score in scores]
@@ -1291,24 +1305,42 @@ def _portfolio_diversity(score: SubmissionScore) -> float:
     return float(min(len(shapes), config.DIVERSITY_SHAPE_CAP))
 
 
-def _score_public_raw_per_gen_char(score: SubmissionScore) -> float:
-    """Per-submission objective: the SUM of the per-model projected boards (LB points).
+def _objective_messages(score: SubmissionScore) -> list[Message]:
+    """Reconstruct fill-able ``Message``s from a score's per-message shapes.
 
-    ``project_public_board`` walks the round-robin over the submission's firing
-    templates to a deterministic per-model char budget and returns the board the
-    shipped+trimmed fill scores, in LB points (saturating at the candidate cap). The
-    objective SUMS the models: the private board columns (``gpt_oss_private``,
-    ``gemma_private``) are INDEPENDENT, so a shape that fires on only one model still
-    earns that model's column and must not be zeroed. This lets the search mix a shape
-    family strong on one victim (e.g. read-exfil EXFILTRATION on gpt_oss) with one
-    strong on both (deputy CONFUSED_DEPUTY), maximizing the combined private board.
-    Diversity is NOT added here: it is a LEXICOGRAPHIC tiebreaker
-    (``Record.objective_tiebreaker``). Name kept for the persisted objective field /
-    call sites.
+    ``sampled_board`` needs each message's literal ``.text`` (to templatize + fill the
+    replay sample) and ``.type`` is threaded along for parity with the authored
+    ``Message``, but the objective never re-validates a submission that already scored,
+    so this bypasses ``Message``'s validators (``model_construct``) rather than risk a
+    reconstruction mismatch (e.g. a stale ``hops``) rejecting an already-valid shape.
     """
-    boards = project_public_board(
-        score, config.FILL_BUDGET_CHARS, config.SHIP_CANDIDATE_CAP
-    )
+    return [
+        Message.model_construct(type=ms.type, text=ms.message, hops=1)
+        for ms in score.per_message
+    ]
+
+
+def _score_public_raw_per_gen_char(score: SubmissionScore) -> float:
+    """Per-submission objective: the SUM of the per-model MEASURED sampled boards.
+
+    ``sampled_board`` replays the deterministic first ``config.REPLAY_SAMPLE_SIZE`` fill
+    candidates (the same fill path the ship uses) under the gate guardrail and scales
+    the measured mean board by measured mean green replay time against the real
+    per-model budget -- a MEASURED stand-in for the previous gen-char PROJECTION
+    (``project_public_board``, an estimate; kept for tests/telemetry, see
+    ``_batch_score_metrics``). The objective SUMS the models: the private board columns
+    (``gpt_oss_private``, ``gemma_private``) are INDEPENDENT, so a shape that fires on
+    only one model still earns that model's column and must not be zeroed. This lets the
+    search mix a shape family strong on one victim (e.g. read-exfil EXFILTRATION on
+    gpt_oss) with one strong on both (deputy CONFUSED_DEPUTY), maximizing the combined
+    private board. Diversity is NOT added here: it is a LEXICOGRAPHIC tiebreaker
+    (``Record.objective_tiebreaker``). Invalid submissions never accrue objective (no
+    replay is spent measuring one). Name kept for the persisted objective field / call
+    sites.
+    """
+    if not score.valid:
+        return 0.0
+    boards = sampled_board(_objective_messages(score))
     # SUM, not min: the per-model columns are scored independently, so a shape firing on
     # only one model earns that column instead of being dragged to 0 by the other.
     return sum(boards[model] for model in config.MODELS)
@@ -1336,6 +1368,7 @@ def _empty_batch_score_metrics() -> dict[str, float]:
         "batch_p95_replay_s_total": 0.0,
         "batch_public_raw_per_replay_s": 0.0,
         "batch_objective_raw_per_gen_char": 0.0,
+        "batch_mean_legacy_projected_board": 0.0,
         "batch_worst_model_public_raw_per_replay_s": 0.0,
         "batch_predicates_total": 0.0,
     }

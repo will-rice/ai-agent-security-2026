@@ -28,10 +28,10 @@ _log = logging.getLogger(__name__)
 
 
 # Tag stamped on every record scored under the CURRENT optimizer objective (the SUM
-# over victims of each model's public board per its OWN generated char). Bump this
-# whenever the objective changes scale: champion selection prefers rows carrying the
-# current tag so a prior scheme's incomparable magnitudes cannot freeze the champion.
-# See _objective_key. NOTE: ROBUSTNESS_LAMBDA is currently UN-WIRED under the SUM
+# over victims of each model's MEASURED sampled-replay board). Bump this whenever the
+# objective changes scale: champion selection prefers rows carrying the current tag so
+# a prior scheme's incomparable magnitudes cannot freeze the champion. See
+# _objective_key. NOTE: ROBUSTNESS_LAMBDA is currently UN-WIRED under the SUM
 # objective -- _score_public_raw_per_gen_char never reads it, so a non-zero value only
 # changes the scheme tag/pool below, not the actual score.
 def objective_scheme_name(
@@ -41,23 +41,24 @@ def objective_scheme_name(
 ) -> str:
     """Scheme tag for the current objective weights.
 
-    The objective is the projected filled+trimmed gate-guardrail board (LB points),
-    taken as the SUM over models (the per-model private columns are independent, so a
-    shape firing on only one model still earns that column), with cost
-    ``gen_chars + TURN_COST_WEIGHT*agent_turns`` (chars-primary, fitted from the T4
-    sweep). Diversity is a LEXICOGRAPHIC tiebreaker (``objective_tiebreaker`` = distinct
-    both-model shapes), NOT added to the objective. The ``v14`` bump retires the
-    MIN-over-models ``rules_raw_per_gen_char_v13`` pool: the scheme now encodes the gate
-    guardrail (``config.GATE_GUARDRAIL_NAME``) so switching guardrails auto-starts a
-    clean pool instead of comparing incomparable magnitudes; a non-zero portfolio
-    weight tags diversity-on, its own pool. NOTE: ``robustness_lambda`` is currently
-    UN-WIRED under this SUM objective (only affects the tag/pool below, never the
-    score itself); it is threaded through only so a future robustness-aware objective
-    has its own pool ready.
+    The objective is the SUM over models of ``submission_score.sampled_board``'s
+    per-model board: a MEASURED replay of the deterministic first
+    ``config.REPLAY_SAMPLE_SIZE`` fill candidates, scaled by the measured mean green
+    replay time against the real per-model budget (the per-model private columns are
+    independent, so a shape firing on only one model still earns that column). Diversity
+    is a LEXICOGRAPHIC tiebreaker (``objective_tiebreaker`` = distinct both-model
+    shapes), NOT added to the objective. The ``v15`` bump retires the ``v14``
+    gen-char-PROJECTION pool (``project_public_board``, a cost-model estimate) for this
+    MEASURED-replay pool: the scheme still encodes the gate guardrail
+    (``config.GATE_GUARDRAIL_NAME``) so switching guardrails auto-starts a clean pool
+    instead of comparing incomparable magnitudes; a non-zero portfolio weight tags
+    diversity-on, its own pool. NOTE: ``robustness_lambda`` is currently UN-WIRED under
+    this SUM objective (only affects the tag/pool below, never the score itself); it is
+    threaded through only so a future robustness-aware objective has its own pool ready.
     """
-    base = f"{gate}_sum_raw_per_gen_char_v14"
+    base = f"{gate}_sum_sampled_v15"
     if robustness_lambda != 0.0:
-        base = f"robust{robustness_lambda:g}_{gate}_sum_raw_per_gen_char_v14"
+        base = f"robust{robustness_lambda:g}_{gate}_sum_sampled_v15"
     if portfolio_lambda != 0.0:
         base = f"portfolio{portfolio_lambda:g}_{base}"
     return base
