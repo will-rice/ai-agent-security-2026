@@ -51,7 +51,10 @@ telemetry). Rewire it back to the objective and delete the green path.
   sampled pool; back to the char projection under a fresh tag).
 
 ## Kept (unchanged)
-The char cost model (`gen_chars` + `TURN_COST_WEIGHT`), `FILL_BUDGET_CHARS`,
+The char cost model — `cost = gen_chars + TURN_COST_WEIGHT * agent_turns` (`TURN_COST_WEIGHT
+= 55`), so the objective minimizes BOTH generated characters AND agent turns (a turn ≈ 55
+chars of fixed per-hop cost; fewer hops — e.g. collapsing the post-tool wrap-up that
+generates but scores nothing — lowers cost and raises the board). Also `FILL_BUDGET_CHARS`,
 `project_public_board`, `fill` (distinct-shape authoring + URL-swap expansion + unique-domain
 novelty), `MAX_SHIP_MESSAGES = 30`, `MAX_SCORE_BATCH = 1`, read-exfil / deputy / gate-guardrail
 semantics, the `attack.py` grade-time trim contract.
