@@ -4073,10 +4073,18 @@ def test_salvage_batch_drops_invalid_and_truncates_by_count() -> None:
     #  structurally unreachable -- multi-hop messages are rejected outright.)
 
 
-def test_salvage_batch_keeps_valid_submissions() -> None:
-    """_salvage_batch parses submissions, dropping invalid messages/empty subs."""
+def test_salvage_batch_keeps_valid_submissions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_salvage_batch parses submissions, dropping invalid messages/empty subs.
+
+    Raises MAX_SCORE_BATCH above 1 so this exercises the drop-empty behavior directly
+    (the production cap of 1 is covered by test_salvage_batch_drops...by_count).
+    """
+    from jed_attack.campaign import config
     from jed_attack.campaign import optimize_prompts as op
 
+    monkeypatch.setattr(config, "MAX_SCORE_BATCH", 8)
     # The middle submission's only message has no valid target -> dropped -> the
     # submission is left empty -> dropped.
     content = (

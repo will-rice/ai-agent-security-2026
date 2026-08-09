@@ -206,15 +206,15 @@ HOP_BUDGET = 391
 # assemble's historical hard cap.
 SHIP_CANDIDATE_CAP = 2000
 
-# Max submissions per proposer generation. A proposer left uncapped emits huge batches
-# (200+) which, at ~one replay per submission per model, stretch a generation to an hour
-# and starve the search of iterations. This is the JSON-schema ``maxItems`` the proposer
-# is constrained to (so structured decoding STOPS at the cap instead of us truncating
-# waste) AND the salvage enforcement, from one source. Small is fine: the shipped
-# artifact self-fills URLs to the T4 budget at eval, so batch size sets the search's
-# iteration granularity, not the shipped candidate count. Fewer, faster generations =
-# quicker discovery of leaner-reasoning shapes. Not hot-reloadable — a worker restart.
-MAX_SCORE_BATCH = 8
+# Submissions per proposer generation. ONE, now that the objective is a MEASURED
+# sampled replay (``submission_score.sampled_board`` = REPLAY_SAMPLE_SIZE*len(models)
+# real GPU replays per submission): scoring is the bottleneck, so authoring N submissions
+# per call just multiplies replay work with no gain, and a single submission gets the
+# proposer's whole output budget (a richer, larger single submission -- closer to the
+# actual shipped list). This is the JSON-schema ``maxItems`` the proposer is constrained
+# to (structured decoding STOPS at 1) AND the salvage cap, from one source. Not
+# hot-reloadable -- a worker restart.
+MAX_SCORE_BATCH = 1
 
 # The competition's per-cell novelty bonus (raw += 2 * unique_cells). Each rendered copy
 # carries unique .invalid domains/addresses -> a distinct score cell, so a firing copy
