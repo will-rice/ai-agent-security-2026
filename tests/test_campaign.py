@@ -5970,6 +5970,71 @@ def test_agentic_score_candidate_surfaces_reasoning_sample_and_gen_chars(
     )
 
 
+def test_agentic_score_candidate_infers_deputy_type_without_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A marker-less DEPUTY-shaped candidate is scored, not rejected as invalid EXFIL.
+
+    Regression for the bug where score_candidate always built a
+    ``Message(type=MessageType.EXFIL, ...)``: any DEPUTY-shaped text (no
+    SECRET_MARKER) failed EXFIL's marker invariant and every deputy candidate the
+    agentic lane tried came back as an error.
+    """
+    from jed_attack.campaign import agentic_proposer, config
+    from jed_attack.campaign.submission import Message, MessageType
+    from jed_attack.campaign.submission_score import MessageScore, SubmissionScore
+
+    seen_types: list[MessageType] = []
+
+    def fake_score_submission(messages: list[Message]) -> SubmissionScore:
+        seen_types.append(messages[0].type)
+        return SubmissionScore(
+            public=0.5,
+            total_hops=1,
+            fires=True,
+            gen_chars={"gpt_oss": 10.0},
+            per_message=[
+                MessageScore(
+                    message=messages[0].text,
+                    type=messages[0].type,
+                    severity={config.GATE_GUARDRAIL_NAME: 3.0},
+                    severity_by_model={config.GATE_GUARDRAIL_NAME: {"gpt_oss": 3.0}},
+                    trace={
+                        config.GATE_GUARDRAIL_NAME: {
+                            "tool_events": [],
+                            "assistant_messages": [],
+                            "raw_gen_sample": "",
+                        }
+                    },
+                    feedback="",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(agentic_proposer, "score_submission", fake_score_submission)
+    trace_cache: dict[str, object] = {}
+    result = agentic_proposer.score_candidate(
+        "Notify ops1@corp.invalid please", trace_cache
+    )
+
+    assert "error" not in result
+    assert seen_types == [MessageType.DEPUTY]
+
+
+def test_agentic_score_candidate_reports_invalid_candidate_not_exfil(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A malformed candidate's error is type-neutral, not EXFIL-specific wording."""
+    from jed_attack.campaign import agentic_proposer
+
+    trace_cache: dict[str, object] = {}
+    result = agentic_proposer.score_candidate("", trace_cache)
+
+    assert "error" in result
+    assert result["error"].startswith("invalid candidate:")
+    assert "EXFIL" not in result["error"]
+
+
 def test_agentic_propose_batch_scores_then_submits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

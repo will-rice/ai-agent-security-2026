@@ -61,7 +61,7 @@ def main() -> None:
     # main_gpu=0 -> the only CUDA_VISIBLE_DEVICES device (physical GPU 1); small n_ctx
     # keeps the KV cache tiny so it fits beside the optimizer's resident gemma there.
     factory = gguf_agent_factory(MODEL, gguf, n_ctx=N_CTX, main_gpu=0)
-    guardrail = guardrails.GATE_GUARDRAILS["optimal"]
+    guardrail = guardrails.GATE_GUARDRAILS[config.GATE_GUARDRAIL_NAME]
     hops = config.EVAL_HOPS
     fixtures = resolve_fixtures_dir()
 

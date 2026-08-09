@@ -201,9 +201,11 @@ class SubmissionScore:
     """A whole submission's predicted public/private boards.
 
     Attributes:
-        public: ``mean_models(optimal board)`` — the only board scored right now.
-        public_by_model: ``{model: optimal board}`` — the un-averaged per-model board
-            that ``public`` means over, so a lagging victim is visible (wandb/steering).
+        public: ``mean_models(gate guardrail board)`` — the gate guardrail is
+            ``config.GATE_GUARDRAIL_NAME``, the only board scored right now.
+        public_by_model: ``{model: gate guardrail board}`` — the un-averaged per-model
+            board that ``public`` means over, so a lagging victim is visible
+            (wandb/steering).
         per_message: One :class:`MessageScore` per input message, in order.
         total_hops: Summed ``Message.hops`` over every message (the T4 tool-hop cost;
             the schema guarantees it fits the budget). Kept for proposer feedback.

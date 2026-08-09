@@ -350,7 +350,13 @@ def _preselect_records(
 def _rules_score(
     messages: list[Message], score_fn: Callable[..., SubmissionScore]
 ) -> SubmissionScore:
-    """Score only the offline proxy; RulesGuardrail is never a live gate guardrail."""
+    """Score the offline "rules" proxy label.
+
+    Post-retarget, RulesGuardrail IS the live gate guardrail too (``score_fn``'s
+    default ``primary_guardrail`` is ``config.GATE_GUARDRAIL_NAME == "rules"``, set in
+    :func:`_replay_optimal_rows`), so this pass and the "optimal" replay pass now score
+    against the same guardrail — see the note at :func:`_replay_optimal_rows`.
+    """
     return score_fn(
         messages,
         guardrails={"rules": RulesGuardrail},
@@ -899,6 +905,12 @@ def _replay_optimal_rows(
             continue
         try:
             optimal_replay_count += 1
+            # "optimal" here is legacy naming: score_fn's default primary_guardrail is
+            # now config.GATE_GUARDRAIL_NAME ("rules"), the same guardrail _rules_score
+            # scores below. Post-retarget, faithful_public and rules_proxy therefore
+            # compare the SAME guardrail's board twice — the study is a degenerate
+            # offline shadow check now, not a public-vs-proxy comparison, and does not
+            # affect the live optimizer objective.
             optimal_score = score_fn(messages)
         except Exception:
             replay_error_count += 1
