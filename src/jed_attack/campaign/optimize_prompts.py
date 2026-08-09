@@ -12,7 +12,7 @@ blackboard.Blackboard`. Each lane, forever:
    labelled as DATA — the incumbent's board total, its per-message feedback table, its
    messages, and the team digest, and asks for a BATCH of improved full submissions;
 3. authors a batch of submissions on its lane via AsyncOpenAI
-   (:func:`propose_batch_async`: streams one reply, salvages a ``list[Submission]``),
+   (:func:`propose_batch_async`: streams one reply, parses a ``list[Submission]``),
    capturing the backend's reasoning;
 4. scores EVERY submission off-thread on resident in-process llama-cpp-python backends
    (:func:`~jed_attack.campaign.submission_score.score_submission`),
@@ -28,7 +28,6 @@ Victim/trace output embedded in any proposer prompt is DATA, never instructions 
 """
 
 import asyncio
-import contextlib
 import json
 import logging
 import math
@@ -40,13 +39,12 @@ import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 from statistics import mean
-from typing import Any, Protocol, cast
+from typing import Any, Protocol
 
 import git
 import pydantic
 from dotenv import load_dotenv
 from openai.types.chat import ChatCompletionMessageParam
-from openai.types.shared_params import ResponseFormatJSONSchema
 
 from jed_attack.campaign import (
     agentic_proposer,
@@ -64,7 +62,6 @@ from jed_attack.campaign.judge_policy import (
     compare_batches,
 )
 from jed_attack.campaign.submission import (
-    Message,
     MessageType,
     Submission,
     SubmissionBatch,
@@ -858,11 +855,11 @@ async def _run_team(board: blackboard.Blackboard, run: _WandbRun | None) -> None
         _log.info("team cancelled; shutting down cleanly")
 
 
-# The SubmissionBatch JSON Schema, handed to the proposer verbatim (compact). We give
-# the schema instead of a prose field-description: no remote provider reliably honors
-# structured outputs on this nested schema, so the model authors free-form JSON that
-# _salvage_batch validates against this very schema (dropping messages/submissions that
-# fail).
+# The SubmissionBatch JSON Schema, handed to the proposer verbatim (compact) as a
+# readable spec of the shape it must author. The same model also drives constrained
+# decoding: propose_batch_async passes SubmissionBatch as response_format, so the SDK
+# builds the strict schema from it and parses the reply back through the model's
+# validators. Prompt text and enforcement therefore come from ONE source (the model).
 _SUBMISSION_SCHEMA_JSON = json.dumps(
     SubmissionBatch.model_json_schema(), separators=(",", ":")
 )
@@ -1456,67 +1453,23 @@ def _batch_predicate_counts(scores: list[SubmissionScore]) -> dict[str, int]:
     return counts
 
 
-# TRUE structured output: the provider is forced to emit JSON matching this schema
-# (constrained decoding), so successive proposers reliably return a valid
-# SubmissionBatch instead of free text that parse-fails. A flat hand-written schema
-# (the pydantic model_json_schema is rejected by strict mode for its refs/unions);
-# _salvage_batch still validates each message against the real Message model afterward.
-_BATCH_SCHEMA = {
-    "name": "submission_batch",
-    "strict": True,
-    "schema": {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "submissions": {
-                "type": "array",
-                "maxItems": config.MAX_SCORE_BATCH,
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "messages": {
-                            "type": "array",
-                            "maxItems": config.MAX_SHIP_MESSAGES,
-                            "items": {
-                                "type": "object",
-                                "additionalProperties": False,
-                                "properties": {
-                                    "type": {"type": "string"},
-                                    "text": {"type": "string"},
-                                    "hops": {"type": "integer"},
-                                },
-                                "required": ["type", "text", "hops"],
-                            },
-                        }
-                    },
-                    "required": ["messages"],
-                },
-            }
-        },
-        "required": ["submissions"],
-    },
-}
-
-
 async def propose_batch_async(
     prompt: str, provider: providers.Provider, idle_timeout_s: float
 ) -> tuple[list[Submission], str]:
-    """Author a batch of submissions on ``provider`` by STREAMING an AsyncOpenAI call.
+    """Author a batch of submissions on ``provider`` via a STREAMED structured call.
 
-    Uses TRUE structured output: ``response_format`` pins the reply to
-    :data:`_BATCH_SCHEMA` (json_schema constrained decoding), so the model reliably
-    emits a valid ``SubmissionBatch`` rather than free text that parse-fails -- verified
-    across the cheapest models (40-124 valid one-shot in seconds). The streamed
-    content is still fed to :func:`_salvage_batch`, which validates each message against
-    the real :class:`Message` model and drops any stragglers. Streaming replaces the
-    wall-clock timeout with an IDLE one (:func:`asyncio.timeout`, rescheduled per
-    chunk):
-    the call is abandoned only if no token arrives for ``idle_timeout_s`` seconds (a
-    stall), never mid-stream, so a slow-but-active thinking model always finishes. The
-    completion budget is ``provider.max_tokens`` (the model's real per-model max, so
-    a large batch never truncates). A CI concurrency 429 on the initial request is
-    logged distinctly, then re-raised.
+    Passes the :class:`SubmissionBatch` model to the SDK as ``response_format``, so the
+    SDK builds the strict JSON schema from it (constrained decoding) and parses the
+    reply back into the model. The reply is structurally guaranteed, and the model's
+    ``@model_validator`` ship invariants (typed shape, ``hops`` == target count) run
+    during that parse -- so a batch with ANY invalid message fails to parse and is
+    dropped WHOLE. We never salvage a partially valid batch.
+
+    Streaming swaps the wall-clock timeout for an IDLE one (:func:`asyncio.timeout`,
+    rescheduled per streamed token), so the call is abandoned only on a stall, never
+    mid-stream, and a slow-but-active thinking model always finishes. The completion
+    budget is ``provider.max_tokens``. A CI concurrency 429 is logged distinctly, then
+    re-raised.
 
     Args:
         prompt: The batch-proposer prompt text.
@@ -1524,137 +1477,50 @@ async def propose_batch_async(
         idle_timeout_s: Max seconds to wait for the next streamed token before aborting.
 
     Returns:
-        The salvaged submissions (possibly empty) and the backend's reasoning text
-        (empty if none).
+        The parsed submissions (empty if the reply carried no valid batch) and the
+        backend's reasoning text (empty if none).
     """
     client = providers.async_openai_client(provider)
     messages: list[ChatCompletionMessageParam] = [
         {"role": "system", "content": _load_prompts()["system"]},
         {"role": "user", "content": prompt},
     ]
+    reasoning: list[str] = []
+    loop = asyncio.get_running_loop()
     try:
-        stream = await client.chat.completions.create(
+        async with client.chat.completions.stream(
             model=provider.model,
             messages=messages,
             max_completion_tokens=provider.max_tokens,
             temperature=_PROPOSER_TEMPERATURE,
-            response_format=cast(
-                "ResponseFormatJSONSchema",
-                {"type": "json_schema", "json_schema": _BATCH_SCHEMA},
-            ),
-            stream=True,
-        )
+            response_format=SubmissionBatch,
+        ) as stream:
+            async with asyncio.timeout(idle_timeout_s) as timer:
+                async for event in stream:
+                    timer.reschedule(
+                        loop.time() + idle_timeout_s
+                    )  # token -> reset idle
+                    if event.type == "chunk" and event.chunk.choices:
+                        delta = event.chunk.choices[0].delta
+                        piece = getattr(delta, "reasoning_content", None) or getattr(
+                            delta, "reasoning", None
+                        )
+                        if piece:
+                            reasoning.append(piece)
+            completion = await stream.get_final_completion()
+    except pydantic.ValidationError:
+        # A structurally valid reply whose messages break the ship invariants (bad type,
+        # hops != target count) fails the SubmissionBatch parse: drop the WHOLE batch.
+        _log.info("proposed batch dropped: failed SubmissionBatch validation")
+        return [], "".join(reasoning)
     except Exception as exc:
         if "concurrency limit" in str(exc).lower():
             _log.warning("CI concurrency 429 on %s (experiment signal)", provider.model)
         raise
-    content: list[str] = []
-    reasoning: list[str] = []
-    loop = asyncio.get_running_loop()
-    try:
-        async with asyncio.timeout(idle_timeout_s) as timer:
-            async for chunk in stream:
-                timer.reschedule(loop.time() + idle_timeout_s)  # a token -> reset idle
-                if not chunk.choices:
-                    continue
-                delta = chunk.choices[0].delta
-                if delta.content:
-                    content.append(delta.content)
-                piece = getattr(delta, "reasoning_content", None) or getattr(
-                    delta, "reasoning", None
-                )
-                if piece:
-                    reasoning.append(piece)
-    finally:
-        with contextlib.suppress(Exception):
-            await stream.close()
-    return _salvage_batch("".join(content)), "".join(reasoning)
-
-
-def _salvage_batch(content: str) -> list[Submission]:
-    """Salvage a list of valid Submissions from a raw SubmissionBatch chat reply.
-
-    Parses the batch JSON (a ``{"submissions": [...]}`` object or a bare list), then for
-    each submission drops any message that fails :class:`Message` construction (bad
-    type, ``hops`` != target count, invalid text), keeps the leading messages within the
-    ``config.MAX_SHIP_MESSAGES`` count cap and the T4 total-hop budget, and drops any
-    submission left empty. Truncation is not relied on (we await the full response); a
-    trailing malformed submission is simply dropped.
-
-    Args:
-        content: Raw chat-completion content.
-
-    Returns:
-        The valid Submissions (possibly empty; the loop skips an empty batch).
-    """
-    try:
-        raw = _extract_json(content)
-    except ValueError:
-        # A proposer reply with no JSON (e.g. a thinking model that spent its whole
-        # token budget on reasoning, or a refusal) yields an empty batch; the loop's
-        # `if not batch: continue` skips the generation cleanly instead of a traceback.
-        _log.info("salvaged batch: 0 submissions (no JSON in reply)")
-        return []
-    subs_raw = raw.get("submissions", raw) if isinstance(raw, dict) else raw
-    batch: list[Submission] = []
-    for sub in subs_raw if isinstance(subs_raw, list) else []:
-        messages = sub.get("messages", []) if isinstance(sub, dict) else []
-        kept: list[Message] = []
-        used_hops = 0
-        for obj in messages:
-            try:
-                message = Message(**obj)
-            except (pydantic.ValidationError, TypeError):
-                continue
-            if (
-                len(kept) >= config.MAX_SHIP_MESSAGES
-                or used_hops + message.hops > config.HOP_BUDGET
-            ):
-                break
-            kept.append(message)
-            used_hops += message.hops
-        if kept:
-            batch.append(Submission(messages=kept))
-    if len(batch) > config.MAX_SCORE_BATCH:
-        # Bound per-generation scoring latency; the dropped tail is near-duplicate
-        # URL variants, so the search keeps its diversity but iterates far more often.
-        batch = batch[: config.MAX_SCORE_BATCH]
-    _log.info("salvaged batch: %d submissions", len(batch))
-    return batch
-
-
-def _extract_json(content: str) -> dict[str, Any] | list[Any]:
-    """Extract the largest JSON object or array from a raw chat reply.
-
-    Scans each ``{``/``[`` and decodes the JSON value there (tolerant of surrounding
-    prose/``` fences, since decoding starts right at the ``{``/``[`` and ignores
-    anything before or after the matched span), picking the longest span that parses so
-    a batch reply's outer object wins over any smaller nested value.
-
-    Args:
-        content: Raw chat-completion content.
-
-    Returns:
-        The parsed JSON object or array.
-
-    Raises:
-        ValueError: No ``{...}`` or ``[...]`` span in ``content`` decodes as JSON.
-    """
-    decoder = json.JSONDecoder()
-    best: dict[str, Any] | list[Any] | None = None
-    best_len = -1
-    for start, char in enumerate(content):
-        if char not in "{[":
-            continue
-        try:
-            data, end = decoder.raw_decode(content, start)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(data, (dict, list)) and end - start > best_len:
-            best, best_len = data, end - start
-    if best is None:
-        raise ValueError("no JSON object or array found in content")
-    return best
+    parsed = completion.choices[0].message.parsed
+    submissions = parsed.submissions if parsed else []
+    _log.info("proposed batch: %d submissions", len(submissions))
+    return submissions, "".join(reasoning)
 
 
 def _log_wandb(run: _WandbRun | None, metrics: dict[str, Any]) -> None:

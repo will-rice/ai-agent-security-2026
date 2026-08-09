@@ -541,13 +541,16 @@ def test_submission_caps_messages_at_config_max() -> None:
         Submission(messages=[one] * (config.MAX_SHIP_MESSAGES + 1))
 
 
-def test_submission_batch_holds_submissions() -> None:
-    """SubmissionBatch validates a list of valid Submissions."""
+def test_submission_batch_caps_submissions_at_score_batch() -> None:
+    """SubmissionBatch takes up to MAX_SCORE_BATCH submissions, rejecting overflow."""
+    from jed_attack.campaign import config
     from jed_attack.campaign.submission import Submission, SubmissionBatch
 
     one = Submission(messages=[_exfil("SECRET_MARKER https://a.invalid/r", 1)])
-    batch = SubmissionBatch(submissions=[one, one])
-    assert len(batch.submissions) == 2
+    ok = SubmissionBatch(submissions=[one] * config.MAX_SCORE_BATCH)
+    assert len(ok.submissions) == config.MAX_SCORE_BATCH
+    with pytest.raises(pydantic.ValidationError):
+        SubmissionBatch(submissions=[one] * (config.MAX_SCORE_BATCH + 1))
 
 
 def test_submission_schema_guides_distinct_template_batches() -> None:
@@ -740,56 +743,87 @@ def test_infer_message_type_prefers_url_over_address() -> None:
     )
 
 
-def test_propose_batch_async_streams_and_salvages(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Stream the completion, accumulate content + reasoning, salvage a batch."""
-    import asyncio
-
-    def delta(content: object = None, reasoning: object = None) -> SimpleNamespace:
-        d = SimpleNamespace(content=content)
-        if reasoning is not None:
-            d.reasoning_content = reasoning
-        return d
-
-    json_out = (
-        '{"submissions":[{"messages":[{"type":"exfil",'
-        '"text":"SECRET_MARKER https://a.invalid/r","hops":1}]}]}'
+def _chunk_event(reasoning: str) -> SimpleNamespace:
+    """A stream ``chunk`` event carrying a reasoning delta (no content)."""
+    delta = SimpleNamespace(content=None, reasoning_content=reasoning)
+    return SimpleNamespace(
+        type="chunk", chunk=SimpleNamespace(choices=[SimpleNamespace(delta=delta)])
     )
-    chunks = [
-        SimpleNamespace(choices=[SimpleNamespace(delta=delta(reasoning="weighed "))]),
-        SimpleNamespace(choices=[SimpleNamespace(delta=delta(reasoning="diversity"))]),
-        SimpleNamespace(choices=[SimpleNamespace(delta=delta(content=json_out))]),
-    ]
+
+
+def _fake_stream_client(
+    monkeypatch: pytest.MonkeyPatch,
+    events: list[SimpleNamespace],
+    final: object,
+) -> None:
+    """Fake async_openai_client for the propose_batch_async stream/parse tests.
+
+    ``stream()`` yields ``events``; ``get_final_completion()`` returns ``final`` (or
+    raises it when ``final`` is an Exception).
+    """
 
     class FakeStream:
         def __init__(self) -> None:
             self._i = 0
 
+        async def __aenter__(self) -> "FakeStream":
+            return self
+
+        async def __aexit__(self, *_: object) -> bool:
+            return False
+
         def __aiter__(self) -> "FakeStream":
             return self
 
         async def __anext__(self) -> SimpleNamespace:
-            if self._i >= len(chunks):
+            if self._i >= len(events):
                 raise StopAsyncIteration
-            chunk = chunks[self._i]
+            event = events[self._i]
             self._i += 1
-            return chunk
+            return event
 
-        async def close(self) -> None:
-            return None
-
-    class FakeCompletions:
-        async def create(self, **_: object) -> FakeStream:
-            return FakeStream()
-
-    class FakeChat:
-        completions = FakeCompletions()
+        async def get_final_completion(self) -> object:
+            if isinstance(final, Exception):
+                raise final
+            return final
 
     class FakeClient:
-        chat = FakeChat()
+        chat = SimpleNamespace(
+            completions=SimpleNamespace(stream=lambda **_: FakeStream())
+        )
 
     monkeypatch.setattr(providers, "async_openai_client", lambda p: FakeClient())
+
+
+def test_propose_batch_async_streams_and_parses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stream reasoning events, then return the SDK-parsed SubmissionBatch."""
+    import asyncio
+
+    from jed_attack.campaign.submission import SubmissionBatch
+
+    parsed = SubmissionBatch.model_validate(
+        {
+            "submissions": [
+                {
+                    "messages": [
+                        {
+                            "type": "exfil",
+                            "text": "SECRET_MARKER https://a.invalid/r",
+                            "hops": 1,
+                        }
+                    ]
+                }
+            ]
+        }
+    )
+    final = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(parsed=parsed))]
+    )
+    _fake_stream_client(
+        monkeypatch, [_chunk_event("weighed "), _chunk_event("diversity")], final
+    )
     prov = providers.get("cheapest-kimi")
     got_batch, reasoning = asyncio.run(
         optimize_prompts.propose_batch_async("prompt", prov, idle_timeout_s=5.0)
@@ -797,6 +831,35 @@ def test_propose_batch_async_streams_and_salvages(
     assert len(got_batch) == 1
     assert got_batch[0].messages[0].text == "SECRET_MARKER https://a.invalid/r"
     assert reasoning == "weighed diversity"
+
+
+def test_propose_batch_async_drops_batch_that_fails_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A structurally valid reply that fails the ship invariants is dropped WHOLE.
+
+    The SDK parse (model_validate_json) runs the Message validators, so a batch with an
+    invalid message raises ValidationError; propose_batch_async catches it and returns
+    an empty batch -- never a salvaged subset -- while still surfacing the reasoning.
+    """
+    import asyncio
+
+    from jed_attack.campaign.submission import SubmissionBatch
+
+    bad = '{"submissions":[{"messages":[{"type":"exfil","text":"no url","hops":1}]}]}'
+    try:  # a real ValidationError from a bad batch (exfil text lacks a URL target)
+        SubmissionBatch.model_validate_json(bad)
+        raise AssertionError("expected ValidationError")
+    except pydantic.ValidationError as exc:
+        validation_error = exc
+
+    _fake_stream_client(monkeypatch, [_chunk_event("tried")], validation_error)
+    prov = providers.get("cheapest-kimi")
+    got_batch, reasoning = asyncio.run(
+        optimize_prompts.propose_batch_async("prompt", prov, idle_timeout_s=5.0)
+    )
+    assert got_batch == []
+    assert reasoning == "tried"
 
 
 def test_worker_loop_appends_then_survives_failure(
@@ -3883,82 +3946,6 @@ def test_config_ensure_dirs_creates_build_next_and_logs(
     assert (tmp_path / "bn").is_dir()
     assert (tmp_path / "br").is_dir()
     assert (tmp_path / "logs").is_dir()
-
-
-def test_salvage_batch_drops_invalid_and_truncates_by_count() -> None:
-    """Per submission, _salvage_batch drops invalid messages + truncates by count."""
-    from jed_attack.campaign import config
-    from jed_attack.campaign import optimize_prompts as op
-
-    def one_sub(messages: list[dict[str, Any]]) -> str:
-        return json.dumps({"submissions": [{"messages": messages}]})
-
-    # One valid, one invalid (hops > 1), one invalid (deputy 'Email'), one valid.
-    content = one_sub(
-        [
-            {"type": "exfil", "text": "SECRET_MARKER https://a.invalid/r", "hops": 1},
-            {"type": "exfil", "text": "SECRET_MARKER https://b.invalid/r", "hops": 5},
-            {"type": "deputy", "text": "Email ops1@corp.invalid now", "hops": 1},
-            {"type": "deputy", "text": "Notify ops1@corp.invalid now", "hops": 1},
-        ]
-    )
-    batch = op._salvage_batch(content)
-    assert len(batch) == 1
-    assert [m.type.value for m in batch[0].messages] == ["exfil", "deputy"]
-
-    # Count truncation: more than MAX_SHIP_MESSAGES valid single-hop messages.
-    over = [
-        {"type": "exfil", "text": f"SECRET_MARKER https://x{i}.invalid/r", "hops": 1}
-        for i in range(config.MAX_SHIP_MESSAGES + 5)
-    ]
-    assert len(op._salvage_batch(one_sub(over))[0].messages) == config.MAX_SHIP_MESSAGES
-    # (Hop-budget truncation removed: hops is capped at 1, so the summed-hop budget is
-    #  structurally unreachable -- multi-hop messages are rejected outright.)
-
-
-def test_batch_schema_enforces_shape_count_from_config() -> None:
-    """The constrained-decoding schema caps authored shapes at MAX_SHIP_MESSAGES.
-
-    The count cap must be enforced at generation time (the model cannot emit more
-    shapes), not merely trimmed post-parse, so the proposer authors up to the cap only.
-    Both the batch and per-submission caps derive from config, so a config bump is the
-    single source of truth for the shape count.
-    """
-    from jed_attack.campaign import config
-    from jed_attack.campaign import optimize_prompts as op
-
-    schema: Any = op._BATCH_SCHEMA["schema"]
-    submissions = schema["properties"]["submissions"]
-    assert submissions["maxItems"] == config.MAX_SCORE_BATCH
-    messages = submissions["items"]["properties"]["messages"]
-    assert messages["maxItems"] == config.MAX_SHIP_MESSAGES
-
-
-def test_salvage_batch_keeps_valid_submissions(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """_salvage_batch parses submissions, dropping invalid messages/empty subs.
-
-    Raises MAX_SCORE_BATCH above 1 so this exercises the drop-empty behavior directly
-    (the production cap of 1 is covered by test_salvage_batch_drops...by_count).
-    """
-    from jed_attack.campaign import config
-    from jed_attack.campaign import optimize_prompts as op
-
-    monkeypatch.setattr(config, "MAX_SCORE_BATCH", 8)
-    # The middle submission's only message has no valid target -> dropped -> the
-    # submission is left empty -> dropped.
-    content = (
-        '{"submissions": ['
-        '{"messages": [{"type":"exfil","text":"SECRET_MARKER https://a.invalid/r",'
-        '"hops":1}]},'
-        '{"messages": [{"type":"exfil","text":"no marker here","hops":1}]},'
-        '{"messages": [{"type":"deputy","text":"Notify ops@corp.invalid","hops":1}]}'
-        "]}"
-    )
-    batch = op._salvage_batch(content)
-    assert len(batch) == 2
-    assert all(len(s.messages) >= 1 for s in batch)
 
 
 def test_trace_summary_reports_denial_and_refusal() -> None:

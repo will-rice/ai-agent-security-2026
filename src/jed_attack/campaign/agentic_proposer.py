@@ -1,7 +1,7 @@
 """Agentic tool-loop proposer: a strong model live-tests candidates before submitting.
 
 The one-shot proposer (:func:`jed_attack.campaign.optimize_prompts.propose_batch_async`)
-streams a single structured reply and salvages a batch — it cannot test a hypothesis.
+streams a single structured reply and parses one batch — it cannot test a hypothesis.
 This lane instead hands a strong model native OpenAI function-calling tools so it can
 iterate:
 
@@ -228,9 +228,10 @@ async def propose_batch_agentic(
     and return. The model may call :func:`score_candidate`/:func:`get_trace` to test
     hypotheses before calling ``submit_batch``; the loop runs up to
     ``config.AGENTIC_MAX_TOOL_TURNS`` turns (one API call each). The GPU-bound scorer
-    runs off-thread (:func:`asyncio.to_thread`) so the event loop stays free. If the
-    model never calls ``submit_batch`` but emits a final text batch, that text is
-    salvaged as a fallback.
+    runs off-thread (:func:`asyncio.to_thread`) so the event loop stays free. Only
+    submissions the model hands to ``submit_batch`` (each validated there) ship; if it
+    never calls ``submit_batch``, the batch is empty -- a final text batch is not
+    salvaged.
 
     FAIL LOUD: an API error from the model call is NOT caught here — it propagates so
     the worker loop backs off and rotates, and a broken lane can never masquerade as an
@@ -243,13 +244,12 @@ async def propose_batch_agentic(
             agentic loop makes discrete (non-streaming) calls and does not use it.
 
     Returns:
-        The submitted (or salvaged) submissions (possibly empty) and the model's
-        concatenated assistant text (empty if none).
+        The submitted submissions (possibly empty) and the model's concatenated
+        assistant text (empty if none).
     """
     from jed_attack.campaign.optimize_prompts import (
         _PROPOSER_TEMPERATURE,
         _load_prompts,
-        _salvage_batch,
     )
 
     client = providers.async_openai_client(provider)
@@ -260,7 +260,6 @@ async def propose_batch_agentic(
     trace_cache: dict[str, Any] = {}
     collected: list[Submission] = []
     reasoning_parts: list[str] = []
-    last_content = ""
     for _turn in range(config.AGENTIC_MAX_TOOL_TURNS):
         # SINGLE-FLIGHT: kimi-k2.7 runs on the CheapestInference key, which cannot serve
         # concurrent requests. These create() calls MUST stay strictly sequential — one
@@ -281,10 +280,9 @@ async def propose_batch_agentic(
         )
         if message.content:
             reasoning_parts.append(message.content)
-            last_content = message.content
         tool_calls = message.tool_calls
         if not tool_calls:
-            break  # a plain text turn -> done (salvage the text below if no submit)
+            break  # a plain text turn -> done; ship only what submit_batch collected
         for tool_call in tool_calls:
             if not isinstance(tool_call, ChatCompletionMessageFunctionToolCall):
                 continue  # only function tools are defined; ignore any other kind
@@ -298,8 +296,7 @@ async def propose_batch_agentic(
             )
         if collected:
             break  # submit_batch handed back at least one valid submission -> ship it
-    batch = collected or _salvage_batch(last_content)
-    return batch, "".join(reasoning_parts)
+    return collected, "".join(reasoning_parts)
 
 
 async def _dispatch_tool_call(

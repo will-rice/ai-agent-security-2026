@@ -171,7 +171,11 @@ class SubmissionBatch(BaseModel):
     templates that code fills into the shipped candidate list.
     """
 
-    submissions: list[Submission]
+    submissions: list[Submission] = Field(
+        min_length=1,
+        max_length=config.MAX_SCORE_BATCH,
+        description="Complete candidate submissions authored in this reply (1..cap).",
+    )
 
 
 def target_count(text: str) -> int:
