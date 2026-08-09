@@ -211,6 +211,10 @@ async def worker_loop(
         run: The shared W&B run to log to, or ``None``.
     """
     gen = 0
+    # Per-model [valid, dropped] tally so a lane's log/wandb shows which models author a
+    # parseable batch and which drop out (validation failure or refusal). Drop-prone
+    # models are pruned from config.TEAM_PROPOSERS once the rate is clear.
+    outcomes: dict[str, list[int]] = {}
     while True:
         provider = providers_cycle[gen % len(providers_cycle)]
         advance_provider = True
@@ -245,10 +249,22 @@ async def worker_loop(
                 batch, reasoning = await propose_batch_async(
                     prompt, provider, timeout_s
                 )
-            if not batch:  # a refusal / no-JSON reply -> skip, rotate to the next model
-                _log.warning("worker %d: empty batch; skipping generation", worker_id)
+            tally = outcomes.setdefault(model, [0, 0])
+            if not batch:  # validation failure / refusal -> drop WHOLE, rotate model
+                tally[1] += 1
+                _log.warning(
+                    "worker %d (%s): batch dropped; model tally valid=%d dropped=%d",
+                    worker_id,
+                    model,
+                    tally[0],
+                    tally[1],
+                )
+                _log_wandb(
+                    run, {"model": model, "worker": worker_id, "batch_dropped": 1.0}
+                )
                 gen += 1
                 continue
+            tally[0] += 1
             scores = await _score_batch(batch)
             assessments = await _assess_batch(batch, scores, reference_mechanisms)
             round0_public = mean(sc.public for sc in scores)
@@ -339,6 +355,7 @@ async def worker_loop(
                     "shadow_prefers_refined": float(shadow_decision.winner == "b"),
                     **_batch_score_metrics(local_scores),
                     **_judge_summary_metrics(local_assessments),
+                    "batch_dropped": 0.0,  # per-model drop gauge (1.0 on drop path)
                     "model": provider.model,
                     "worker": worker_id,
                     **{
@@ -1511,16 +1528,25 @@ async def propose_batch_async(
     except pydantic.ValidationError:
         # A structurally valid reply whose messages break the ship invariants (bad type,
         # hops != target count) fails the SubmissionBatch parse: drop the WHOLE batch.
-        _log.info("proposed batch dropped: failed SubmissionBatch validation")
+        _log.info(
+            "proposed batch dropped (%s): failed SubmissionBatch validation",
+            provider.model,
+        )
         return [], "".join(reasoning)
     except Exception as exc:
         if "concurrency limit" in str(exc).lower():
             _log.warning("CI concurrency 429 on %s (experiment signal)", provider.model)
         raise
     parsed = completion.choices[0].message.parsed
-    submissions = parsed.submissions if parsed else []
-    _log.info("proposed batch: %d submissions", len(submissions))
-    return submissions, "".join(reasoning)
+    if parsed is None:
+        # No structured content: a refusal, or a thinking model that spent its whole
+        # budget on reasoning. Distinct from a validation failure for drop-rate triage.
+        _log.info("proposed batch dropped (%s): no parsed content", provider.model)
+        return [], "".join(reasoning)
+    _log.info(
+        "proposed batch (%s): %d submissions", provider.model, len(parsed.submissions)
+    )
+    return parsed.submissions, "".join(reasoning)
 
 
 def _log_wandb(run: _WandbRun | None, metrics: dict[str, Any]) -> None:
