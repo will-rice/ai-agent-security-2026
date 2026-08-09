@@ -1502,16 +1502,34 @@ def test_robustness_lambda_stamps_distinct_objective_scheme() -> None:
     """A non-zero robustness or portfolio weight earns its own scheme tag/pool."""
     from jed_attack.campaign import blackboard, config
 
-    assert blackboard.objective_scheme_name(0.0) == "public_raw_per_gen_char_v12"
-    assert blackboard.objective_scheme_name(0.5) == "robust0.5_raw_per_gen_char_v12"
-    assert blackboard.objective_scheme_name(1.0) == "robust1_raw_per_gen_char_v12"
+    assert blackboard.objective_scheme_name(0.0) == "rules_raw_per_gen_char_v13"
+    assert (
+        blackboard.objective_scheme_name(0.5) == "robust0.5_rules_raw_per_gen_char_v13"
+    )
+    assert blackboard.objective_scheme_name(1.0) == "robust1_rules_raw_per_gen_char_v13"
     assert (
         blackboard.objective_scheme_name(0.0, 2.0)
-        == "portfolio2_public_raw_per_gen_char_v12"
+        == "portfolio2_rules_raw_per_gen_char_v13"
     )
     # OBJECTIVE_NAME reflects the live weights (portfolio diversity is on by default).
     assert blackboard.OBJECTIVE_NAME == blackboard.objective_scheme_name(
         config.ROBUSTNESS_LAMBDA, config.PORTFOLIO_LAMBDA
+    )
+
+
+def test_objective_scheme_encodes_gate_guardrail_v13() -> None:
+    """The scheme tag encodes the gate guardrail and bumps to v13, retiring EXFIL."""
+    from jed_attack.campaign import blackboard as bb
+    from jed_attack.campaign import config
+
+    assert bb.objective_scheme_name(0.0, 0.0) == "rules_raw_per_gen_char_v13"
+    # OBJECTIVE_NAME carries the live weights (portfolio diversity is on by default),
+    # but its base always encodes the gate guardrail + v13.
+    assert bb.OBJECTIVE_NAME == bb.objective_scheme_name(
+        config.ROBUSTNESS_LAMBDA, config.PORTFOLIO_LAMBDA
+    )
+    assert bb.OBJECTIVE_NAME.endswith(
+        config.GATE_GUARDRAIL_NAME + "_raw_per_gen_char_v13"
     )
 
 
@@ -3225,7 +3243,7 @@ def test_blackboard_ships_champion_as_filled_json(tmp_path: Path) -> None:
     assert src.count("http.post") > 5
     assert "SECRET_MARKER" in src
     assert not hasattr(board, "top_distinct_shapes")
-    assert "_v12" in bb.OBJECTIVE_NAME
+    assert "_v13" in bb.OBJECTIVE_NAME
 
 
 def test_blackboard_prefers_current_scheme_over_stale_scale_champion(

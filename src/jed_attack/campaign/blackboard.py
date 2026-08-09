@@ -34,22 +34,26 @@ _log = logging.getLogger(__name__)
 # See _objective_key. A non-zero robustness weight blends the mean rate toward the
 # worst model's rate, which rescales the objective, so it earns its own tag and pool.
 def objective_scheme_name(
-    robustness_lambda: float, portfolio_lambda: float = 0.0
+    robustness_lambda: float,
+    portfolio_lambda: float = 0.0,
+    gate: str = config.GATE_GUARDRAIL_NAME,
 ) -> str:
     """Scheme tag for the current objective weights.
 
-    The objective is the projected filled+trimmed public board (LB points), taken as the
-    MIN over models (a shape that does not fire on every model scores 0), with cost
-    ``gen_chars + TURN_COST_WEIGHT*agent_turns`` (chars-primary, fitted from the T4
-    sweep). Diversity is a LEXICOGRAPHIC tiebreaker (``objective_tiebreaker`` = distinct
-    both-model shapes), NOT added to the objective. The ``v12`` bump retires the
-    additive v11 pool (whose stored ``objective`` folded in the diversity bonus and so
-    is not comparable to the throughput-only objective); a non-zero robustness weight
-    rescales it and a non-zero portfolio weight tags diversity-on, each its own pool.
+    The objective is the projected filled+trimmed gate-guardrail board (LB points),
+    taken as the MIN over models (a shape that does not fire on every model scores 0),
+    with cost ``gen_chars + TURN_COST_WEIGHT*agent_turns`` (chars-primary, fitted from
+    the T4 sweep). Diversity is a LEXICOGRAPHIC tiebreaker (``objective_tiebreaker`` =
+    distinct both-model shapes), NOT added to the objective. The ``v13`` bump retires
+    the EXFIL-era ``public_raw_per_gen_char_v12`` pool: the scheme now encodes the gate
+    guardrail (``config.GATE_GUARDRAIL_NAME``) so switching guardrails auto-starts a
+    clean pool instead of comparing incomparable magnitudes; a non-zero robustness
+    weight rescales it and a non-zero portfolio weight tags diversity-on, each its own
+    pool.
     """
-    base = "public_raw_per_gen_char_v12"
+    base = f"{gate}_raw_per_gen_char_v13"
     if robustness_lambda != 0.0:
-        base = f"robust{robustness_lambda:g}_raw_per_gen_char_v12"
+        base = f"robust{robustness_lambda:g}_{gate}_raw_per_gen_char_v13"
     if portfolio_lambda != 0.0:
         base = f"portfolio{portfolio_lambda:g}_{base}"
     return base
