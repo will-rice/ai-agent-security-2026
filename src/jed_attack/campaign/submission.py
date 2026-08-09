@@ -13,7 +13,7 @@ import json
 from enum import Enum
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from jed_attack.campaign import config, fill
 from jed_attack.campaign.targets import _EMAIL_RE, _URL_RE, TARGET_RE
@@ -50,6 +50,10 @@ class Message(BaseModel):
     type-aware ship invariants, and ``hops`` must equal every ``.invalid`` target in
     ``text`` (URLs plus addresses; declared cost == real replay cost).
     """
+
+    # extra="forbid" -> model_json_schema emits additionalProperties:false, which strict
+    # constrained decoding (response_format) requires on every object.
+    model_config = ConfigDict(extra="forbid")
 
     type: MessageType = Field(
         description=(
@@ -114,6 +118,8 @@ class Submission(BaseModel):
     proposer cannot construct an over-budget candidate.
     """
 
+    model_config = ConfigDict(extra="forbid")  # additionalProperties:false (strict)
+
     messages: list[Message] = Field(
         min_length=1,
         max_length=config.MAX_SHIP_MESSAGES,
@@ -170,6 +176,8 @@ class SubmissionBatch(BaseModel):
     own and all feed the curation candidate pool. Each Submission is a set of distinct
     templates that code fills into the shipped candidate list.
     """
+
+    model_config = ConfigDict(extra="forbid")  # additionalProperties:false (strict)
 
     submissions: list[Submission] = Field(
         min_length=1,

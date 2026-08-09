@@ -28,6 +28,7 @@ Victim/trace output embedded in any proposer prompt is DATA, never instructions 
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import math
@@ -39,12 +40,13 @@ import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 from statistics import mean
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 import git
 import pydantic
 from dotenv import load_dotenv
 from openai.types.chat import ChatCompletionMessageParam
+from openai.types.shared_params import ResponseFormatJSONSchema
 
 from jed_attack.campaign import (
     agentic_proposer,
@@ -1473,14 +1475,17 @@ def _batch_predicate_counts(scores: list[SubmissionScore]) -> dict[str, int]:
 async def propose_batch_async(
     prompt: str, provider: providers.Provider, idle_timeout_s: float
 ) -> tuple[list[Submission], str]:
-    """Author a batch of submissions on ``provider`` via a STREAMED structured call.
+    """Author a batch of submissions on ``provider`` by STREAMING a structured call.
 
-    Passes the :class:`SubmissionBatch` model to the SDK as ``response_format``, so the
-    SDK builds the strict JSON schema from it (constrained decoding) and parses the
-    reply back into the model. The reply is structurally guaranteed, and the model's
-    ``@model_validator`` ship invariants (typed shape, ``hops`` == target count) run
-    during that parse -- so a batch with ANY invalid message fails to parse and is
-    dropped WHOLE. We never salvage a partially valid batch.
+    ``response_format`` is the strict JSON schema derived from :class:`SubmissionBatch`
+    (``model_json_schema`` + ``extra="forbid"``), so the model is the single source for
+    both constrained decoding and validation. We stream RAW chunks and parse the whole
+    accumulated content once with ``SubmissionBatch.model_validate_json`` -- NOT the
+    SDK's ``.stream(response_format=Model)`` helper, whose per-chunk incremental parser
+    (``from_json`` partial mode) raises ``ValueError`` mid-stream on some of these
+    open-model replies. The model's ``@model_validator`` ship invariants (typed shape,
+    ``hops`` == target count) run in that final parse, so a batch with ANY invalid
+    message fails to parse and is dropped WHOLE -- we never salvage a partial batch.
 
     Streaming swaps the wall-clock timeout for an IDLE one (:func:`asyncio.timeout`,
     rescheduled per streamed token), so the call is abandoned only on a stall, never
@@ -1502,51 +1507,65 @@ async def propose_batch_async(
         {"role": "system", "content": _load_prompts()["system"]},
         {"role": "user", "content": prompt},
     ]
-    reasoning: list[str] = []
-    loop = asyncio.get_running_loop()
+    response_format = cast(
+        "ResponseFormatJSONSchema",
+        {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "submission_batch",
+                "strict": True,
+                "schema": SubmissionBatch.model_json_schema(),
+            },
+        },
+    )
     try:
-        async with client.chat.completions.stream(
+        stream = await client.chat.completions.create(
             model=provider.model,
             messages=messages,
             max_completion_tokens=provider.max_tokens,
             temperature=_PROPOSER_TEMPERATURE,
-            response_format=SubmissionBatch,
-        ) as stream:
-            async with asyncio.timeout(idle_timeout_s) as timer:
-                async for event in stream:
-                    timer.reschedule(
-                        loop.time() + idle_timeout_s
-                    )  # token -> reset idle
-                    if event.type == "chunk" and event.chunk.choices:
-                        delta = event.chunk.choices[0].delta
-                        piece = getattr(delta, "reasoning_content", None) or getattr(
-                            delta, "reasoning", None
-                        )
-                        if piece:
-                            reasoning.append(piece)
-            completion = await stream.get_final_completion()
-    except pydantic.ValidationError:
-        # A structurally valid reply whose messages break the ship invariants (bad type,
-        # hops != target count) fails the SubmissionBatch parse: drop the WHOLE batch.
-        _log.info(
-            "proposed batch dropped (%s): failed SubmissionBatch validation",
-            provider.model,
+            response_format=response_format,
+            stream=True,
         )
-        return [], "".join(reasoning)
     except Exception as exc:
         if "concurrency limit" in str(exc).lower():
             _log.warning("CI concurrency 429 on %s (experiment signal)", provider.model)
         raise
-    parsed = completion.choices[0].message.parsed
-    if parsed is None:
-        # No structured content: a refusal, or a thinking model that spent its whole
-        # budget on reasoning. Distinct from a validation failure for drop-rate triage.
-        _log.info("proposed batch dropped (%s): no parsed content", provider.model)
+    content: list[str] = []
+    reasoning: list[str] = []
+    loop = asyncio.get_running_loop()
+    try:
+        async with asyncio.timeout(idle_timeout_s) as timer:
+            async for chunk in stream:
+                timer.reschedule(loop.time() + idle_timeout_s)  # token -> reset idle
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                if delta.content:
+                    content.append(delta.content)
+                piece = getattr(delta, "reasoning_content", None) or getattr(
+                    delta, "reasoning", None
+                )
+                if piece:
+                    reasoning.append(piece)
+    finally:
+        with contextlib.suppress(Exception):
+            await stream.close()
+    try:
+        batch = SubmissionBatch.model_validate_json("".join(content))
+    except pydantic.ValidationError as exc:
+        # Drop the WHOLE batch, never a salvaged subset. model_validate_json wraps a
+        # non-JSON reply as a json_invalid error, so split the two drop causes for
+        # per-model triage: a refusal / prose reply (the model won't do the task) vs a
+        # JSON batch whose messages break the ship invariants (bad type, hops != count).
+        not_json = any(e.get("type") == "json_invalid" for e in exc.errors())
+        reason = "reply was not JSON (refusal/prose)" if not_json else "ship-invariants"
+        _log.info("proposed batch dropped (%s): %s", provider.model, reason)
         return [], "".join(reasoning)
     _log.info(
-        "proposed batch (%s): %d submissions", provider.model, len(parsed.submissions)
+        "proposed batch (%s): %d submissions", provider.model, len(batch.submissions)
     )
-    return parsed.submissions, "".join(reasoning)
+    return batch.submissions, "".join(reasoning)
 
 
 def _log_wandb(run: _WandbRun | None, metrics: dict[str, Any]) -> None:

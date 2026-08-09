@@ -743,54 +743,43 @@ def test_infer_message_type_prefers_url_over_address() -> None:
     )
 
 
-def _chunk_event(reasoning: str) -> SimpleNamespace:
-    """A stream ``chunk`` event carrying a reasoning delta (no content)."""
-    delta = SimpleNamespace(content=None, reasoning_content=reasoning)
-    return SimpleNamespace(
-        type="chunk", chunk=SimpleNamespace(choices=[SimpleNamespace(delta=delta)])
-    )
+def _chunk(content: object = None, reasoning: object = None) -> SimpleNamespace:
+    """A raw stream chunk carrying a content and/or reasoning delta."""
+    delta = SimpleNamespace(content=content, reasoning_content=reasoning)
+    return SimpleNamespace(choices=[SimpleNamespace(delta=delta)])
 
 
 def _fake_stream_client(
-    monkeypatch: pytest.MonkeyPatch,
-    events: list[SimpleNamespace],
-    final: object,
+    monkeypatch: pytest.MonkeyPatch, chunks: list[SimpleNamespace]
 ) -> None:
-    """Fake async_openai_client for the propose_batch_async stream/parse tests.
+    """Fake async_openai_client whose create(stream=True) yields ``chunks``.
 
-    ``stream()`` yields ``events``; ``get_final_completion()`` returns ``final`` (or
-    raises it when ``final`` is an Exception).
+    propose_batch_async accumulates the raw content and parses it once at the end, so
+    the fake only has to replay the chunk stream -- no incremental parsing.
     """
 
     class FakeStream:
         def __init__(self) -> None:
             self._i = 0
 
-        async def __aenter__(self) -> "FakeStream":
-            return self
-
-        async def __aexit__(self, *_: object) -> bool:
-            return False
-
         def __aiter__(self) -> "FakeStream":
             return self
 
         async def __anext__(self) -> SimpleNamespace:
-            if self._i >= len(events):
+            if self._i >= len(chunks):
                 raise StopAsyncIteration
-            event = events[self._i]
+            chunk = chunks[self._i]
             self._i += 1
-            return event
+            return chunk
 
-        async def get_final_completion(self) -> object:
-            if isinstance(final, Exception):
-                raise final
-            return final
+        async def close(self) -> None:
+            return None
+
+    async def create(**_: object) -> FakeStream:
+        return FakeStream()
 
     class FakeClient:
-        chat = SimpleNamespace(
-            completions=SimpleNamespace(stream=lambda **_: FakeStream())
-        )
+        chat = SimpleNamespace(completions=SimpleNamespace(create=create))
 
     monkeypatch.setattr(providers, "async_openai_client", lambda p: FakeClient())
 
@@ -798,31 +787,20 @@ def _fake_stream_client(
 def test_propose_batch_async_streams_and_parses(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Stream reasoning events, then return the SDK-parsed SubmissionBatch."""
+    """Accumulate raw content + reasoning, then parse the full SubmissionBatch."""
     import asyncio
 
-    from jed_attack.campaign.submission import SubmissionBatch
-
-    parsed = SubmissionBatch.model_validate(
-        {
-            "submissions": [
-                {
-                    "messages": [
-                        {
-                            "type": "exfil",
-                            "text": "SECRET_MARKER https://a.invalid/r",
-                            "hops": 1,
-                        }
-                    ]
-                }
-            ]
-        }
-    )
-    final = SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(parsed=parsed))]
+    json_out = (
+        '{"submissions":[{"messages":[{"type":"exfil",'
+        '"text":"SECRET_MARKER https://a.invalid/r","hops":1}]}]}'
     )
     _fake_stream_client(
-        monkeypatch, [_chunk_event("weighed "), _chunk_event("diversity")], final
+        monkeypatch,
+        [
+            _chunk(reasoning="weighed "),
+            _chunk(reasoning="diversity"),
+            _chunk(content=json_out),
+        ],
     )
     prov = providers.get("cheapest-kimi")
     got_batch, reasoning = asyncio.run(
@@ -838,28 +816,37 @@ def test_propose_batch_async_drops_batch_that_fails_validation(
 ) -> None:
     """A structurally valid reply that fails the ship invariants is dropped WHOLE.
 
-    The SDK parse (model_validate_json) runs the Message validators, so a batch with an
+    The final model_validate_json runs the Message validators, so a batch with an
     invalid message raises ValidationError; propose_batch_async catches it and returns
     an empty batch -- never a salvaged subset -- while still surfacing the reasoning.
     """
     import asyncio
 
-    from jed_attack.campaign.submission import SubmissionBatch
-
     bad = '{"submissions":[{"messages":[{"type":"exfil","text":"no url","hops":1}]}]}'
-    try:  # a real ValidationError from a bad batch (exfil text lacks a URL target)
-        SubmissionBatch.model_validate_json(bad)
-        raise AssertionError("expected ValidationError")
-    except pydantic.ValidationError as exc:
-        validation_error = exc
-
-    _fake_stream_client(monkeypatch, [_chunk_event("tried")], validation_error)
+    _fake_stream_client(monkeypatch, [_chunk(reasoning="tried"), _chunk(content=bad)])
     prov = providers.get("cheapest-kimi")
     got_batch, reasoning = asyncio.run(
         optimize_prompts.propose_batch_async("prompt", prov, idle_timeout_s=5.0)
     )
     assert got_batch == []
     assert reasoning == "tried"
+
+
+def test_propose_batch_async_drops_non_json_reply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-JSON reply (refusal / prose) is dropped, not raised; the loop survives."""
+    import asyncio
+
+    _fake_stream_client(
+        monkeypatch, [_chunk(content="I can't help with that."), _chunk(reasoning="no")]
+    )
+    prov = providers.get("cheapest-kimi")
+    got_batch, reasoning = asyncio.run(
+        optimize_prompts.propose_batch_async("prompt", prov, idle_timeout_s=5.0)
+    )
+    assert got_batch == []
+    assert reasoning == "no"
 
 
 def test_worker_loop_appends_then_survives_failure(
