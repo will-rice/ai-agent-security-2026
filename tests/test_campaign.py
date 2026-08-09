@@ -649,18 +649,20 @@ def test_exfil_accepts_short_co_targets_and_counts_them() -> None:
     assert _exfil(text, 1)
 
 
-def test_count_cap_makes_hop_budget_unreachable_under_stopgap() -> None:
-    """The count cap is the sole binding submission-level limit at the stopgap.
+def test_count_cap_makes_hop_budget_unreachable() -> None:
+    """The summed-hop budget stays unreachable, so the count cap is the binding limit.
 
-    At cap=25 the summed-hop budget is unreachable (MAX_SHIP_MESSAGES * EVAL_HOPS <=
-    HOP_BUDGET); hops are not binding, the real T4 limit is wall-clock replay time
-    (~9000s/model), for which the count cap is a proxy. This tripwire fires if the cap
-    is later raised so the hop budget becomes reachable -- then the summed-hop validator
-    (and a rejection test) should return alongside a real replay-time model.
+    Every authored message is pinned to exactly ONE hop (one target -- one exfil URL or
+    one deputy address), so a full submission's worst-case summed hops is just
+    MAX_SHIP_MESSAGES. That stays under HOP_BUDGET, so hops are not the binding
+    constraint -- the real T4 limit is wall-clock replay time (~9000s/model), enforced
+    at grade time by the fill trim. This tripwire fires if the count cap is ever raised
+    past the hop budget, at which point the summed-hop validator would start rejecting
+    submissions and would need a real replay-time model instead.
     """
     from jed_attack.campaign import config
 
-    assert config.MAX_SHIP_MESSAGES * config.EVAL_HOPS <= config.HOP_BUDGET
+    assert config.MAX_SHIP_MESSAGES <= config.HOP_BUDGET
 
 
 def test_validate_message_is_type_aware() -> None:
@@ -3914,6 +3916,24 @@ def test_salvage_batch_drops_invalid_and_truncates_by_count() -> None:
     #  structurally unreachable -- multi-hop messages are rejected outright.)
 
 
+def test_batch_schema_enforces_shape_count_from_config() -> None:
+    """The constrained-decoding schema caps authored shapes at MAX_SHIP_MESSAGES.
+
+    The count cap must be enforced at generation time (the model cannot emit more
+    shapes), not merely trimmed post-parse, so the proposer authors up to the cap only.
+    Both the batch and per-submission caps derive from config, so a config bump is the
+    single source of truth for the shape count.
+    """
+    from jed_attack.campaign import config
+    from jed_attack.campaign import optimize_prompts as op
+
+    schema: Any = op._BATCH_SCHEMA["schema"]
+    submissions = schema["properties"]["submissions"]
+    assert submissions["maxItems"] == config.MAX_SCORE_BATCH
+    messages = submissions["items"]["properties"]["messages"]
+    assert messages["maxItems"] == config.MAX_SHIP_MESSAGES
+
+
 def test_salvage_batch_keeps_valid_submissions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -4738,6 +4758,7 @@ def test_judge_prompt_delimiters_cannot_be_injected() -> None:
 
 def test_judge_request_models_bound_attacker_controlled_facts() -> None:
     """Judge request validation rejects oversized replay evidence before prompting."""
+    from jed_attack.campaign import config
     from jed_attack.campaign.judge import (
         MechanismRequest,
         ReplayMessageFacts,
@@ -4760,7 +4781,7 @@ def test_judge_request_models_bound_attacker_controlled_facts() -> None:
     with pytest.raises(pydantic.ValidationError):
         ReplayMessageFacts.model_validate(fact_data)
     request_data: dict[str, object] = _judge_request().model_dump()
-    request_data["messages"] = [message.model_dump()] * 31
+    request_data["messages"] = [message.model_dump()] * (config.MAX_SHIP_MESSAGES + 1)
     with pytest.raises(pydantic.ValidationError):
         RobustnessRequest.model_validate(request_data)
     with pytest.raises(pydantic.ValidationError):

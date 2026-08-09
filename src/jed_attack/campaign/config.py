@@ -168,16 +168,19 @@ BLACKBOARD_LOG = CAMPAIGN_ROOT / "blackboard.jsonl"
 # so it is the JSON schema's maxItems (what the proposer sees) AND the validation rule
 # from one source -- no drift. HOP_BUDGET is a summed-hop cap with no schema form,
 # enforced in a model_validator.
-#   MAX_SHIP_MESSAGES (30): candidate count is the BINDING score lever -- scoring has no
-#     dedup, so each firing candidate adds severity + a novelty cell. The real T4 limit
-#     is a 9000s/model WALL-CLOCK replay budget; the v11 verify measured ~241 T4-s per
-#     candidate, so 30 candidates ≈ 7230s ≈ 80% of the budget (~20% margin). Was 25 when
-#     the budget was mis-modeled as too tight; raise further (toward ~33) only after a
-#     verify confirms the larger size. See memory jed-t4-replay-time-budget.
+#   MAX_SHIP_MESSAGES (100): the count of DISTINCT shapes the proposer authors -- now
+#     truly enforced by constrained decoding (_BATCH_SCHEMA messages maxItems) as well
+#     as the pydantic Field(max_length). It is NOT the shipped candidate count: fill
+#     expands shapes to SHIP_CANDIDATE_CAP unique-URL candidates and the shipped
+#     attack.py self-trims to the T4 replay budget at grade time, so this cap does not
+#     gate that budget. It bounds (a) local per-generation scoring cost (each shape is
+#     replayed once per model) and (b) the shipped fill's TEXT diversity, a private
+#     hedge (public novelty is URL-domain-keyed, so a few shapes already max the cells).
+#     Raise for diversity, trading local scoring time.
 #   HOP_BUDGET (391): total tool-hop budget (85% of the 460-hop fail point). NOTE: hops
 #     are NOT the binding constraint -- wall-clock replay time is; this is a loose upper
-#     bound only (30 x 8 = 240 hops, well under).
-MAX_SHIP_MESSAGES = 30
+#     bound only (single-post shapes are 1 hop each, well under).
+MAX_SHIP_MESSAGES = 100
 HOP_BUDGET = 391
 
 # Candidates the dump materializes into the shipped JSON. The artifact trims this to the

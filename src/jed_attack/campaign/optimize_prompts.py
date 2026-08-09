@@ -1477,6 +1477,7 @@ _BATCH_SCHEMA = {
                     "properties": {
                         "messages": {
                             "type": "array",
+                            "maxItems": config.MAX_SHIP_MESSAGES,
                             "items": {
                                 "type": "object",
                                 "additionalProperties": False,
