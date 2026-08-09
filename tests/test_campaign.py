@@ -1655,21 +1655,21 @@ def test_make_record_persists_private_proxy_feedback() -> None:
 
 
 def test_submission_prompt_promotes_deputy_to_active_slots() -> None:
-    """The proposer contract reserves active slots for additive deputy candidates."""
+    """The proposer contract makes CONFUSED_DEPUTY the sole authored objective."""
     from jed_attack.campaign import optimize_prompts as op
 
     prompt = op.submission_prompt(None, [], {}, top_messages={}, reasoning=[])
 
     assert "SHADOW-ONLY" not in prompt  # deputy is no longer shadow-only
-    assert "DEPUTY (reserve 1-2 slots)" in prompt
+    assert "single-post DEPUTY (email.send)" in prompt
     assert "CONFUSED_DEPUTY" in prompt
-    assert "ADDITIVE" in prompt
+    assert "FORBIDDEN" in prompt
     # deputy-legal firing: indirect, names a clean recipient address
     assert "user@ops.invalid" in prompt
 
 
 def test_submission_prompt_steers_toward_distinct_templates() -> None:
-    """Proposer prompt names distinct-template authoring (code fills URLs)."""
+    """Proposer prompt names distinct-template authoring (code fills addresses)."""
     from jed_attack.campaign import optimize_prompts as op
 
     prompt = op.submission_prompt(None, [], {}, top_messages={}, reasoning=[])
@@ -1678,7 +1678,7 @@ def test_submission_prompt_steers_toward_distinct_templates() -> None:
         prompt
     )
     assert "distinct templates" in prompt
-    assert "Code fills the URLs" in prompt
+    assert "Code fills the addresses" in prompt
     assert "Then answer OK only" not in prompt
 
 
@@ -2980,14 +2980,14 @@ def test_submission_prompt_steers_single_post_throughput_not_url_packing() -> No
     assert "8 urls = 8 posts" not in prompt
 
 
-def test_submission_prompt_mentions_short_co_exfil_targets() -> None:
-    """The proposer prompt exposes the public Kaggle short-.co target family."""
+def test_submission_prompt_mentions_invalid_deputy_targets() -> None:
+    """The proposer prompt exposes the deputy .invalid recipient-address family."""
     from jed_attack.campaign import optimize_prompts as op
 
     prompt = op.submission_prompt(None, [], {}, top_messages={}, reasoning=[])
 
-    assert "http://<name>.co" in prompt
-    assert ".invalid or short .co" in prompt
+    assert "user@<host>.invalid" in prompt
+    assert "user@ops.invalid" in prompt
 
 
 def test_submission_prompt_embeds_team_digest() -> None:
@@ -6200,3 +6200,21 @@ def test_gate_guardrail_is_rules_and_blocks_exfil_allows_deputy() -> None:
     )
     assert "deny" in str(exfil.action).lower()
     assert "allow" in str(deputy.action).lower()
+
+
+def test_prompt_targets_deputy_not_exfil() -> None:
+    """The proposer prompt's task backbone is deputy authoring, not EXFIL."""
+    import tomllib
+    from pathlib import Path
+
+    from jed_attack.campaign import config as _c
+
+    p = Path(_c.__file__).parent / "prompts.toml"
+    with p.open("rb") as f:
+        d = tomllib.load(f)
+    t = d["template"]
+    assert "email.send" in t and "CONFUSED_DEPUTY" in t
+    # deputy authorizing terms must be called out as FORBIDDEN in the message text
+    assert "send" in t.lower() and "forbidden" in t.lower()
+    # EXFIL is no longer the task backbone
+    assert "SECRET_MARKER" not in t
