@@ -6,11 +6,11 @@ This lane instead hands a strong model native OpenAI function-calling tools so i
 iterate:
 
 1. :func:`score_candidate` builds a :class:`~jed_attack.campaign.submission.Message`
-   (EXFIL if the text contains ``SECRET_MARKER``, else DEPUTY), replays it on the SAME
-   in-process scorer the outer loop uses, and returns whether it fired, its
-   deterministic generated-char cost, and — critically — the
-   victim's ``raw_gen_sample`` (gpt_oss's harmony analysis channel), so the model SEES
-   the deliberation whose characters are the cost and can reshape the attack to suppress
+   (EXFIL if the text contains ``SECRET_MARKER`` or an http URL, else DEPUTY), replays
+   it on the SAME in-process scorer the outer loop uses, and returns whether it fired,
+   its deterministic generated-char cost, and — critically — the victim's
+   ``raw_gen_sample`` (gpt_oss's harmony analysis channel), so the model SEES the
+   deliberation whose characters are the cost and can reshape the attack to suppress
    it;
 2. :func:`get_trace` returns the full cached victim trace for a prior score;
 3. ``submit_batch`` hands back the finished batch of full submissions.
@@ -57,8 +57,9 @@ def score_candidate(text: str, trace_cache: dict[str, Any]) -> dict[str, Any]:
     """Score a candidate on the in-process scorer; cache its trace; return stats.
 
     The message type is inferred from content: EXFIL if ``text`` contains
-    ``SECRET_MARKER``, otherwise DEPUTY. Deterministic (the same scorer, seed, and
-    backends as the outer loop), so a tool score equals the loop's later re-score.
+    ``SECRET_MARKER`` or an http URL, otherwise DEPUTY. Deterministic (the same scorer,
+    seed, and backends as the outer loop), so a tool score equals the loop's later
+    re-score.
     ``hops`` is set with :func:`target_count` (the exact union-target count the
     :class:`~jed_attack.campaign.submission.Message` validator enforces), so a candidate
     is constructible regardless of how many targets the text names.

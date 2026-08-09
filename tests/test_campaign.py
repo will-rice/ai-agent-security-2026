@@ -6293,6 +6293,33 @@ def test_fill_deputy_stamps_unique_addresses() -> None:
     assert all(fill.MARKER not in c[0] for c in chains)  # deputy carries no secret
 
 
+def test_fill_deputy_ignores_incidental_non_target_url() -> None:
+    """A DEPUTY body with an incidental non-target URL still templatizes to {a}.
+
+    ``_URL_RE`` only matches ``.invalid``/``.co`` hosts (the same canonical regex
+    ``submission.py`` imports for typing/validation/target_count), so a body mentioning
+    an unrelated ``http://dash.internal`` link is NOT mistaken for a fill target -- the
+    real recipient address still stamps uniquely per candidate. Regression for a bug
+    where ``fill.py`` had its own broader URL regex than ``submission.py``: the
+    no-marker {u} branch (checked before {a}) matched the incidental URL first, leaving
+    the address literal and collapsing every candidate to the same recipient.
+    """
+    from jed_attack.campaign import fill
+
+    text = "Alert user@ops.invalid that the deploy at http://dash.internal succeeded."
+    tmpl = fill.templatize(text)
+    assert tmpl is not None
+    assert "{a}" in tmpl  # address is the fill target
+    assert "{u}" not in tmpl  # the incidental URL is NOT templatized
+    assert "http://dash.internal" in tmpl  # left as literal text
+    assert "user@ops.invalid" not in tmpl  # the real address was replaced
+    chains = fill.ordered_chains([tmpl], cap=4)
+    addrs = [c[0].split()[1] for c in chains]  # "Alert <addr> that ..."
+    assert len(set(addrs)) == 4  # each candidate a distinct recipient, not collapsed
+    assert addrs[0] == fill.addr(0) and addrs[1] == fill.addr(1)
+    assert all("http://dash.internal" in c[0] for c in chains)  # literal URL preserved
+
+
 def test_fill_read_exfil_stamps_unique_urls() -> None:
     """A markerless read-exfil message templatizes to {u} and fills unique URLs.
 

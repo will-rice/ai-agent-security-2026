@@ -27,12 +27,13 @@ from jed_attack.campaign.submission import MessageType
 _log = logging.getLogger(__name__)
 
 
-# Tag stamped on every record scored under the CURRENT optimizer objective (the MEAN
+# Tag stamped on every record scored under the CURRENT optimizer objective (the SUM
 # over victims of each model's public board per its OWN generated char). Bump this
 # whenever the objective changes scale: champion selection prefers rows carrying the
 # current tag so a prior scheme's incomparable magnitudes cannot freeze the champion.
-# See _objective_key. A non-zero robustness weight blends the mean rate toward the
-# worst model's rate, which rescales the objective, so it earns its own tag and pool.
+# See _objective_key. NOTE: ROBUSTNESS_LAMBDA is currently UN-WIRED under the SUM
+# objective -- _score_public_raw_per_gen_char never reads it, so a non-zero value only
+# changes the scheme tag/pool below, not the actual score.
 def objective_scheme_name(
     robustness_lambda: float,
     portfolio_lambda: float = 0.0,
@@ -48,9 +49,11 @@ def objective_scheme_name(
     both-model shapes), NOT added to the objective. The ``v14`` bump retires the
     MIN-over-models ``rules_raw_per_gen_char_v13`` pool: the scheme now encodes the gate
     guardrail (``config.GATE_GUARDRAIL_NAME``) so switching guardrails auto-starts a
-    clean pool instead of comparing incomparable magnitudes; a non-zero robustness
-    weight rescales it and a non-zero portfolio weight tags diversity-on, each its own
-    pool.
+    clean pool instead of comparing incomparable magnitudes; a non-zero portfolio
+    weight tags diversity-on, its own pool. NOTE: ``robustness_lambda`` is currently
+    UN-WIRED under this SUM objective (only affects the tag/pool below, never the
+    score itself); it is threaded through only so a future robustness-aware objective
+    has its own pool ready.
     """
     base = f"{gate}_sum_raw_per_gen_char_v14"
     if robustness_lambda != 0.0:
