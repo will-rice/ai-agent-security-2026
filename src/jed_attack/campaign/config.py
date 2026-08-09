@@ -261,8 +261,9 @@ GATE_GUARDRAIL_NAME = "rules"
 # extra per-submission inference cost to a fixed count, not O(submission size).
 INTROSPECT_WORST_N = int(os.getenv("JED_INTROSPECT_WORST_N", "3"))
 
-# Held-out offline proxy study. RulesGuardrail is passed only by judge_study.py and is
-# never inserted into GATE_GUARDRAILS or the live scoring path.
+# Held-out offline proxy study. judge_study.py passes its OWN RulesGuardrail instance
+# directly (never through GATE_GUARDRAILS) to score its held-out anchor set; this is
+# independent of the "rules" entry GATE_GUARDRAILS now carries as the live gate.
 JUDGE_VERSION = "robustness-v1"
 JUDGE_ANCHOR_VERSION = "anchors-v1"
 JUDGE_PUBLIC_BAND_RATIO = 0.05
