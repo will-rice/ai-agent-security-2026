@@ -72,7 +72,6 @@ from jed_attack.campaign.submission import (
 from jed_attack.campaign.submission_score import (
     SubmissionScore,
     project_public_board,
-    sampled_board,
     score_submission,
 )
 
@@ -375,50 +374,23 @@ async def worker_loop(
             gen += 1
 
 
-def _objective_messages(score: SubmissionScore) -> list[Message]:
-    """Reconstruct fill-able ``Message``s from a score's per-message shapes.
-
-    ``sampled_board`` needs each message's literal ``.text`` (to templatize + fill the
-    replay sample) and ``.type`` is threaded along for parity with the authored
-    ``Message``, but the objective never re-validates a submission that already scored,
-    so this bypasses ``Message``'s validators (``model_construct``) rather than risk a
-    reconstruction mismatch (e.g. a stale ``hops``) rejecting an already-valid shape.
-    """
-    return [
-        Message.model_construct(type=ms.type, text=ms.message, hops=1)
-        for ms in score.per_message
-    ]
-
-
 async def _score_batch(batch: list[Submission]) -> list[SubmissionScore]:
-    """Score every submission in a batch off-thread, caching each one's sampled board.
+    """Score every submission in a batch off-thread via real replay.
 
     This is the SOLE choke point every submission -- round-0 AND every refine round's
-    re-authored batch (:func:`_refine_batch` calls this too) -- passes through, so it is
-    also where :func:`~jed_attack.campaign.submission_score.sampled_board` runs, exactly
-    ONCE per submission, right after :func:`score_submission` produces its
-    :class:`SubmissionScore`. The result is cached on
-    ``SubmissionScore.sampled_board_by_model``; :func:`_score_public_raw_per_gen_char`
-    (the optimizer objective) then only ever READS that field. Without this, the same
-    submission's board was measured by up to ~6 separate call sites per generation
-    (round-0 and kept-batch objective, every refine round's ``make_record``, the
-    logged best-score lookup) -- 6 real replay samples where 1 suffices. Never computed
-    for an invalid submission (no replay is spent measuring one that already scores 0).
+    re-authored batch (:func:`_refine_batch` calls this too) -- passes through.
+    :func:`~jed_attack.campaign.submission_score.score_submission` replays every message
+    for real; :func:`_score_public_raw_per_gen_char` (the optimizer objective) then
+    PROJECTS the shipped board from that score's deterministic gen-char cost, no further
+    replay.
 
     Args:
         batch: The submissions to score.
 
     Returns:
-        One :class:`SubmissionScore` per submission, in order, each carrying its
-        ``sampled_board_by_model``.
+        One :class:`SubmissionScore` per submission, in order.
     """
-    scores = [await asyncio.to_thread(score_submission, s.messages) for s in batch]
-    for score in scores:
-        if score.valid:
-            score.sampled_board_by_model = await asyncio.to_thread(
-                sampled_board, _objective_messages(score)
-            )
-    return scores
+    return [await asyncio.to_thread(score_submission, s.messages) for s in batch]
 
 
 async def _score_artifact_metrics(
@@ -1221,22 +1193,9 @@ def _batch_score_metrics(scores: list[SubmissionScore]) -> dict[str, float]:
             sum(score.public * 200.0 for score in scores), total_replay
         ),
     }
-    # Reflect the TRUE objective (measured sampled-replay board), not the wall-clock
-    # rate above -- that stays as honest measured-throughput telemetry.
+    # Reflect the TRUE objective (the char-projected board), not the wall-clock rate
+    # above -- that stays as honest measured-throughput telemetry.
     metrics["batch_objective_raw_per_gen_char"] = _batch_refine_objective(scores)[0]
-    # Retired gen-char PROJECTION, kept only as telemetry: how the old cost-model
-    # estimate would have scored this batch, for comparison against the measured
-    # sampled-replay objective above (project_public_board itself is unchanged).
-    metrics["batch_mean_legacy_projected_board"] = _mean_or_zero(
-        [
-            sum(
-                project_public_board(
-                    score, config.FILL_BUDGET_CHARS, config.SHIP_CANDIDATE_CAP
-                ).values()
-            )
-            for score in scores
-        ]
-    )
     model_rates: list[float] = []
     for model in config.MODELS:
         model_times = [score.replay_seconds.get(model, 0.0) for score in scores]
@@ -1340,30 +1299,26 @@ def _portfolio_diversity(score: SubmissionScore) -> float:
 
 
 def _score_public_raw_per_gen_char(score: SubmissionScore) -> float:
-    """Per-submission objective: the SUM of the per-model MEASURED sampled boards.
+    """Per-submission objective: the SUM of the per-model char-PROJECTED boards.
 
-    Pure field read -- NO replay: ``sampled_board_by_model`` is computed exactly ONCE,
-    at score time, by :func:`_score_batch` (right after :func:`score_submission`
-    produces this ``score``), which replays the deterministic first
-    ``config.REPLAY_SAMPLE_SIZE`` fill candidates (the same fill path the ship uses)
-    under the gate guardrail and scales the measured mean board by measured mean green
-    replay time against the real per-model budget -- a MEASURED stand-in for the
-    previous gen-char PROJECTION (``project_public_board``, an estimate; kept for
-    tests/telemetry, see ``_batch_score_metrics``). This function only sums that cached
-    result, so it is safe to call from a hot loop / a ``max(key=...)`` -- see
-    :func:`_score_batch` for why that matters. The objective SUMS the models: the
-    private board columns (``gpt_oss_private``, ``gemma_private``) are INDEPENDENT, so
-    a shape that fires on only one model still earns that model's column and must not
-    be zeroed. This lets the search mix a shape family strong on one victim (e.g.
-    read-exfil EXFILTRATION on gpt_oss) with one strong on both (deputy
+    Pure field read on ``score`` -- NO replay: :func:`project_public_board` walks the
+    round-robin fill to each model's ``config.FILL_BUDGET_CHARS`` using only the
+    deterministic ``gen_chars``/``turns`` already captured by :func:`score_submission`,
+    so it is safe to call from a hot loop / a ``max(key=...)``. The objective SUMS the
+    models: the private board columns (``gpt_oss_private``, ``gemma_private``) are
+    INDEPENDENT, so a shape that fires on only one model still earns that model's column
+    and must not be zeroed. This lets the search mix a shape family strong on one victim
+    (e.g. read-exfil EXFILTRATION on gpt_oss) with one strong on both (deputy
     CONFUSED_DEPUTY), maximizing the combined private board. Diversity is NOT added
     here: it is a LEXICOGRAPHIC tiebreaker (``Record.objective_tiebreaker``). Invalid
-    submissions never accrue objective (``_score_batch`` never spends a replay caching
-    one). Name kept for the persisted objective field / call sites.
+    submissions never accrue objective.
     """
     if not score.valid:
         return 0.0
-    return sum(score.sampled_board_by_model.values())
+    boards = project_public_board(
+        score, config.FILL_BUDGET_CHARS, config.SHIP_CANDIDATE_CAP
+    )
+    return sum(boards.values())
 
 
 def _batch_refine_objective(scores: list[SubmissionScore]) -> tuple[float, float]:
@@ -1388,7 +1343,6 @@ def _empty_batch_score_metrics() -> dict[str, float]:
         "batch_p95_replay_s_total": 0.0,
         "batch_public_raw_per_replay_s": 0.0,
         "batch_objective_raw_per_gen_char": 0.0,
-        "batch_mean_legacy_projected_board": 0.0,
         "batch_worst_model_public_raw_per_replay_s": 0.0,
         "batch_predicates_total": 0.0,
     }

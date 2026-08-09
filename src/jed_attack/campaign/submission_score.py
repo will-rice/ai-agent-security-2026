@@ -39,7 +39,7 @@ from aicomp_sdk.core.env.sandbox import SandboxEnv
 from aicomp_sdk.core.predicates import eval_predicates
 from aicomp_sdk.evaluation.ops import resolve_fixtures_dir
 
-from jed_attack.campaign import config, fill
+from jed_attack.campaign import config
 from jed_attack.campaign.guardrails import GATE_GUARDRAILS
 from jed_attack.campaign.submission import Message, MessageType
 from jed_attack.campaign.victim_feedback import message_feedback
@@ -215,11 +215,6 @@ class SubmissionScore:
             DETERMINISTIC replay-cost proxy (no wall-clock noise). Fewer chars means
             faster replay and more candidates fit the fixed budget, so the optimizer's
             objective divides by this to reward lean, high-throughput submissions.
-        sampled_board_by_model: ``{model: sampled_board's measured board}`` -- the
-            optimizer objective's raw input, computed ONCE by the caller right after
-            scoring (see :func:`sampled_board`) and cached here so every later read
-            (hill-climb comparisons, W&B logging, the persisted record) is a field read,
-            never a re-replay. Empty until a caller populates it.
     """
 
     public: float
@@ -231,7 +226,6 @@ class SubmissionScore:
     valid: bool = True
     invalid_reason: str | None = None
     fires: bool = False
-    sampled_board_by_model: dict[str, float] = field(default_factory=dict)
 
 
 def replay_trace(
@@ -451,56 +445,6 @@ def project_public_board(
             board_sum += board
             fitted += 1
         boards[model] = min(1000.0, board_sum)
-    return boards
-
-
-def sampled_board(
-    messages: Sequence[Message], models: tuple[str, ...] = config.MODELS
-) -> dict[str, float]:
-    """MEASURED per-model board from replaying a deterministic sample of filled fills.
-
-    Unlike :func:`project_public_board` (which PROJECTS the shipped board from a
-    gen-char cost model -- an estimate), this REPLAYS the first
-    :data:`~jed_attack.campaign.config.REPLAY_SAMPLE_SIZE` filled candidates -- the SAME
-    fill path the ship uses (:func:`~jed_attack.campaign.fill.templatize` +
-    :func:`~jed_attack.campaign.fill.ordered_chains`) -- under the gate guardrail, and
-    scales the measured mean per-candidate board by the measured mean green replay
-    seconds against the real per-model budget. The "sample" is DETERMINISTIC:
-    ``ordered_chains`` is a pure round-robin and :func:`replay_trace` is greedy, so this
-    is reproducible, never a random draw.
-
-    Args:
-        messages: The submission's messages; each ``.text`` is templatized and filled
-            the same way :meth:`~jed_attack.campaign.submission.Submission.
-            candidate_chains` does.
-        models: Models to replay the sample against.
-
-    Returns:
-        ``{model: model_board}``, each ``min(1000.0, budget_fit * mean_board)`` -- the
-        LB's 1000-point column cap, mirrored per model.
-    """
-    templates = [fill.templatize(message.text) or message.text for message in messages]
-    candidates = [
-        chain[0] for chain in fill.ordered_chains(templates, config.REPLAY_SAMPLE_SIZE)
-    ]
-    guardrail_factory = GATE_GUARDRAILS[config.GATE_GUARDRAIL_NAME]
-    boards: dict[str, float] = {}
-    for model in models:
-        board_values: list[float] = []
-        elapsed_values: list[float] = []
-        for candidate in candidates:
-            _trace, predicates, elapsed = replay_trace(
-                candidate, model, guardrail_factory
-            )
-            elapsed_values.append(elapsed)
-            severity = _severity(predicates)
-            board_values.append(
-                (severity + config.NOVELTY_PER_CELL) / 200.0 if severity > 0 else 0.0
-            )
-        mean_board = mean(board_values) if board_values else 0.0
-        mean_s = max(mean(elapsed_values) if elapsed_values else 0.0, 1e-3)
-        budget_fit = config.GREEN_REPLAY_BUDGET_S[model] / mean_s
-        boards[model] = min(1000.0, budget_fit * mean_board)
     return boards
 
 

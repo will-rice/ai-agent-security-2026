@@ -50,14 +50,6 @@ MODEL_GPU: dict[str, int] = {"gpt_oss": 0, "gemma_4": 1}
 # too tight (120 zeroed ~60% of valid output). gemma never binds.
 GREEN_REPLAY_BUDGET_S: dict[str, float] = {"gpt_oss": 300.0, "gemma_4": 60.0}
 
-# Sampled-replay objective (submission_score.sampled_board): the number of deterministic
-# fill candidates (the FIRST K of fill.ordered_chains, never a random draw) replayed per
-# model to MEASURE the board+timing the objective scales by, instead of projecting it
-# from the gen-char cost model. A fixed, small K keeps one objective evaluation cheap
-# (K replays per model) while still capturing real firing rate and real elapsed time.
-REPLAY_SAMPLE_SIZE = 40
-
-
 # Exact generated-artifact scoring. The optimizer still uses public raw/sec as its
 # cheap inner-loop objective, but on every new shipped ``build_next/attack.py`` we can
 # run the full SDK evaluator (including live validation/fill) and log leaderboard-like
@@ -206,13 +198,13 @@ HOP_BUDGET = 391
 # assemble's historical hard cap.
 SHIP_CANDIDATE_CAP = 2000
 
-# Submissions per proposer generation. ONE, now that the objective is a MEASURED
-# sampled replay (``submission_score.sampled_board`` = REPLAY_SAMPLE_SIZE*len(models)
-# real GPU replays per submission): scoring is the bottleneck, so authoring N submissions
-# per call just multiplies replay work with no gain, and a single submission gets the
-# proposer's whole output budget (a richer, larger single submission -- closer to the
-# actual shipped list). This is the JSON-schema ``maxItems`` the proposer is constrained
-# to (structured decoding STOPS at 1) AND the salvage cap, from one source. Not
+# Submissions per proposer generation. ONE: the objective still requires REAL replay per
+# submission (``score_submission`` replays every authored message under the gate
+# guardrail), so scoring is the bottleneck -- authoring N submissions per call just
+# multiplies replay work with no gain -- and a single submission gets the proposer's
+# whole output budget (a richer, larger single submission -- closer to the actual
+# shipped list). This is the JSON-schema ``maxItems`` the proposer is constrained to
+# (structured decoding STOPS at 1) AND the salvage cap, from one source. Not
 # hot-reloadable -- a worker restart.
 MAX_SCORE_BATCH = 1
 
