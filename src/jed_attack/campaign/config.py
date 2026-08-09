@@ -113,20 +113,22 @@ def team_proposers_from_env(
 # one lane per key (one worker per lane). CheapestInference is also single-flight at
 # the model-window level, so the worker must not advance to another CI model after a
 # CI concurrency/stream failure; it retries the same model after a cooldown instead.
-# The CI entries below are only a static fallback/order hint: at optimizer startup the
-# CI lane is replaced with the live /v1/models response for CHEAPEST_API_KEY. Operators
-# can temporarily pin a smaller roster with
-# JED_TEAM_PROPOSERS="cheapest-minimax,zai-glm5-turbo" without editing source.
+#
+# NOTE: when JED_TEAM_PROPOSERS is UNSET the CI lane tracks the full live /v1/models
+# response (this default is only the offline fallback); the roster is restricted to a
+# subset ONLY by pinning JED_TEAM_PROPOSERS, which intersects the pin with live models.
+# scripts/run_optimizer.sh sets that pin to the measured-clean roster below. A per-model
+# drop-rate measurement (batch_dropped telemetry) dropped three CI lanes: glm-5.2 (~80%
+# refusals), deepseek-v4-flash (~50% malformed batches), and kimi-k2.7 (the agentic lane
+# authored batches as text, not submit_batch tool calls). mimo-v2.5 and minimax-m3 both
+# authored clean batches (0% drop), so they are the roster.
 _TEAM_PROPOSERS_ENV = os.getenv("JED_TEAM_PROPOSERS")
 TEAM_PROPOSERS_FROM_ENV = _TEAM_PROPOSERS_ENV is not None
 TEAM_PROPOSERS: tuple[str, ...] = team_proposers_from_env(
     _TEAM_PROPOSERS_ENV,
     default=(
-        "cheapest-deepseek",
         "cheapest-mimo",
         "cheapest-minimax",
-        "cheapest-kimi",
-        "cheapest-glm5.2",
     ),
 )
 
