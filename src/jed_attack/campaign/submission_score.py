@@ -193,6 +193,7 @@ class MessageScore:
     trace_by_model: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
     gen_chars_by_model: dict[str, float] = field(default_factory=dict)
     turns_by_model: dict[str, float] = field(default_factory=dict)
+    hops_by_model: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -487,6 +488,7 @@ def score_submission(
             }
             msg_gen_chars: dict[str, float] = dict.fromkeys(models, 0.0)
             msg_turns: dict[str, float] = dict.fromkeys(models, 0.0)
+            msg_hops: dict[str, float] = dict.fromkeys(models, 0.0)
             for guardrail_name, guardrail_factory in guardrails.items():
                 if executor is None:
                     replays = [
@@ -510,6 +512,7 @@ def score_submission(
                     gen_chars[model] += chars
                     msg_gen_chars[model] += chars
                     msg_turns[model] += float(trace.get("agent_turns", 0))
+                    msg_hops[model] += float(len(trace.get("tool_events", []) or []))
                     msg_severity[guardrail_name][model] = _severity(predicates)
                     msg_trace[guardrail_name][model] = trace
                     msg_cell_hashes[guardrail_name][model] = cell_signature(
@@ -550,6 +553,7 @@ def score_submission(
                 actions=msg_actions,
                 gen_chars_by_model=dict(msg_gen_chars),
                 turns_by_model=dict(msg_turns),
+                hops_by_model=dict(msg_hops),
             )
             msg_score.feedback = message_feedback(msg_score)
             per_message.append(msg_score)

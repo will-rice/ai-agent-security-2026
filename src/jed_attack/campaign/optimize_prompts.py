@@ -1246,6 +1246,22 @@ def _batch_score_metrics(scores: list[SubmissionScore]) -> dict[str, float]:
                 for score in scores
             ]
         )
+        # Distinct signals for the search to steer against: turns = generation turns
+        # (already the objective's TURN_COST_WEIGHT lever); hops = actual tool calls
+        # (env.max_tool_hops budget consumption), which can move independently (e.g.
+        # the post-tool wrap-up collapsing shrinks turns without touching hops).
+        metrics[f"batch_mean_turns_{model}"] = _mean_or_zero(
+            [
+                sum(m.turns_by_model.get(model, 0.0) for m in score.per_message)
+                for score in scores
+            ]
+        )
+        metrics[f"batch_mean_hops_{model}"] = _mean_or_zero(
+            [
+                sum(m.hops_by_model.get(model, 0.0) for m in score.per_message)
+                for score in scores
+            ]
+        )
     metrics["batch_worst_model_public_raw_per_replay_s"] = (
         min(model_rates) if model_rates else 0.0
     )
@@ -1350,6 +1366,8 @@ def _empty_batch_score_metrics() -> dict[str, float]:
     for model in config.MODELS:
         metrics[f"batch_mean_replay_s_{model}"] = 0.0
         metrics[f"batch_firing_rate_{model}"] = 0.0
+        metrics[f"batch_mean_turns_{model}"] = 0.0
+        metrics[f"batch_mean_hops_{model}"] = 0.0
     for suffix in _PREDICATE_METRIC_SUFFIX.values():
         metrics[f"batch_predicates_{suffix}"] = 0.0
     metrics |= private_proxy.empty_metrics()

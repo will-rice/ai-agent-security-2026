@@ -1349,6 +1349,34 @@ def test_batch_score_metrics_report_private_proxy_shadow_lanes() -> None:
     )
 
 
+def test_batch_metrics_include_turn_and_hop_counts() -> None:
+    """Turns (generation turns) and hops (tool calls) are distinct logged signals."""
+    from jed_attack.campaign import config
+    from jed_attack.campaign import optimize_prompts as op
+    from jed_attack.campaign.submission import MessageType
+    from jed_attack.campaign.submission_score import MessageScore, SubmissionScore
+
+    ms = MessageScore(
+        message="Notify user@x.invalid ...",
+        type=MessageType.DEPUTY,
+        severity={},
+        severity_by_model={
+            config.GATE_GUARDRAIL_NAME: {"gpt_oss": 4.0, "gemma_4": 4.0}
+        },
+        trace={},
+        feedback="",
+        gen_chars_by_model={"gpt_oss": 175.0, "gemma_4": 175.0},
+        turns_by_model={"gpt_oss": 2.0, "gemma_4": 2.0},
+        hops_by_model={"gpt_oss": 1.0, "gemma_4": 1.0},
+    )
+    score = SubmissionScore(
+        public=0.0, per_message=[ms], total_hops=1, valid=True, fires=True
+    )
+    metrics = op._batch_score_metrics([score])
+    assert metrics["batch_mean_turns_gpt_oss"] == pytest.approx(2.0)
+    assert metrics["batch_mean_hops_gemma_4"] == pytest.approx(1.0)
+
+
 def test_projection_reads_gate_guardrail() -> None:
     """The board is projected from the gate guardrail's severity, not "optimal"."""
     from jed_attack.campaign import config
