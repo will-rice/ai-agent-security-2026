@@ -249,6 +249,12 @@ TURN_COST_WEIGHT = 55.0
 # (gemma shares the fit until measured on its own).
 FILL_BUDGET_CHARS: dict[str, float] = {"gpt_oss": 171000.0, "gemma_4": 171000.0}
 
+# The single gate guardrail the optimizer scores + reads its objective from. "rules"
+# (aicomp_sdk guardrail_rules) is the data-inspecting private proxy: EXFIL scores 0
+# (denied), CONFUSED_DEPUTY survives. Public ("optimal") is abandoned; scoring one
+# guardrail (not two) halves per-candidate replay cost.
+GATE_GUARDRAIL_NAME = "rules"
+
 # Tier-2 victim introspection (victim_feedback.introspect_worst): number of the
 # lowest-severity messages in a scored submission to probe with an extra "what
 # change would flip your decision" turn against the victim itself. Bounds the

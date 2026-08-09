@@ -399,7 +399,9 @@ def _firing_templates(
     """
     out: list[tuple[float, float]] = []
     for message in per_message:
-        severity = message.severity_by_model.get("optimal", {}).get(model, 0.0)
+        severity = message.severity_by_model.get(config.GATE_GUARDRAIL_NAME, {}).get(
+            model, 0.0
+        )
         if severity > 0.0:
             board = (severity + config.NOVELTY_PER_CELL) / 200.0
             cost = message.gen_chars_by_model.get(model, 0.0) + (
@@ -449,7 +451,7 @@ def score_submission(
     models: tuple[str, ...] = config.MODELS,
     *,
     guardrails: Mapping[str, Callable[[], Any]] = GATE_GUARDRAILS,
-    primary_guardrail: str = "optimal",
+    primary_guardrail: str = config.GATE_GUARDRAIL_NAME,
 ) -> SubmissionScore:
     """Score an entire submission's public/private boards via real replay.
 

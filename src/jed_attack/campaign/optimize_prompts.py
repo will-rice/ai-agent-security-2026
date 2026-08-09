@@ -1279,7 +1279,8 @@ def _portfolio_diversity(score: SubmissionScore) -> float:
         fill.templatize(m.message) or m.message
         for m in score.per_message
         if all(
-            m.severity_by_model.get("optimal", {}).get(model, 0.0) > 0.0
+            m.severity_by_model.get(config.GATE_GUARDRAIL_NAME, {}).get(model, 0.0)
+            > 0.0
             for model in config.MODELS
         )
     }
