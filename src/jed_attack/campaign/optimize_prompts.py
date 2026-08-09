@@ -375,16 +375,50 @@ async def worker_loop(
             gen += 1
 
 
+def _objective_messages(score: SubmissionScore) -> list[Message]:
+    """Reconstruct fill-able ``Message``s from a score's per-message shapes.
+
+    ``sampled_board`` needs each message's literal ``.text`` (to templatize + fill the
+    replay sample) and ``.type`` is threaded along for parity with the authored
+    ``Message``, but the objective never re-validates a submission that already scored,
+    so this bypasses ``Message``'s validators (``model_construct``) rather than risk a
+    reconstruction mismatch (e.g. a stale ``hops``) rejecting an already-valid shape.
+    """
+    return [
+        Message.model_construct(type=ms.type, text=ms.message, hops=1)
+        for ms in score.per_message
+    ]
+
+
 async def _score_batch(batch: list[Submission]) -> list[SubmissionScore]:
-    """Score every submission in a batch off-thread (one score per submission).
+    """Score every submission in a batch off-thread, caching each one's sampled board.
+
+    This is the SOLE choke point every submission -- round-0 AND every refine round's
+    re-authored batch (:func:`_refine_batch` calls this too) -- passes through, so it is
+    also where :func:`~jed_attack.campaign.submission_score.sampled_board` runs, exactly
+    ONCE per submission, right after :func:`score_submission` produces its
+    :class:`SubmissionScore`. The result is cached on
+    ``SubmissionScore.sampled_board_by_model``; :func:`_score_public_raw_per_gen_char`
+    (the optimizer objective) then only ever READS that field. Without this, the same
+    submission's board was measured by up to ~6 separate call sites per generation
+    (round-0 and kept-batch objective, every refine round's ``make_record``, the
+    logged best-score lookup) -- 6 real replay samples where 1 suffices. Never computed
+    for an invalid submission (no replay is spent measuring one that already scores 0).
 
     Args:
         batch: The submissions to score.
 
     Returns:
-        One :class:`SubmissionScore` per submission, in order.
+        One :class:`SubmissionScore` per submission, in order, each carrying its
+        ``sampled_board_by_model``.
     """
-    return [await asyncio.to_thread(score_submission, s.messages) for s in batch]
+    scores = [await asyncio.to_thread(score_submission, s.messages) for s in batch]
+    for score in scores:
+        if score.valid:
+            score.sampled_board_by_model = await asyncio.to_thread(
+                sampled_board, _objective_messages(score)
+            )
+    return scores
 
 
 async def _score_artifact_metrics(
@@ -1305,45 +1339,31 @@ def _portfolio_diversity(score: SubmissionScore) -> float:
     return float(min(len(shapes), config.DIVERSITY_SHAPE_CAP))
 
 
-def _objective_messages(score: SubmissionScore) -> list[Message]:
-    """Reconstruct fill-able ``Message``s from a score's per-message shapes.
-
-    ``sampled_board`` needs each message's literal ``.text`` (to templatize + fill the
-    replay sample) and ``.type`` is threaded along for parity with the authored
-    ``Message``, but the objective never re-validates a submission that already scored,
-    so this bypasses ``Message``'s validators (``model_construct``) rather than risk a
-    reconstruction mismatch (e.g. a stale ``hops``) rejecting an already-valid shape.
-    """
-    return [
-        Message.model_construct(type=ms.type, text=ms.message, hops=1)
-        for ms in score.per_message
-    ]
-
-
 def _score_public_raw_per_gen_char(score: SubmissionScore) -> float:
     """Per-submission objective: the SUM of the per-model MEASURED sampled boards.
 
-    ``sampled_board`` replays the deterministic first ``config.REPLAY_SAMPLE_SIZE`` fill
-    candidates (the same fill path the ship uses) under the gate guardrail and scales
-    the measured mean board by measured mean green replay time against the real
-    per-model budget -- a MEASURED stand-in for the previous gen-char PROJECTION
-    (``project_public_board``, an estimate; kept for tests/telemetry, see
-    ``_batch_score_metrics``). The objective SUMS the models: the private board columns
-    (``gpt_oss_private``, ``gemma_private``) are INDEPENDENT, so a shape that fires on
-    only one model still earns that model's column and must not be zeroed. This lets the
-    search mix a shape family strong on one victim (e.g. read-exfil EXFILTRATION on
-    gpt_oss) with one strong on both (deputy CONFUSED_DEPUTY), maximizing the combined
-    private board. Diversity is NOT added here: it is a LEXICOGRAPHIC tiebreaker
-    (``Record.objective_tiebreaker``). Invalid submissions never accrue objective (no
-    replay is spent measuring one). Name kept for the persisted objective field / call
-    sites.
+    Pure field read -- NO replay: ``sampled_board_by_model`` is computed exactly ONCE,
+    at score time, by :func:`_score_batch` (right after :func:`score_submission`
+    produces this ``score``), which replays the deterministic first
+    ``config.REPLAY_SAMPLE_SIZE`` fill candidates (the same fill path the ship uses)
+    under the gate guardrail and scales the measured mean board by measured mean green
+    replay time against the real per-model budget -- a MEASURED stand-in for the
+    previous gen-char PROJECTION (``project_public_board``, an estimate; kept for
+    tests/telemetry, see ``_batch_score_metrics``). This function only sums that cached
+    result, so it is safe to call from a hot loop / a ``max(key=...)`` -- see
+    :func:`_score_batch` for why that matters. The objective SUMS the models: the
+    private board columns (``gpt_oss_private``, ``gemma_private``) are INDEPENDENT, so
+    a shape that fires on only one model still earns that model's column and must not
+    be zeroed. This lets the search mix a shape family strong on one victim (e.g.
+    read-exfil EXFILTRATION on gpt_oss) with one strong on both (deputy
+    CONFUSED_DEPUTY), maximizing the combined private board. Diversity is NOT added
+    here: it is a LEXICOGRAPHIC tiebreaker (``Record.objective_tiebreaker``). Invalid
+    submissions never accrue objective (``_score_batch`` never spends a replay caching
+    one). Name kept for the persisted objective field / call sites.
     """
     if not score.valid:
         return 0.0
-    boards = sampled_board(_objective_messages(score))
-    # SUM, not min: the per-model columns are scored independently, so a shape firing on
-    # only one model earns that column instead of being dragged to 0 by the other.
-    return sum(boards[model] for model in config.MODELS)
+    return sum(score.sampled_board_by_model.values())
 
 
 def _batch_refine_objective(scores: list[SubmissionScore]) -> tuple[float, float]:

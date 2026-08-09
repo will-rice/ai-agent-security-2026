@@ -215,6 +215,11 @@ class SubmissionScore:
             DETERMINISTIC replay-cost proxy (no wall-clock noise). Fewer chars means
             faster replay and more candidates fit the fixed budget, so the optimizer's
             objective divides by this to reward lean, high-throughput submissions.
+        sampled_board_by_model: ``{model: sampled_board's measured board}`` -- the
+            optimizer objective's raw input, computed ONCE by the caller right after
+            scoring (see :func:`sampled_board`) and cached here so every later read
+            (hill-climb comparisons, W&B logging, the persisted record) is a field read,
+            never a re-replay. Empty until a caller populates it.
     """
 
     public: float
@@ -226,6 +231,7 @@ class SubmissionScore:
     valid: bool = True
     invalid_reason: str | None = None
     fires: bool = False
+    sampled_board_by_model: dict[str, float] = field(default_factory=dict)
 
 
 def replay_trace(

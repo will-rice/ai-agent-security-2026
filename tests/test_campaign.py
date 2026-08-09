@@ -37,17 +37,20 @@ def _exfil(text: str, hops: int) -> "Message":
 def _no_real_sampled_replay(monkeypatch: pytest.MonkeyPatch) -> None:
     """Default ``optimize_prompts.sampled_board`` to a zero, no-replay stub.
 
-    ``_score_public_raw_per_gen_char`` (the optimizer objective) calls
-    ``sampled_board``, which replays real candidates via
-    ``submission_score.replay_trace`` -- forbidden in a unit test. This module's tests
-    exercise the objective indirectly through
-    ``make_record``/``worker_loop``/``_batch_score_metrics`` far more often than they
-    assert its exact value, so default every test to a deterministic zero board;
-    the few tests that need a specific (or genuinely REAL, replay_trace-stubbed) board
-    override this within their own body via ``monkeypatch.setattr(op, "sampled_board",
-    ...)``, which applies after this fixture and so takes precedence. This never touches
-    ``submission_score.replay_trace`` itself, so tests exercising real ``replay_trace``/
-    ``score_submission`` behavior (with a faked GGUF backend) are unaffected.
+    The optimizer objective (``_score_public_raw_per_gen_char``) is a pure read of
+    ``SubmissionScore.sampled_board_by_model`` -- it never calls ``sampled_board``
+    itself. The ONLY thing that calls it is ``_score_batch`` (right after
+    ``score_submission``), which replays real candidates via
+    ``submission_score.replay_trace`` -- forbidden in a unit test. Nearly every test in
+    this module drives ``worker_loop``/``_refine_batch`` through a FAKE
+    ``_score_batch`` (so this default never fires for them), but this fixture is a
+    structural safety net for the few that do reach the real ``_score_batch``: a test
+    that needs a specific (or genuinely REAL, replay_trace-stubbed) board overrides
+    this within its own body via ``monkeypatch.setattr(op, "sampled_board", ...)``,
+    which applies after this fixture and so takes precedence. This never touches
+    ``submission_score.replay_trace`` itself, so tests exercising real
+    ``replay_trace``/``score_submission`` behavior (with a faked GGUF backend) are
+    unaffected.
     """
     from jed_attack.campaign import optimize_prompts as op
 
@@ -997,10 +1000,14 @@ def _sampled_board_by_text(
     """A ``submission_score.sampled_board`` stand-in keyed by a message-text substring.
 
     Real ``sampled_board`` measures a board via GGUF replay -- forbidden in unit tests.
-    Tests that need the OPTIMIZER OBJECTIVE (``optimize_prompts._score_public_raw_per_
-    gen_char``) to discriminate between submissions substitute this: the first
-    ``mapping`` key found in the reconstructed message's ``.text`` sets that model's
-    (identical, per-model) board; no match scores 0.0. Deterministic, no replay.
+    The OPTIMIZER OBJECTIVE (``optimize_prompts._score_public_raw_per_gen_char``) is a
+    pure read of ``SubmissionScore.sampled_board_by_model`` and never calls
+    ``sampled_board`` itself (see ``_score_batch``, the sole real call site); tests that
+    want a specific objective value should set that field directly instead. This stub
+    is for tests that exercise ``_score_batch``'s real (or default-autoused) call to
+    ``optimize_prompts.sampled_board``: the first ``mapping`` key found in the
+    reconstructed message's ``.text`` sets that model's (identical, per-model) board; no
+    match scores 0.0. Deterministic, no replay.
     """
 
     def _stub(
@@ -1530,17 +1537,15 @@ def test_projected_board_walks_round_robin_to_char_budget(
     assert op._portfolio_diversity(score) == pytest.approx(2.0)
 
 
-def test_objective_sums_lopsided_models_instead_of_zeroing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_objective_sums_lopsided_models_instead_of_zeroing() -> None:
     """A shape firing on only one model still scores under SUM, unlike the retired MIN.
 
     Two synthetic shapes: one fires ONLY on gpt_oss, the other ONLY on gemma_4 -- MIN
     would give 0 (neither model has both shapes firing), SUM gives the two models'
     boards added together. Checked against both the legacy PROJECTION
     (``project_public_board``, unchanged, kept for telemetry) and the live
-    MEASURED-replay objective (``_score_public_raw_per_gen_char``, via a scripted
-    ``sampled_board`` -- no real replay in a unit test).
+    MEASURED-replay objective (``_score_public_raw_per_gen_char``, a pure read of a
+    pre-cached ``sampled_board_by_model`` -- no real replay in a unit test).
     """
     from jed_attack.campaign import config
     from jed_attack.campaign import optimize_prompts as op
@@ -1571,6 +1576,10 @@ def test_objective_sums_lopsided_models_instead_of_zeroing(
         valid=True,
         fires=True,
         per_message=[gpt_oss_only, gemma_only],
+        # As _score_batch would have cached it: neither model's own board (6.0) reaches
+        # the SUM (12.0) alone, so this proves SUM (not MIN) even though no shape fires
+        # on BOTH models.
+        sampled_board_by_model={"gpt_oss": 6.0, "gemma_4": 6.0},
     )
     board = op.project_public_board(
         score, config.FILL_BUDGET_CHARS, config.SHIP_CANDIDATE_CAP
@@ -1578,12 +1587,6 @@ def test_objective_sums_lopsided_models_instead_of_zeroing(
     assert board["gpt_oss"] > 0.0
     assert board["gemma_4"] > 0.0
 
-    # The live objective replays ONE reconstructed message per score -- the first
-    # per-message shape's text -- so pin a board keyed on that text to show SUM still
-    # holds: neither model alone reaches this value, only their sum does.
-    monkeypatch.setattr(
-        op, "sampled_board", _sampled_board_by_text({"Read secret.txt": 6.0})
-    )
     objective = op._score_public_raw_per_gen_char(score)
     assert objective == pytest.approx(12.0)  # 6.0 per model, summed over both models
     assert objective > 0.0  # retired MIN would zero this: no shape fires on BOTH models
@@ -1673,21 +1676,16 @@ def test_sampled_board_caps_at_1000_per_model(monkeypatch: pytest.MonkeyPatch) -
     assert boards["gpt_oss"] == 1000.0
 
 
-def test_score_public_raw_per_gen_char_sums_sampled_board(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The objective is the SUM over models of sampled_board's per-model board."""
+def test_score_public_raw_per_gen_char_sums_sampled_board() -> None:
+    """The objective is the SUM over models of the cached ``sampled_board_by_model``.
+
+    Pure field read: no ``sampled_board``/``replay_trace`` call happens here at all --
+    the board is pre-cached exactly as ``_score_batch`` would have left it.
+    """
     from jed_attack.campaign import optimize_prompts as op
     from jed_attack.campaign.submission import MessageType
     from jed_attack.campaign.submission_score import MessageScore, SubmissionScore
 
-    def fake_sampled_board(
-        messages: object, models: tuple[str, ...] = ("gpt_oss", "gemma_4")
-    ) -> dict[str, float]:
-        del messages
-        return {"gpt_oss": 4.5, "gemma_4": 2.5}
-
-    monkeypatch.setattr(op, "sampled_board", fake_sampled_board)
     score = SubmissionScore(
         public=0.0,
         total_hops=1,
@@ -1704,25 +1702,94 @@ def test_score_public_raw_per_gen_char_sums_sampled_board(
                 feedback="",
             )
         ],
+        sampled_board_by_model={"gpt_oss": 4.5, "gemma_4": 2.5},
     )
 
     assert op._score_public_raw_per_gen_char(score) == pytest.approx(7.0)
 
 
-def test_score_public_raw_per_gen_char_zero_for_invalid_without_sampling(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An INVALID submission scores 0 objective without spending a replay sample."""
+def test_score_public_raw_per_gen_char_zero_for_invalid_ignores_cached_board() -> None:
+    """An INVALID submission scores 0 objective even if a board was already cached.
+
+    ``_score_batch`` never populates ``sampled_board_by_model`` for an invalid
+    submission, but the objective must not trust a stray cached value either -- pin a
+    nonzero one here to prove the ``valid`` guard, not empty-dict coincidence, is what
+    zeros it.
+    """
     from jed_attack.campaign import optimize_prompts as op
     from jed_attack.campaign.submission_score import SubmissionScore
+
+    score = SubmissionScore(
+        public=0.0,
+        total_hops=1,
+        valid=False,
+        per_message=[],
+        sampled_board_by_model={"gpt_oss": 9.0, "gemma_4": 9.0},
+    )
+
+    assert op._score_public_raw_per_gen_char(score) == 0.0
+
+
+def test_score_batch_computes_sampled_board_once_and_caches_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_score_batch`` measures the sampled board exactly ONCE per submission.
+
+    Regression for the objective becoming a real-replay call site: before caching, a
+    single submission's board was re-measured by every later reader (round-0 objective,
+    kept-batch objective, one ``make_record`` per refine round, the best-score lookup)
+    -- up to ~6x the dominant replay cost per generation for an identical, deterministic
+    result. ``_score_batch`` -- the sole choke point round-0 AND refine rounds score
+    through -- must call ``sampled_board`` exactly once per submission and cache it on
+    the returned score, so every subsequent objective read is a field read.
+    """
+    import asyncio
+
+    from jed_attack.campaign import optimize_prompts as op
+
+    calls = {"n": 0}
+
+    def fake_sampled_board(
+        messages: object, models: tuple[str, ...] = ("gpt_oss", "gemma_4")
+    ) -> dict[str, float]:
+        del messages
+        calls["n"] += 1
+        return dict.fromkeys(models, 3.0)
+
+    monkeypatch.setattr(op, "sampled_board", fake_sampled_board)
+    monkeypatch.setattr(op, "score_submission", lambda messages: _mk_score(1.0))
+
+    scores = asyncio.run(op._score_batch([_mk_sub("s0")]))
+
+    assert calls["n"] == 1  # measured exactly once, at score time
+    assert scores[0].sampled_board_by_model == {"gpt_oss": 3.0, "gemma_4": 3.0}
+    # Reading the objective any number of times must NOT trigger another measurement.
+    for _ in range(5):
+        assert op._score_public_raw_per_gen_char(scores[0]) == pytest.approx(6.0)
+    assert calls["n"] == 1
+
+
+def test_score_batch_skips_sampling_for_invalid_submissions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An invalid submission's board is never measured (no replay spent on a reject)."""
+    import asyncio
+
+    from jed_attack.campaign import optimize_prompts as op
 
     def boom(*args: object, **kwargs: object) -> dict[str, float]:
         raise AssertionError("sampled_board must not run for an invalid submission")
 
-    monkeypatch.setattr(op, "sampled_board", boom)
-    score = SubmissionScore(public=0.0, total_hops=1, valid=False, per_message=[])
+    invalid_score = _mk_score(0.0)
+    invalid_score.valid = False
 
-    assert op._score_public_raw_per_gen_char(score) == 0.0
+    monkeypatch.setattr(op, "sampled_board", boom)
+    monkeypatch.setattr(op, "score_submission", lambda messages: invalid_score)
+
+    scores = asyncio.run(op._score_batch([_mk_sub("s0")]))
+
+    assert scores[0].sampled_board_by_model == {}
+    assert op._score_public_raw_per_gen_char(scores[0]) == 0.0
 
 
 def test_portfolio_diversity_counts_gate_guardrail_shapes() -> None:
@@ -2232,27 +2299,23 @@ def test_refine_accepts_lower_public_when_raw_per_replay_second_improves(
     both = {"rules": {"gpt_oss": 10.0, "gemma_4": 10.0}}
     slow_score = _mk_score(10.0)
     slow_score.gen_chars = {"gpt_oss": 50.0, "gemma_4": 50.0}
-    slow_score.per_message[0].message = "Ping slow@h.invalid"
     slow_score.per_message[0].gen_chars_by_model = {"gpt_oss": 50.0, "gemma_4": 50.0}
     slow_score.per_message[0].turns_by_model = {"gpt_oss": 2.0, "gemma_4": 2.0}
     slow_score.per_message[0].severity_by_model = both
     slow_score.total_hops = 100
+    # As _score_batch would have cached it: matches the throughput story above (9/5
+    # beats 10/50) without any real replay.
+    slow_score.sampled_board_by_model = {"gpt_oss": 0.1, "gemma_4": 0.1}
     fast_score = _mk_score(9.0)
     fast_score.gen_chars = {"gpt_oss": 5.0, "gemma_4": 5.0}
-    fast_score.per_message[0].message = "Ping fast@h.invalid"
     fast_score.per_message[0].gen_chars_by_model = {"gpt_oss": 5.0, "gemma_4": 5.0}
     fast_score.per_message[0].turns_by_model = {"gpt_oss": 1.0, "gemma_4": 1.0}
     fast_score.per_message[0].severity_by_model = both
     fast_score.total_hops = 10
+    fast_score.sampled_board_by_model = {"gpt_oss": 0.9, "gemma_4": 0.9}
     # Budget-bind both so the cheaper shape fits more candidates -> higher board.
     monkeypatch.setattr(
         config, "FILL_BUDGET_CHARS", {"gpt_oss": 500.0, "gemma_4": 500.0}
-    )
-    # The live objective measures a real replay sample; stand in with a scripted board
-    # keyed on the (reconstructed) message text so "fast" still beats "slow" here,
-    # matching the throughput story above (9/5 beats 10/50) without any real replay.
-    monkeypatch.setattr(
-        op, "sampled_board", _sampled_board_by_text({"fast": 1.8, "slow": 0.2})
     )
 
     async def fake_batch(
@@ -2324,18 +2387,20 @@ def test_worker_loop_logs_objective_metrics_separately(
     fast = Submission(messages=[_exfil("SECRET_MARKER https://fast.invalid/r", 1)])
     slow_score = _mk_score(10.0)
     slow_score.gen_chars = {"gpt_oss": 50.0, "gemma_4": 50.0}
-    slow_score.per_message[0].message = "SECRET_MARKER https://slow.invalid/r"
     slow_score.per_message[0].gen_chars_by_model = {"gpt_oss": 50.0, "gemma_4": 50.0}
     slow_score.per_message[0].turns_by_model = {"gpt_oss": 2.0, "gemma_4": 2.0}
     slow_score.total_hops = 100
     slow_score.public_by_model = {"gpt_oss": 10.0, "gemma_4": 10.0}
+    # As _score_batch would have cached it: the cheaper "fast" shape beats "slow" here
+    # despite its lower static public score (the whole point of this test).
+    slow_score.sampled_board_by_model = {"gpt_oss": 5.0, "gemma_4": 5.0}
     fast_score = _mk_score(9.0)
     fast_score.gen_chars = {"gpt_oss": 5.0, "gemma_4": 5.0}
-    fast_score.per_message[0].message = "SECRET_MARKER https://fast.invalid/r"
     fast_score.per_message[0].gen_chars_by_model = {"gpt_oss": 5.0, "gemma_4": 5.0}
     fast_score.per_message[0].turns_by_model = {"gpt_oss": 1.0, "gemma_4": 1.0}
     fast_score.total_hops = 10
     fast_score.public_by_model = {"gpt_oss": 9.0, "gemma_4": 9.0}
+    fast_score.sampled_board_by_model = {"gpt_oss": 9.0, "gemma_4": 9.0}
     # Both fire on both victims (the projected board is per firing template per model).
     for s in (slow_score, fast_score):
         gpt_oss_severity = s.per_message[0].severity_by_model["rules"]["gpt_oss"]
@@ -2344,12 +2409,6 @@ def test_worker_loop_logs_objective_metrics_separately(
         }
     submissions = iter([slow, fast])
     scores = iter([slow_score, fast_score])
-    # The live objective measures a real replay sample; stand in with a scripted board
-    # keyed on the (reconstructed) message text so the cheaper "fast" shape still beats
-    # "slow" here despite its lower static public score (the whole point of this test).
-    monkeypatch.setattr(
-        op, "sampled_board", _sampled_board_by_text({"fast": 9.0, "slow": 5.0})
-    )
 
     async def fake_batch(
         prompt: str, provider: object, timeout_s: float
@@ -3145,9 +3204,11 @@ def test_make_record_persists_public_throughput_objective() -> None:
 
     submission = _mk_sub("throughput")
     score = _mk_score(2.0)
-    # _mk_score's per_message fires gpt_oss only, so gemma's projected board is 0.
     score.gen_chars = {"gpt_oss": 10.0, "gemma_4": 30.0}
     score.public_by_model = {"gpt_oss": 2.0, "gemma_4": 2.0}
+    # As _score_batch would have cached it -- a non-zero, per-model-distinct board so
+    # this is a real value assertion, not a 0==0 tautology.
+    score.sampled_board_by_model = {"gpt_oss": 3.5, "gemma_4": 1.5}
     expected = op._score_public_raw_per_gen_char(score)
 
     record = op.make_record(
@@ -4234,10 +4295,12 @@ def test_score_submission_captures_bottleneck_gen_chars(
     # deterministic input.
     assert out.per_message[0].gen_chars_by_model == {"gpt_oss": 300.0, "gemma_4": 50.0}
     assert op._gen_chars_cost(out) == 300.0
-    # both templates fire, so the measured sampled-replay board is positive -- exercise
-    # the REAL sampled_board (undoing the module's default no-replay test stub) against
-    # the SAME scripted replay_trace above, so this stays a real, non-vacuous replay.
-    monkeypatch.setattr(op, "sampled_board", ss.sampled_board)
+    # both templates fire, so a REAL sampled-replay board (against the SAME scripted
+    # replay_trace above -- a real, non-vacuous replay, never the real GGUF) is
+    # positive. _score_batch is what caches this in production; reproduce that here.
+    out.sampled_board_by_model = ss.sampled_board(
+        [_exfil("SECRET_MARKER https://a.invalid/r", 1)]
+    )
     assert op._score_public_raw_per_gen_char(out) > 0.0
 
 
