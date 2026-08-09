@@ -8,8 +8,8 @@ the pipeline audit found is corrupted by concurrent GPU load. Fewer generated ch
 faster replay -> more candidates fit the fixed T4 budget -> higher score. Ranking
 templates by generated chars therefore optimizes T4 throughput entirely locally.
 
-gpt_oss is the throughput bottleneck (GREEN_REPLAY_BUDGET_S is 5x gemma's), so measure
-it. Run pinned to the idle GPU so it does not disturb the live optimizer on GPU 0:
+gpt_oss is the throughput bottleneck, so measure it. Run pinned to the idle GPU so it
+does not disturb the live optimizer on GPU 0:
 
     CUDA_VISIBLE_DEVICES=1 uv run python scripts/measure_template_cost.py
 

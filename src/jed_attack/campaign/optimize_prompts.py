@@ -902,8 +902,9 @@ def submission_prompt(
         The full proposer prompt string.
     """
     template = _load_prompts()["template"]
-    time_budget = ", ".join(
-        f"{m}={config.GREEN_REPLAY_BUDGET_S[m]:.0f} green-s" for m in config.MODELS
+    time_budget = (
+        "~9000 T4-s per model (both models). Replay cost tracks generated characters "
+        "and agent turns, so minimize BOTH to fit more candidates."
     )
     incumbent_block = (
         _render_incumbent(incumbent, feedback, introspection, config.HOP_BUDGET)
@@ -915,7 +916,7 @@ def submission_prompt(
     return (
         template.replace("{{MAX_MESSAGES}}", str(config.MAX_SHIP_MESSAGES))
         .replace("{{HOP_BUDGET}}", str(config.HOP_BUDGET))
-        .replace("{{TIME_BUDGET}}", f"Budget: {time_budget}.")
+        .replace("{{TIME_BUDGET}}", f"Budget: {time_budget}")
         .replace("{{SCHEMA}}", _SUBMISSION_SCHEMA_JSON)
         .replace("{{INCUMBENT}}", incumbent_block)
         .replace("{{TEAM}}", _render_team(top_messages, reasoning))

@@ -38,18 +38,6 @@ MODELS: tuple[str, ...] = ("gpt_oss", "gemma_4")
 MODELS_DIR = Path(os.getenv("JED_MODELS_DIR", str(_REPO_ROOT / "models")))
 MODEL_GPU: dict[str, int] = {"gpt_oss": 0, "gemma_4": 1}
 
-# Time-aware objective: the T4 gateway INVALIDATES a submission that exceeds ~9000s/
-# model of wall-clock replay. We replay in-process, so we MEASURE green replay-seconds
-# per model and zero any submission over budget (mirrors T4 INVALID). Budget is in
-# GREEN-seconds. CALIBRATED FROM A REAL T4 VERIFY 2026-07-24 (v11): a 21-candidate /
-# 179-green-s submission PASSED T4 in ~5060s gpt_oss (of 9000) -> ~241 T4-s/candidate
-# vs 8.5 green-s/candidate = a ~28x ratio, so 9000 T4-s ≈ 318 green-s. With
-# MAX_SHIP_MESSAGES=30 the largest possible submission is ~255 green-s (~7200 T4-s),
-# so the count cap -- not time -- binds; 300 sits above any capped submission (never
-# wrongly zeros) yet below the ~318 ceiling (backstop only). Earlier 120/200/280 were
-# too tight (120 zeroed ~60% of valid output). gemma never binds.
-GREEN_REPLAY_BUDGET_S: dict[str, float] = {"gpt_oss": 300.0, "gemma_4": 60.0}
-
 # Exact generated-artifact scoring. The optimizer still uses public raw/sec as its
 # cheap inner-loop objective, but on every new shipped ``build_next/attack.py`` we can
 # run the full SDK evaluator (including live validation/fill) and log leaderboard-like
@@ -185,8 +173,7 @@ BLACKBOARD_LOG = CAMPAIGN_ROOT / "blackboard.jsonl"
 #     is a 9000s/model WALL-CLOCK replay budget; the v11 verify measured ~241 T4-s per
 #     candidate, so 30 candidates ≈ 7230s ≈ 80% of the budget (~20% margin). Was 25 when
 #     the budget was mis-modeled as too tight; raise further (toward ~33) only after a
-#     verify confirms the larger size, and keep GREEN_REPLAY_BUDGET_S above 30 x ~8.5
-#     green-s = 255. See memory jed-t4-replay-time-budget.
+#     verify confirms the larger size. See memory jed-t4-replay-time-budget.
 #   HOP_BUDGET (391): total tool-hop budget (85% of the 460-hop fail point). NOTE: hops
 #     are NOT the binding constraint -- wall-clock replay time is; this is a loose upper
 #     bound only (30 x 8 = 240 hops, well under).
