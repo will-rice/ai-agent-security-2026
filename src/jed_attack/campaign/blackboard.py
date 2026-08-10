@@ -27,11 +27,11 @@ from jed_attack.campaign.submission import MessageType
 _log = logging.getLogger(__name__)
 
 
-# Tag stamped on every record scored under the CURRENT optimizer objective (the SUM
-# over victims of each model's char-projected board). Bump this whenever the
-# objective changes scale: champion selection prefers rows carrying the current tag so
-# a prior scheme's incomparable magnitudes cannot freeze the champion. See
-# _objective_key. NOTE: ROBUSTNESS_LAMBDA is currently UN-WIRED under the SUM
+# Tag stamped on every record scored under the CURRENT optimizer objective (the MIN
+# over victims of each model's char-projected board -- a maximin). Bump this whenever
+# the objective changes scale: champion selection prefers rows carrying the current tag
+# so a prior scheme's incomparable magnitudes cannot freeze the champion. See
+# _objective_key. NOTE: ROBUSTNESS_LAMBDA is currently UN-WIRED under the MIN
 # objective -- _score_public_raw_per_gen_char never reads it, so a non-zero value only
 # changes the scheme tag/pool below, not the actual score.
 def objective_scheme_name(
@@ -47,9 +47,10 @@ def objective_scheme_name(
     ``config.FILL_BUDGET_CHARS``), NO replay. The WEAKEST victim column bounds the
     score, so the search must cover BOTH models -- the ``v17`` bump retires the ``v16``
     SUM pool (under which a lopsided gpt_oss-only optimum plateaued the board while
-    gemma stayed near-zero). Diversity is a LEXICOGRAPHIC tiebreaker
-    (``objective_tiebreaker`` = distinct both-model shapes), NOT added to the objective.
-    The scheme still encodes
+    gemma stayed near-zero). Ranking is LEXICOGRAPHIC (see :func:`_objective_key`): the
+    maximin is primary, then the SUM over columns (``objective_sum``, total headroom),
+    then diversity (``objective_tiebreaker`` = distinct both-model shapes) -- none of
+    these later keys is added into the maximin itself. The scheme still encodes
     the gate guardrail (``config.GATE_GUARDRAIL_NAME``) so switching guardrails
     auto-starts a clean pool instead of comparing incomparable magnitudes; a non-zero
     portfolio weight tags diversity-on, its own pool. NOTE: ``robustness_lambda`` is
@@ -86,6 +87,9 @@ class Record:
     fires: bool = False
     assessment: dict[str, Any] | None = None
     objective: float = 0.0
+    objective_sum: float = (
+        0.0  # lexicographic 2nd key: total board (headroom above min)
+    )
     objective_tiebreaker: float = 0.0
     objective_name: str = "legacy_public"
     gen_chars: float = (
@@ -123,6 +127,7 @@ class Record:
                 else None
             ),
             objective=float(data.get("objective", 0.0)),
+            objective_sum=float(data.get("objective_sum", 0.0)),
             objective_tiebreaker=float(data.get("objective_tiebreaker", 0.0)),
             objective_name=str(data.get("objective_name", "legacy_public")),
             gen_chars=float(data.get("gen_chars", 0.0)),
@@ -183,7 +188,9 @@ def _more_robust_record(left: Record, right: Record) -> Record:
     return left
 
 
-def _objective_key(record: Record) -> tuple[bool, bool, float, float, float]:
+def _objective_key(
+    record: Record,
+) -> tuple[bool, bool, float, float, float, float]:
     """Ranking key for campaign objective champions.
 
     Firing dominates: a valid firing record always outranks a non-firing one. Among
@@ -192,13 +199,22 @@ def _objective_key(record: Record) -> tuple[bool, bool, float, float, float]:
     changes the scale — the persisted ``objective`` of a stale-scheme row is not
     comparable to a current one (e.g. a per-hop objective of 18 dwarfs an equivalent
     per-generated-char objective, which would otherwise freeze the champion forever).
-    Only within one scheme is the numeric ``objective`` a valid comparison. Legacy rows
-    have no objective and only win by public score when no scored records exist.
+    Only within one scheme is the numeric ``objective`` a valid comparison.
+
+    The comparison is LEXICOGRAPHIC: the maximin ``objective`` (weakest model column) is
+    primary, so coverage of BOTH victims comes first; ties break on ``objective_sum``
+    (total board across models — the strong-column headroom, "cover both, then maximize
+    total"), then ``objective_tiebreaker`` (distinct both-model shapes, a private
+    hedge), then ``public``. Records predating a field default it to 0.0, so a new row
+    with the same maximin but a real sum outranks an old sum-less row without a bump.
+    Legacy rows have no objective and only win by public score when no scored records
+    exist.
     """
     return (
         record.valid and record.fires,
         record.objective_name == OBJECTIVE_NAME,
         record.objective,
+        record.objective_sum,
         record.objective_tiebreaker,
         record.public,
     )

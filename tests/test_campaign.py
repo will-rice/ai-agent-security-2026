@@ -3561,6 +3561,42 @@ def test_blackboard_prefers_current_scheme_over_stale_scale_champion(
     assert board.best_objective() is current
 
 
+def test_best_objective_breaks_min_ties_by_sum_then_defaults_old_rows(
+    tmp_path: Path,
+) -> None:
+    """Among equal-maximin records the higher objective_sum wins; missing sum -> 0.0.
+
+    Lexicographic ranking: the maximin objective is primary, then objective_sum (total
+    board across columns). Two records with the SAME objective but different sums -> the
+    higher sum is champion. An old row lacking objective_sum defaults it to 0.0, so a
+    new equal-objective row with any real sum outranks it (no scheme bump needed).
+    """
+    from jed_attack.campaign import blackboard as bb
+
+    def rec(objective: float, sum_: float, url: str) -> bb.Record:
+        return bb.Record(
+            messages=[{"type": "exfil", "text": f"SECRET_MARKER {url}", "hops": 1}],
+            public=1.0,
+            feedback=[],
+            reasoning="",
+            model="m",
+            worker=0,
+            ts=1.0,
+            valid=True,
+            fires=True,
+            objective=objective,
+            objective_sum=sum_,
+            objective_name=bb.OBJECTIVE_NAME,
+        )
+
+    lo_sum = rec(5.0, 6.0, "https://lo.invalid/r")
+    hi_sum = rec(5.0, 9.0, "https://hi.invalid/r")  # same maximin, more total headroom
+    old_no_sum = rec(5.0, 0.0, "https://old.invalid/r")  # pre-field row: sum defaults 0
+    board = bb.Blackboard(tmp_path / "board.jsonl", [old_no_sum, lo_sum, hi_sum])
+
+    assert board.best_objective() is hi_sum
+
+
 def test_blackboard_best_diverse_trades_objective_for_shapes(tmp_path: Path) -> None:
     """best_diverse ships the most-shape record within the band; band=0 is strict.
 
