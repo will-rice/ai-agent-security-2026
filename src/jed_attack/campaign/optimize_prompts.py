@@ -1381,12 +1381,21 @@ def _score_public_sum_over_models(score: SubmissionScore) -> float:
 
 
 def _batch_refine_objective(scores: list[SubmissionScore]) -> tuple[float, float]:
-    """Batch hill-climb signal: mean per-submission board; mean public tiebreak."""
+    """Batch hill-climb signal, matching the champion's lexicographic ranking.
+
+    The refine loop keeps a re-authored batch only when this tuple strictly increases,
+    so it must climb the SAME order the champion is selected by (see
+    :func:`jed_attack.campaign.blackboard._objective_key`): the maximin
+    (:func:`_score_public_raw_per_gen_char`) primary, then the SUM over columns
+    (:func:`_score_public_sum_over_models`) as the tiebreak -- "cover both, then max
+    total". Using ``public`` as the tiebreak would instead let refine reject an
+    equal-min batch that has more total board, pulling against champion selection.
+    """
     if not scores:
         return (0.0, 0.0)
     return (
         mean(_score_public_raw_per_gen_char(score) for score in scores),
-        mean(score.public for score in scores),
+        mean(_score_public_sum_over_models(score) for score in scores),
     )
 
 
