@@ -345,7 +345,12 @@ async def worker_loop(
                     "best_public": public_best.public if public_best else 0.0,
                     "best_public_legacy": public_best.public if public_best else 0.0,
                     "best_objective": objective_best.objective,
-                    "best_objective_sum": objective_best.objective_sum,
+                    # Mean board over model columns (objective_sum / n_models) -- on the
+                    # same per-model scale as `best_objective` (the min), so the gap
+                    # between them reads directly as the spread across models.
+                    "best_objective_mean": (
+                        objective_best.objective_sum / len(config.MODELS)
+                    ),
                     "best_objective_public": objective_best.public,
                     "best_objective_tiebreaker": objective_best.objective_tiebreaker,
                     "best_objective_name": objective_best.objective_name,
