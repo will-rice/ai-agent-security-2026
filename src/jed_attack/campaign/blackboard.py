@@ -260,6 +260,35 @@ class Blackboard:
             return None
         return max(self._records, key=_objective_key)
 
+    def best_diverse(self, band: float) -> Record | None:
+        """Champion with the MOST distinct shapes within ``band`` of the best objective.
+
+        For a private-board hedge: shape-TEXT diversity is what survives a stricter
+        private guardrail (a blocked phrasing kills all URL-variants of that one shape
+        at once), but the public-throughput objective is nearly flat across shape count
+        (``fill`` expands any shape count to the same candidate cap), so a strict
+        :meth:`best_objective` selects a lean low-shape build. This keeps the objective
+        within ``band`` (a fractional drop, e.g. 0.1 = 10%) of the best while maximizing
+        distinct shapes. ``band=0.0`` reduces to the strict champion. Falls back to
+        :meth:`best_objective` when no current-scheme firing record exists.
+
+        Args:
+            band: Max fractional objective drop from the best to still be eligible.
+
+        Returns:
+            The most-diverse eligible record, or ``None`` if the board is empty.
+        """
+        firing = [
+            record
+            for record in self._records
+            if record.valid and record.fires and record.objective_name == OBJECTIVE_NAME
+        ]
+        if not firing:
+            return self.best_objective()
+        floor = max(record.objective for record in firing) * (1.0 - band)
+        within = [record for record in firing if record.objective >= floor]
+        return max(within, key=lambda record: (len(record.messages), record.objective))
+
     def best(self) -> Record | None:
         """Compatibility alias for the exact-public champion."""
         return self.best_public()

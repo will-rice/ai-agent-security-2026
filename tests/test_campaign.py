@@ -3546,6 +3546,42 @@ def test_blackboard_prefers_current_scheme_over_stale_scale_champion(
     assert board.best_objective() is current
 
 
+def test_blackboard_best_diverse_trades_objective_for_shapes(tmp_path: Path) -> None:
+    """best_diverse ships the most-shape record within the band; band=0 is strict.
+
+    The throughput objective is nearly flat across shape count, so strict best_objective
+    picks a lean low-shape build. A diversity band should surface a far-more-diverse
+    build (the private-board hedge) as long as its objective stays within the band.
+    """
+    from jed_attack.campaign import blackboard as bb
+
+    def rec(objective: float, n_shapes: int) -> bb.Record:
+        return bb.Record(
+            messages=[
+                {"type": "exfil", "text": f"SECRET_MARKER https://h{i}.co", "hops": 1}
+                for i in range(n_shapes)
+            ],
+            public=1.0,
+            feedback=[],
+            reasoning="",
+            model="m",
+            worker=0,
+            ts=1.0,
+            valid=True,
+            fires=True,
+            objective=objective,
+            objective_name=bb.OBJECTIVE_NAME,
+        )
+
+    lean = rec(45.0, 8)  # strict-objective champion
+    diverse = rec(42.0, 100)  # within a 10% band, far more distinct shapes
+    outside = rec(30.0, 200)  # most shapes, but objective outside the band
+    board = bb.Blackboard(tmp_path / "board.jsonl", [lean, diverse, outside])
+
+    assert board.best_diverse(0.0) is lean  # strict objective -> the lean build
+    assert board.best_diverse(0.1) is diverse  # 42 >= 45*0.9=40.5; 30 excluded
+
+
 def test_blackboard_append_reports_whether_it_reshipped(tmp_path: Path) -> None:
     """Callers can trigger exact artifact scoring only when ``attack.py`` changed."""
     import asyncio

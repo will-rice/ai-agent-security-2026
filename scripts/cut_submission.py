@@ -38,23 +38,42 @@ def main() -> None:
     parser.add_argument(
         "--push", action="store_true", help="kaggle kernels push after building"
     )
+    parser.add_argument(
+        "--diversity-band",
+        type=float,
+        default=0.0,
+        help=(
+            "Ship the champion with the MOST distinct shapes whose objective is within "
+            "this fractional band of the best (e.g. 0.1 = within 10%%). 0.0 (default) "
+            "ships the strict-objective champion. Use a band for a private-board hedge: "
+            "more distinct shapes survive a stricter guardrail at a small throughput cost."
+        ),
+    )
     args = parser.parse_args()
 
-    champion = build_and_inject(log)
+    champion = build_and_inject(log, args.diversity_band)
     write_cut_record(champion)
 
     if args.push:
         log.info("pushing kernel: %s", KERNEL_DIR)
-        subprocess.run(
-            ["kaggle", "kernels", "push", "-p", str(KERNEL_DIR)], check=True
-        )
+        subprocess.run(["kaggle", "kernels", "push", "-p", str(KERNEL_DIR)], check=True)
         log.info("pushed -- poll with: kaggle kernels status <slug>")
 
 
-def build_and_inject(log: logging.Logger) -> Record:
-    """Dump the champion to attack.py and inject it into the notebook cell."""
+def build_and_inject(log: logging.Logger, diversity_band: float = 0.0) -> Record:
+    """Dump the champion to attack.py and inject it into the notebook cell.
+
+    Args:
+        log: Logger for the build summary.
+        diversity_band: Fractional objective band for shape-diversity selection (see
+            :meth:`Blackboard.best_diverse`); 0.0 ships the strict-objective champion.
+    """
     blackboard = Blackboard.load(config.BLACKBOARD_LOG)
-    champion = blackboard.best_objective()
+    champion = (
+        blackboard.best_diverse(diversity_band)
+        if diversity_band > 0.0
+        else blackboard.best_objective()
+    )
     if champion is None:
         sys.exit("no champion in blackboard -- nothing to ship")
 
