@@ -1563,14 +1563,16 @@ def test_projected_board_walks_round_robin_to_char_budget(
     assert op._portfolio_diversity(score) == pytest.approx(2.0)
 
 
-def test_objective_sums_lopsided_models_instead_of_zeroing(
+def test_objective_is_min_over_models_forcing_both_columns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A shape firing on only one model still scores under SUM, unlike a MIN aggregate.
+    """The objective is the MIN over model columns, so BOTH victims must be covered.
 
-    Two synthetic shapes: one fires ONLY on gpt_oss, the other ONLY on gemma_4. Each
-    model's :func:`project_public_board` column is computed independently, so the
-    objective (their SUM) is nonzero even though no single shape fires on BOTH models.
+    Two synthetic shapes cover different victims (one fires only gpt_oss, one only
+    gemma_4); each :func:`project_public_board` column is nonzero, so the MIN is nonzero
+    (bounded by the weaker column). But a submission that leaves a victim's column dead
+    scores 0 -- the maximin pressure that forces the search off a lopsided one-model
+    optimum onto shapes that fire BOTH models.
     """
     from jed_attack.campaign import config
     from jed_attack.campaign import optimize_prompts as op
@@ -1610,9 +1612,21 @@ def test_objective_sums_lopsided_models_instead_of_zeroing(
     assert board["gpt_oss"] == pytest.approx(0.09)  # (16 + NOVELTY_PER_CELL) / 200
     assert board["gemma_4"] == pytest.approx(0.03)  # (4 + NOVELTY_PER_CELL) / 200
 
+    # Both columns covered -> MIN is nonzero, bounded by the weaker (gemma_4) column.
     objective = op._score_public_raw_per_gen_char(score)
-    assert objective == pytest.approx(board["gpt_oss"] + board["gemma_4"])
-    assert objective > 0.0  # SUM: a shape need not fire on BOTH models to contribute
+    assert objective == pytest.approx(min(board["gpt_oss"], board["gemma_4"]))
+    assert objective == pytest.approx(0.03)
+
+    # Gemma's column dead (only the gpt_oss shape ships) -> MIN zeros the objective.
+    gpt_only_score = SubmissionScore(
+        public=0.0, total_hops=1, valid=True, fires=True, per_message=[gpt_oss_only]
+    )
+    dead = op.project_public_board(
+        gpt_only_score, config.FILL_BUDGET_CHARS, config.SHIP_CANDIDATE_CAP
+    )
+    assert dead["gpt_oss"] == pytest.approx(0.09)
+    assert dead["gemma_4"] == 0.0
+    assert op._score_public_raw_per_gen_char(gpt_only_score) == 0.0
 
 
 def test_score_public_raw_per_gen_char_zero_for_invalid_ignores_firing_shape() -> None:
@@ -1648,8 +1662,8 @@ def test_score_public_raw_per_gen_char_zero_for_invalid_ignores_firing_shape() -
     assert op._score_public_raw_per_gen_char(score) == 0.0
 
 
-def test_objective_is_char_projection_sum() -> None:
-    """The optimizer objective is the SUM of the char-projected board over models."""
+def test_objective_is_char_projection_min() -> None:
+    """The optimizer objective is the MIN of the char-projected board over models."""
     from jed_attack.campaign import config
     from jed_attack.campaign import optimize_prompts as op
     from jed_attack.campaign.submission import MessageType
@@ -1672,13 +1686,14 @@ def test_objective_is_char_projection_sum() -> None:
     score = SubmissionScore(
         public=0.0, per_message=[ms], total_hops=1, valid=True, fires=True
     )
-    expected = sum(
+    expected = min(
         op.project_public_board(
             score, config.FILL_BUDGET_CHARS, config.SHIP_CANDIDATE_CAP
         ).values()
     )
     assert op._score_public_raw_per_gen_char(score) == pytest.approx(expected)
-    assert expected > 0.0  # a firing deputy shape projects a positive char board
+    # A both-model deputy shape keeps both columns alive, so the MIN is positive.
+    assert expected > 0.0
 
 
 def test_portfolio_diversity_counts_gate_guardrail_shapes() -> None:
@@ -1752,28 +1767,28 @@ def test_robustness_lambda_stamps_distinct_objective_scheme() -> None:
     """A non-zero robustness or portfolio weight earns its own scheme tag/pool."""
     from jed_attack.campaign import blackboard, config
 
-    assert blackboard.objective_scheme_name(0.0) == "rules_sum_v16"
-    assert blackboard.objective_scheme_name(0.5) == "robust0.5_rules_sum_v16"
-    assert blackboard.objective_scheme_name(1.0) == "robust1_rules_sum_v16"
-    assert blackboard.objective_scheme_name(0.0, 2.0) == "portfolio2_rules_sum_v16"
+    assert blackboard.objective_scheme_name(0.0) == "rules_min_v17"
+    assert blackboard.objective_scheme_name(0.5) == "robust0.5_rules_min_v17"
+    assert blackboard.objective_scheme_name(1.0) == "robust1_rules_min_v17"
+    assert blackboard.objective_scheme_name(0.0, 2.0) == "portfolio2_rules_min_v17"
     # OBJECTIVE_NAME reflects the live weights (portfolio diversity is on by default).
     assert blackboard.OBJECTIVE_NAME == blackboard.objective_scheme_name(
         config.ROBUSTNESS_LAMBDA, config.PORTFOLIO_LAMBDA
     )
 
 
-def test_objective_scheme_encodes_gate_guardrail_v16() -> None:
-    """The scheme tag encodes the gate guardrail and bumps to v16 (char projection)."""
+def test_objective_scheme_encodes_gate_guardrail_v17() -> None:
+    """The scheme tag encodes the gate guardrail and bumps to v17 (min-over-models)."""
     from jed_attack.campaign import blackboard as bb
     from jed_attack.campaign import config
 
-    assert bb.objective_scheme_name(0.0, 0.0) == "rules_sum_v16"
+    assert bb.objective_scheme_name(0.0, 0.0) == "rules_min_v17"
     # OBJECTIVE_NAME carries the live weights (portfolio diversity is on by default),
-    # but its base always encodes the gate guardrail + v16.
+    # but its base always encodes the gate guardrail + v17.
     assert bb.OBJECTIVE_NAME == bb.objective_scheme_name(
         config.ROBUSTNESS_LAMBDA, config.PORTFOLIO_LAMBDA
     )
-    assert bb.OBJECTIVE_NAME.endswith(config.GATE_GUARDRAIL_NAME + "_sum_v16")
+    assert bb.OBJECTIVE_NAME.endswith(config.GATE_GUARDRAIL_NAME + "_min_v17")
 
 
 def test_raw_gen_meter_counts_full_raw_generation() -> None:
@@ -3507,7 +3522,7 @@ def test_blackboard_ships_champion_as_filled_json(tmp_path: Path) -> None:
     assert src.count("http.post") > 5
     assert "SECRET_MARKER" in src
     assert not hasattr(board, "top_distinct_shapes")
-    assert "_v16" in bb.OBJECTIVE_NAME
+    assert "_v17" in bb.OBJECTIVE_NAME
 
 
 def test_blackboard_prefers_current_scheme_over_stale_scale_champion(

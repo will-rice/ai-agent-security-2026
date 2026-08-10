@@ -41,24 +41,25 @@ def objective_scheme_name(
 ) -> str:
     """Scheme tag for the current objective weights.
 
-    The objective is the SUM over models of ``submission_score.project_public_board``'s
-    per-model board: the shipped board projected from the deterministic gen-char cost
-    model (``gen_chars + TURN_COST_WEIGHT*turns`` walked round-robin to
-    ``config.FILL_BUDGET_CHARS``), NO replay (the per-model private columns are
-    independent, so a shape firing on only one model still earns that column). Diversity
-    is a LEXICOGRAPHIC tiebreaker (``objective_tiebreaker`` = distinct both-model
-    shapes), NOT added to the objective. The ``v16`` bump retires the ``v15`` measured
-    per-candidate-GPU-replay pool back to this char-PROJECTION pool:
-    the scheme still encodes the gate guardrail (``config.GATE_GUARDRAIL_NAME``) so
-    switching guardrails auto-starts a clean pool instead of comparing incomparable
-    magnitudes; a non-zero portfolio weight tags diversity-on, its own pool. NOTE:
-    ``robustness_lambda`` is currently UN-WIRED under this SUM objective (only affects
-    the tag/pool below, never the score itself); it is threaded through only so a future
-    robustness-aware objective has its own pool ready.
+    The objective is the MIN over models of ``submission_score.project_public_board``'s
+    per-model board (a maximin): the shipped board projected from the deterministic
+    gen-char cost model (``gen_chars + TURN_COST_WEIGHT*turns`` walked round-robin to
+    ``config.FILL_BUDGET_CHARS``), NO replay. The WEAKEST victim column bounds the
+    score, so the search must cover BOTH models -- the ``v17`` bump retires the ``v16``
+    SUM pool (under which a lopsided gpt_oss-only optimum plateaued the board while
+    gemma stayed near-zero). Diversity is a LEXICOGRAPHIC tiebreaker
+    (``objective_tiebreaker`` = distinct both-model shapes), NOT added to the objective.
+    The scheme still encodes
+    the gate guardrail (``config.GATE_GUARDRAIL_NAME``) so switching guardrails
+    auto-starts a clean pool instead of comparing incomparable magnitudes; a non-zero
+    portfolio weight tags diversity-on, its own pool. NOTE: ``robustness_lambda`` is
+    currently UN-WIRED under this MIN objective (only affects the tag/pool below, never
+    the score itself); threaded through only so a future robustness-aware objective has
+    its own pool ready.
     """
-    base = f"{gate}_sum_v16"
+    base = f"{gate}_min_v17"
     if robustness_lambda != 0.0:
-        base = f"robust{robustness_lambda:g}_{gate}_sum_v16"
+        base = f"robust{robustness_lambda:g}_{gate}_min_v17"
     if portfolio_lambda != 0.0:
         base = f"portfolio{portfolio_lambda:g}_{base}"
     return base
