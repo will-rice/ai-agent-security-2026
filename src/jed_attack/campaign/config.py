@@ -244,7 +244,7 @@ FILL_BUDGET_CHARS: dict[str, float] = {"gpt_oss": 171000.0, "gemma_4": 171000.0}
 # (aicomp_sdk guardrail_rules) is the data-inspecting private proxy: EXFIL scores 0
 # (denied), CONFUSED_DEPUTY survives. Public ("optimal") is abandoned; scoring one
 # guardrail (not two) halves per-candidate replay cost.
-GATE_GUARDRAIL_NAME = "rules"
+GATE_GUARDRAIL_NAME = "optimal"
 
 # Tier-2 victim introspection (victim_feedback.introspect_worst): number of the
 # lowest-severity messages in a scored submission to probe with an extra "what

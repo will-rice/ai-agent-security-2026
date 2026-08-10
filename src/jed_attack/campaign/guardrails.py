@@ -1,20 +1,21 @@
 """Gate guardrail — the leaderboard scoring oracle.
 
-Producers author attacks against the SDK's permissive ``OptimalGuardrail`` (the public
-leaderboard defense, which they can read), but the gate the optimizer scores against is
-now the private-proxy ``rules`` guardrail (SDK ``RulesGuardrail`` baseline): the real
-private guardrail is held out and undisclosed (host-confirmed; the forum speculates an
-LLM-judge), and ``rules`` is the closest available stand-in — it inspects payload data
-(denying EXFILTRATION) rather than the permissive public ``optimal`` guardrail. Public
-(``optimal``) is retired from the scoring path.
+The optimizer scores against the SDK's ``OptimalGuardrail`` — the PUBLIC leaderboard
+defense. This is deliberate: the private board is scored on the SAME candidates re-run
+under a STRICTER held-out guardrail (private is IN ADDITION to public, not an
+alternative), so a candidate that does not fire on public scores on NEITHER board. The
+optimizer therefore maximizes the public (``optimal``) board first; the private board is
+handled later as a CONFUSED_DEPUTY hedge (deputy is the only family that fires on public
+AND survives a data-inspecting private guardrail). The permissive ``rules`` proxy is
+retired from the scoring path — it credited read-exfil, which never fires on optimal.
 """
 
 from collections.abc import Callable
 
-from aicomp_sdk.attacks.baselines.guardrail_rules import Guardrail as RulesGuardrail
 from aicomp_sdk.guardrails.base import GuardrailBase
+from aicomp_sdk.guardrails.optimal import Guardrail as OptimalGuardrail
 
-# Gate oracle set: only the private-proxy guardrail ("rules") now scores candidates.
+# Gate oracle set: the public ("optimal") leaderboard guardrail scores candidates.
 GATE_GUARDRAILS: dict[str, Callable[[], GuardrailBase]] = {
-    "rules": RulesGuardrail,
+    "optimal": OptimalGuardrail,
 }
