@@ -182,6 +182,25 @@ BLACKBOARD_LOG = CAMPAIGN_ROOT / "blackboard.jsonl"
 # gateway "fail point" from the multi-hop era, redundant once every shape is 1 hop.)
 MAX_SHIP_MESSAGES = 300
 
+# MIN_SHIP_MESSAGES (100): the schema's minItems FLOOR on the authored shape count, the
+# lower twin of MAX_SHIP_MESSAGES. A real Field(min_length) on Submission, so it is the
+# JSON schema's minItems from one source -- both a SOFT target (the schema text is
+# injected into the proposer prompt, and the prose deliberately names NO amount, so this
+# floor is the sole count signal the model steers to) and a HARD backstop (a submission
+# under the floor fails validation and is dropped WHOLE). This forces shipped shape
+# diversity structurally instead of nagging for it in prose. NOTE: this endpoint does
+# NOT hard-enforce minItems in constrained decoding (probed: models can under-fill), so
+# the floor lifts the count via prompt-guidance and drops the stragglers -- watch the
+# `batch_dropped` gauge after any raise; if the drop rate spikes, the models are not
+# following the floor and it must come down. Must be <= MAX_SHIP_MESSAGES.
+# Env-overridable (JED_MIN_SHIP_MESSAGES) so tests can build small fixture submissions
+# under a floor of 1 while production ships the real 100 -- the same os.getenv test-seam
+# used across this config. The Field(min_length) binds this at import, so the override
+# must be set before jed_attack is imported (tests/conftest.py does this).
+MIN_SHIP_MESSAGES = int(os.getenv("JED_MIN_SHIP_MESSAGES", "100"))
+if not 0 < MIN_SHIP_MESSAGES <= MAX_SHIP_MESSAGES:
+    raise ValueError("MIN_SHIP_MESSAGES must be in 1..MAX_SHIP_MESSAGES")
+
 # Candidates the dump materializes into the shipped JSON. The artifact trims this to the
 # real T4 budget at grade time (over-budget is impossible; the tail is dropped). Mirrors
 # assemble's historical hard cap.

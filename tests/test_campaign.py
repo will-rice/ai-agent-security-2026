@@ -2328,7 +2328,12 @@ def test_worker_loop_logs_objective_metrics_separately(
 
     assert len(run.logs) == 1
     metrics = run.logs[0]
-    assert metrics["batch_mean_public"] == pytest.approx(9.0)
+    # All board metrics are the count-independent char-projected objective, not the
+    # count-scaled authored public. batch_mean_objective == the batch objective (one kept
+    # submission -> its own projected board).
+    assert metrics["batch_mean_objective"] == pytest.approx(
+        op._score_public_raw_per_gen_char(fast_score)
+    )
     # objective = the projected filled+trimmed board of the kept (fast) submission.
     assert metrics["batch_objective_raw_per_gen_char"] == pytest.approx(
         op._score_public_raw_per_gen_char(fast_score)
@@ -2336,13 +2341,16 @@ def test_worker_loop_logs_objective_metrics_separately(
     assert metrics["best_objective"] == pytest.approx(
         op._score_public_raw_per_gen_char(fast_score)
     )
-    assert metrics["best_objective_public"] == pytest.approx(9.0)
     # gain = refined (fast) objective - round0 (slow) objective.
     assert metrics["refine_objective_gain"] == pytest.approx(
         op._score_public_raw_per_gen_char(fast_score)
         - op._score_public_raw_per_gen_char(slow_score)
     )
-    assert metrics["refine_public_gain"] == pytest.approx(-1.0)
+    # The count-biased public family was dropped: these must be absent, not zero.
+    assert "batch_mean_public" not in metrics
+    assert "best_public" not in metrics
+    assert "best_objective_public" not in metrics
+    assert "refine_public_gain" not in metrics
     assert "refine_gain" not in metrics
 
 

@@ -272,7 +272,6 @@ async def worker_loop(
             tally[0] += 1
             scores = await _score_batch(batch)
             assessments = await _assess_batch(batch, scores, reference_mechanisms)
-            round0_public = mean(sc.public for sc in scores)
             round0_objective = _batch_refine_objective(scores)
 
             # Hill-climb the whole batch on public-throughput objective.
@@ -296,7 +295,6 @@ async def worker_loop(
                 assessments=assessments,
                 reference_mechanisms=reference_mechanisms,
             )
-            batch_public = mean(sc.public for sc in local_scores)
             batch_objective = _batch_refine_objective(local_scores)
 
             # Store EVERY submission of the kept batch as its own candidate in the
@@ -319,31 +317,29 @@ async def worker_loop(
                 artifact_reshipped = artifact_reshipped or reshipped
 
             objective_best = board.best_objective()
-            public_best = board.best_public()
             assert objective_best is not None  # just appended -> the board is non-empty
             best_score = max(local_scores, key=_score_public_raw_per_gen_char)
             _log.info(
-                "worker %d (%s): batch_n=%d mean_public=%g objective=%g "
-                "(objective %+g, public %+g over %d refine rounds) best_objective=%g "
-                "legacy_best_public=%g",
+                "worker %d (%s): batch_n=%d objective=%g "
+                "(%+g over %d refine rounds) best_objective=%g",
                 worker_id,
                 provider.model,
                 len(local_batch),
-                batch_public,
                 batch_objective[0],
                 batch_objective[0] - round0_objective[0],
-                batch_public - round0_public,
                 refine_rounds,
                 objective_best.objective,
-                public_best.public if public_best is not None else 0.0,
             )
             _log_wandb(  # one shared run; tag by lane so models are comparable
                 run,
                 {
                     "batch_n": len(local_batch),
-                    "batch_mean_public": batch_public,
-                    "best_public": public_best.public if public_best else 0.0,
-                    "best_public_legacy": public_best.public if public_best else 0.0,
+                    # Board metrics below are the char-PROJECTED objective (fill walked
+                    # to the T4 budget), COUNT-INDEPENDENT: any shape count fills to the
+                    # same SHIP_CANDIDATE_CAP, so more templates never inflate them. The
+                    # dropped `*_public` metrics were the raw board on the AUTHORED
+                    # templates (= 0.09 * n_shapes) and rose purely with shape count.
+                    "batch_mean_objective": batch_objective[0],
                     "best_objective": objective_best.objective,
                     # Mean board over model columns (objective_sum / n_models) -- on the
                     # same per-model scale as `best_objective` (the min), so the gap
@@ -351,14 +347,11 @@ async def worker_loop(
                     "best_objective_mean": (
                         objective_best.objective_sum / len(config.MODELS)
                     ),
-                    "best_objective_public": objective_best.public,
-                    "best_objective_tiebreaker": objective_best.objective_tiebreaker,
                     "best_objective_name": objective_best.objective_name,
                     "n_shapes": float(best_score.total_hops),
                     "best_gen_chars_bottleneck": _gen_chars_cost(best_score),
                     "refine_rounds": refine_rounds,
                     "refine_objective_gain": batch_objective[0] - round0_objective[0],
-                    "refine_public_gain": batch_public - round0_public,
                     "judge_mode": config.JUDGE_MODE,
                     "judge_available_rate": _judge_available_rate(local_assessments),
                     "shadow_winner": shadow_decision.winner,
@@ -370,7 +363,9 @@ async def worker_loop(
                     "model": provider.model,
                     "worker": worker_id,
                     **{
-                        f"{m}_public": best_score.public_by_model.get(m, 0.0)
+                        # Per-model char-projected board (the per-column LB proxy),
+                        # count-independent -- replaces the count-biased `{m}_public`.
+                        f"{m}_objective": _project_boards(best_score).get(m, 0.0)
                         for m in config.MODELS
                     },
                     **{
@@ -939,8 +934,7 @@ def submission_prompt(
     # Static tokens first, then the DATA blocks last so their content is never rescanned
     # for tokens (an incumbent message could, in principle, contain a `{{...}}`).
     return (
-        template.replace("{{MAX_MESSAGES}}", str(config.MAX_SHIP_MESSAGES))
-        .replace("{{TIME_BUDGET}}", f"Budget: {time_budget}")
+        template.replace("{{TIME_BUDGET}}", f"Budget: {time_budget}")
         .replace("{{SCHEMA}}", _SUBMISSION_SCHEMA_JSON)
         .replace("{{INCUMBENT}}", incumbent_block)
         .replace("{{TEAM}}", _render_team(top_messages, reasoning))
