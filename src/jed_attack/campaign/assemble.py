@@ -159,8 +159,10 @@ def build(candidates_by_model: Mapping[str, str], out_dir: Path) -> Path:
     Args:
         candidates_by_model: ``Submission.to_shipped_json(caps)`` -- ``{model:
             candidates_json}``, each value a JSON array of message chains for that
-            victim model. Embedded as a ``{model: [candidates]}`` map the artifact
-            serves by the graded model's hint.
+            victim model. Embedded as a ``{model: [candidates]}`` map; the shipped
+            skeleton has no model hint at grade time, so it ships the UNION of every
+            pool (``_candidates_union``) and lets its live-probe + wall-clock trim
+            select the graded model's own firing candidates.
         out_dir: Output directory (typically ``config.BUILD_NEXT_DIR``).
 
     Returns:

@@ -93,7 +93,8 @@ def build_sweep_artifact(spec: SweepSpec, out_dir: Path) -> Path:
     candidates_json = json.dumps(candidates, separators=(",", ":"))
     # A sweep tests one model-agnostic shape; ship it under a single pool key so the
     # embedded list is the shape's cap candidates (not doubled across pools). At grade
-    # time the other model's empty pool falls back to this one (see _candidates_for).
+    # time _candidates_union ships this pool alone (the other pool is empty), so every
+    # candidate is available regardless of which model is graded.
     attack_path = assemble.build({config.MODELS[0]: candidates_json}, out_dir)
     status_path = out_dir / "build_next_status.json"
     status = {
