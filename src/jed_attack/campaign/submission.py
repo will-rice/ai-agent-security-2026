@@ -114,8 +114,8 @@ class Submission(BaseModel):
     """The model's whole submission: the typed attack messages that ship as-is.
 
     A submission is replayed as independent one-turn messages. The message-count bounds
-    (``Field(min_length, max_length)`` below) are the sole shape-count limits -- they are
-    the JSON schema's ``minItems``/``maxItems`` and the validation rule from one source.
+    (``Field(min_length, max_length)``) are the sole shape-count limits -- they are the
+    JSON schema's ``minItems``/``maxItems`` and the validation rule from one source.
     """
 
     model_config = ConfigDict(extra="forbid")  # additionalProperties:false (strict)

@@ -1258,7 +1258,8 @@ def _batch_score_metrics(scores: list[SubmissionScore]) -> dict[str, float]:
             ]
         )
         # Distinct signals for the search to steer against: turns = generation turns
-        # (already the objective's TURN_COST_WEIGHT lever); hops = actual tool calls
+        # (telemetry only now -- the cost model uses a per-model FIXED_CHARS floor, not
+        # per-turn); hops = actual tool calls
         # (env.max_tool_hops budget consumption), which can move independently (e.g.
         # the post-tool wrap-up collapsing shrinks turns without touching hops).
         metrics[f"batch_mean_turns_{model}"] = _mean_or_zero(

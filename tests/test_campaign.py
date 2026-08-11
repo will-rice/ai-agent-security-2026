@@ -1484,7 +1484,8 @@ def test_projected_board_walks_round_robin_to_char_budget(
 
     monkeypatch.setattr(config, "PORTFOLIO_LAMBDA", 0.0)
     monkeypatch.setattr(config, "SHIP_CANDIDATE_CAP", 1000)
-    monkeypatch.setattr(config, "TURN_COST_WEIGHT", 0.0)  # isolate the gen-char term
+    # isolate the gen-char term (zero the per-model fixed floor)
+    monkeypatch.setattr(config, "FIXED_CHARS", {"gpt_oss": 0.0, "gemma_4": 0.0})
     # both models: cost 100 (gen_chars) per candidate; budget 1000 -> 10 candidates fit.
     monkeypatch.setattr(
         config, "FILL_BUDGET_CHARS", {"gpt_oss": 1000.0, "gemma_4": 1000.0}
@@ -1704,8 +1705,10 @@ def test_portfolio_diversity_counts_gate_guardrail_shapes() -> None:
     assert op._portfolio_diversity(score) == pytest.approx(1.0)
 
 
-def test_agent_turns_add_to_candidate_cost(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Cost = gen_chars + TURN_COST_WEIGHT*turns; chars primary (captures the forge)."""
+def test_candidate_cost_is_gen_chars_plus_per_model_fixed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cost = raw_gen_chars + FIXED_CHARS[model]; gen-chars primary, floor per-model."""
     from jed_attack.campaign import config
     from jed_attack.campaign import optimize_prompts as op
     from jed_attack.campaign.submission import MessageType
@@ -1713,12 +1716,12 @@ def test_agent_turns_add_to_candidate_cost(monkeypatch: pytest.MonkeyPatch) -> N
 
     monkeypatch.setattr(config, "PORTFOLIO_LAMBDA", 0.0)
     monkeypatch.setattr(config, "SHIP_CANDIDATE_CAP", 100000)
-    monkeypatch.setattr(config, "TURN_COST_WEIGHT", 55.0)
+    monkeypatch.setattr(config, "FIXED_CHARS", {"gpt_oss": 71.0, "gemma_4": 32.0})
     monkeypatch.setattr(
         config, "FILL_BUDGET_CHARS", {"gpt_oss": 6000.0, "gemma_4": 6000.0}
     )
 
-    def score(turns: float, chars: float) -> SubmissionScore:
+    def score(chars: float) -> SubmissionScore:
         ms = MessageScore(
             message="m",
             type=MessageType.EXFIL,
@@ -1727,24 +1730,40 @@ def test_agent_turns_add_to_candidate_cost(monkeypatch: pytest.MonkeyPatch) -> N
             trace={},
             feedback="",
             gen_chars_by_model={"gpt_oss": chars, "gemma_4": chars},
-            turns_by_model={"gpt_oss": turns, "gemma_4": turns},
         )
         return SubmissionScore(public=0.0, total_hops=1, fires=True, per_message=[ms])
 
-    def board(sub: SubmissionScore) -> float:
+    boards = op.project_public_board(
+        score(145.0), config.FILL_BUDGET_CHARS, config.SHIP_CANDIDATE_CAP
+    )
+    # gpt_oss cost = 145 + 71 = 216 -> 6000/216 = 27 candidates * 0.09 board
+    assert boards["gpt_oss"] == pytest.approx(27 * 0.09, rel=0.02)
+    # gemma cost = 145 + 32 = 177 -> 6000/177 = 33 candidates; smaller FIXED -> more fit
+    assert boards["gemma_4"] == pytest.approx(33 * 0.09, rel=0.02)
+    assert boards["gemma_4"] > boards["gpt_oss"]
+
+    def gpt_board(chars: float) -> float:
         return op.project_public_board(
-            sub, config.FILL_BUDGET_CHARS, config.SHIP_CANDIDATE_CAP
+            score(chars), config.FILL_BUDGET_CHARS, config.SHIP_CANDIDATE_CAP
         )["gpt_oss"]
 
-    # cost = gen_chars + 55*turns: more turns -> higher cost -> fewer candidates.
-    b1t = board(score(1.0, 100.0))  # cost = 100 + 55 = 155 -> 38 candidates
-    b2t = board(score(2.0, 100.0))  # cost = 100 + 110 = 210 -> 28 candidates
-    assert b2t < b1t
-    # GEN-CHARS is primary and captures the forge: far fewer chars -> ~2x board.
-    forge = board(score(2.0, 176.0))  # cost = 176 + 110 = 286 -> 20 candidates
-    natural = board(score(2.0, 500.0))  # cost = 500 + 110 = 610 -> 9 candidates
-    assert forge > natural
-    assert forge / natural == pytest.approx(20 / 9, rel=0.05)  # the real T4 2x
+    # GEN-CHARS is primary and captures the forge: far fewer chars -> higher board.
+    assert gpt_board(145.0) > gpt_board(500.0)
+
+
+def test_char_constants_derive_from_pinned_t4_rates() -> None:
+    """FIXED_CHARS and FILL_BUDGET_CHARS derive from the pinned per-model T4 rates."""
+    from jed_attack.campaign import config
+
+    for model in config.MODELS:
+        rate = config.T4_RATE_S_PER_CHAR[model]
+        assert config.FIXED_CHARS[model] == pytest.approx(
+            config.T4_FIXED_S[model] / rate
+        )
+        assert config.FILL_BUDGET_CHARS[model] == pytest.approx(
+            config.REPLAY_MARGIN_S / rate
+        )
+    assert config.FILL_BUDGET_CHARS["gemma_4"] < config.FILL_BUDGET_CHARS["gpt_oss"]
 
 
 def test_robustness_lambda_stamps_distinct_objective_scheme() -> None:
@@ -2329,7 +2348,7 @@ def test_worker_loop_logs_objective_metrics_separately(
     assert len(run.logs) == 1
     metrics = run.logs[0]
     # All board metrics are the count-independent char-projected objective, not the
-    # count-scaled authored public. batch_mean_objective == the batch objective (one kept
+    # count-scaled authored public. batch_mean_objective = the batch objective (1 kept
     # submission -> its own projected board).
     assert metrics["batch_mean_objective"] == pytest.approx(
         op._score_public_raw_per_gen_char(fast_score)

@@ -178,8 +178,8 @@
     <h3>3 · Objective → mean of the two columns (= the LB)</h3>
     <p>The LB is the <strong>mean</strong> of the two model columns, so the objective is exactly <code>(gpt_oss_column + gemma_column) / 2</code>, each column projected from its own pool (both already computed independently in <code>project_public_board</code>). Retire the maximin. Gate on both pools non-empty so neither starts abandoned. <strong>Dependency:</strong> this flips <em>with</em> the two-pool change, not before — on today's shared submission, mean would reintroduce the lopsidedness <code>min</code> guards against, so <code>min</code> stays until the two pools exist.</p>
 
-    <h3>4 · Two explicit pools in the proposer</h3>
-    <p>The proposer authors and curates <strong>two explicit pools</strong>, one per model — separate lanes, per-model diversity and feedback, each scored on its own model and advanced on its own column. The shipped <code>attack.py</code> already serves per-model pools via live probing, so ship-side is ready; the change is proposer-side.</p>
+    <h3>4 · Two explicit pools — a proposer schema change</h3>
+    <p>The proposer's output pydantic model becomes two named per-model message lists — <code>Submission { gpt_oss: list[Message], gemma_4: list[Message] }</code>, each with its own <code>min_length</code>/<code>max_length</code>. This makes <strong>"both pools non-empty" a structural invariant</strong> (the <code>min_length</code> floor) instead of a runtime gate, and gives constrained decoding a per-pool target. <code>score_submission</code> scores each list on its own model; the objective is the mean of the two columns. Per-model diversity, feedback, and the incumbent/team blocks in <code>prompts.toml</code> all fork per pool. Ship-side is ready — <code>attack.py</code> already serves per-model pools via live probing.</p>
   </section>
 
   <section>
@@ -219,13 +219,18 @@
         <p class="files">submission_score.py</p>
       </div></div>
       <div class="task"><div class="n"></div><div>
-        <h3>Two explicit pools in the proposer</h3>
-        <p>Two per-model lanes: separate authoring/curation, per-model diversity and feedback. Each pool scored on its own model, advanced on its own column. <em>Lands before / with the mean flip.</em></p>
+        <h3>Proposer schema → two per-model pools (pydantic)</h3>
+        <p>Rework <code>Submission</code> to two named lists <code>{gpt_oss, gemma_4}</code>, each <code>Field(min_length, max_length)</code>; regenerate the JSON schema the proposer is constrained to. Update <code>candidate_chains</code>/<code>to_shipped_json</code> to fill per pool. This is the foundation — everything downstream keys off it.</p>
+        <p class="files">submission.py · submission_score.py</p>
+      </div></div>
+      <div class="task"><div class="n"></div><div>
+        <h3>Two explicit pools in the proposer loop</h3>
+        <p>Per-model authoring/curation on the new schema: separate diversity and feedback, forked incumbent/team blocks in the prompt. Each pool scored on its own model, advanced on its own column. <em>Lands before / with the mean flip.</em></p>
         <p class="files">optimize_prompts.py · blackboard.py · prompts.toml</p>
       </div></div>
       <div class="task"><div class="n"></div><div>
         <h3>Mean objective (flip from min)</h3>
-        <p>Replace the maximin <code>_objective_key</code> with <code>(gpt_column + gemma_column) / 2</code> — the LB metric. Gate on both pools non-empty. Per-column wandb metrics. <strong>Only after Task 3 (two pools) is live.</strong></p>
+        <p>Replace the maximin <code>_objective_key</code> with <code>(gpt_column + gemma_column) / 2</code> — the LB metric. Both-non-empty is now structural (schema <code>min_length</code>). Per-column wandb metrics. <strong>Only after the two-pool tasks are live.</strong></p>
         <p class="files">blackboard.py · optimize_prompts.py</p>
       </div></div>
       <div class="task"><div class="n"></div><div>

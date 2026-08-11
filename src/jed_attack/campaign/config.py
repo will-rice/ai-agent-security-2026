@@ -247,14 +247,28 @@ if PORTFOLIO_LAMBDA < 0.0:
 # keeps as many distinct fast shapes as it can (free: public-neutral, private hedge).
 DIVERSITY_SHAPE_CAP = MAX_SHIP_MESSAGES
 
-# Per-candidate cost = gen_chars + TURN_COST_WEIGHT * agent_turns, the T4 cost model fit
-# from the 2026-08-07 sweep (T4_s ~ 0.0525*chars + 2.9*turns, so a turn ~= 55 chars).
-# GENERATION dominates -- it separates the fast forge (~176 chars) from slow natural
-# language (~500) and tracks the real 2x. Fitted, not guessed.
-TURN_COST_WEIGHT = 55.0
-# Per-model budget in gen-char units: 9000s / 0.0525 s-per-char ~= 171k. N = budget/cost
-# (gemma shares the fit until measured on its own).
-FILL_BUDGET_CHARS: dict[str, float] = {"gpt_oss": 171000.0, "gemma_4": 171000.0}
+# T4 per-candidate replay cost, measured on real T4 2026-08-11 (calib kernel, paired
+# with LOCAL raw_gen_chars -- byte-identical greedy): latency = T4_FIXED_S +
+# T4_RATE_S_PER_CHAR * raw_gen_chars (R^2 = 0.90 gpt_oss, 0.73 gemma_4). See memory
+# t4-cost-model-per-model. gemma is ~2x slower PER CHAR (but writes fewer chars, so ~20%
+# slower per candidate); the old single 0.0525 fit gpt_oss, under-weighted gemma.
+T4_RATE_S_PER_CHAR: dict[str, float] = {"gpt_oss": 0.0546, "gemma_4": 0.1052}
+T4_FIXED_S: dict[str, float] = {"gpt_oss": 3.9, "gemma_4": 3.4}
+# Replay wall-clock the shipped fill is trimmed to -- BELOW the 9000s HARD replay
+# deadline (overrun => INVALID_SUBMISSION; see gateway-replay-hard-fail) with a margin.
+# Provisional until an LB back-out on a rerun-surviving submission (Decision C).
+REPLAY_MARGIN_S = 7500.0
+# Cost stays in DETERMINISTIC chars (raw_gen_chars, no wall-clock noise); seconds enter
+# ONLY here, to derive the per-model char constants the objective walks. FIXED_CHARS =
+# per-candidate fixed cost in chars (replaces the global 55*turns; at 110 chars it
+# over-charged gemma's ~3.4s floor ~3x and under-counted gemma ~1/3):
+FIXED_CHARS: dict[str, float] = {
+    model: T4_FIXED_S[model] / T4_RATE_S_PER_CHAR[model] for model in MODELS
+}
+# Per-model char budget = REPLAY_MARGIN_S / rate; cost = raw_gen_chars + FIXED_CHARS.
+FILL_BUDGET_CHARS: dict[str, float] = {
+    model: REPLAY_MARGIN_S / T4_RATE_S_PER_CHAR[model] for model in MODELS
+}
 
 # The single gate guardrail the optimizer scores + reads its objective from. "rules"
 # (aicomp_sdk guardrail_rules) is the data-inspecting private proxy: EXFIL scores 0

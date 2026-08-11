@@ -43,9 +43,9 @@ def objective_scheme_name(
 
     The objective is the MIN over models of ``submission_score.project_public_board``'s
     per-model board (a maximin): the shipped board projected from the deterministic
-    gen-char cost model (``gen_chars + TURN_COST_WEIGHT*turns`` walked round-robin to
-    ``config.FILL_BUDGET_CHARS``), NO replay. The WEAKEST victim column bounds the
-    score, so the search must cover BOTH models -- the ``v17`` bump retires the ``v16``
+    char cost model (``raw_gen_chars + FIXED_CHARS[model]`` walked round-robin to each
+    model's ``config.FILL_BUDGET_CHARS``), NO replay. The WEAKEST victim column bounds
+    the score, so the search must cover BOTH models -- ``v17`` retires the ``v16``
     SUM pool (under which a lopsided gpt_oss-only optimum plateaued the board while
     gemma stayed near-zero). Ranking is LEXICOGRAPHIC (see :func:`_objective_key`): the
     maximin is primary, then the SUM over columns (``objective_sum``, total headroom),

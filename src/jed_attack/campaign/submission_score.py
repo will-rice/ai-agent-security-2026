@@ -367,11 +367,12 @@ def _firing_templates(
     """``(board, cost)`` per message that fires on ``model``.
 
     ``board`` is one candidate's contribution: ``(severity + NOVELTY_PER_CELL) / 200``.
-    ``cost = gen_chars + TURN_COST_WEIGHT * agent_turns`` -- the T4 cost model fit from
-    the 2026-08-07 calib sweep (T4_s ~ 0.0525*chars + 2.9*turns; ~55 chars per turn).
-    GENERATION dominates: it is the lever separating the fast forge (~176 chars) from
-    slow natural language (~500), and tracks the real T4 2x. Turns are a small additive
-    term (constant while every shape ends in a wrap-up; a 1-turn shape saves ~55).
+    ``cost = raw_gen_chars + FIXED_CHARS[model]`` -- deterministic per-model char cost
+    (``gen_chars_by_model`` is the reasoning-inclusive ``raw_gen_chars``). Measured on
+    T4 2026-08-11: ``FIXED_CHARS`` is the per-candidate floor in chars (gpt_oss ~71,
+    gemma_4 ~32), replacing the old global ``55*turns``. GENERATION dominates -- it
+    separates the fast forge (~145-175 chars) from slow reasoning (~500-776); the
+    per-model budget (``config.FILL_BUDGET_CHARS``) carries the 2x per-char rate gap.
     """
     out: list[tuple[float, float]] = []
     for message in per_message:
@@ -380,8 +381,8 @@ def _firing_templates(
         )
         if severity > 0.0:
             board = (severity + config.NOVELTY_PER_CELL) / 200.0
-            cost = message.gen_chars_by_model.get(model, 0.0) + (
-                config.TURN_COST_WEIGHT * message.turns_by_model.get(model, 0.0)
+            cost = (
+                message.gen_chars_by_model.get(model, 0.0) + config.FIXED_CHARS[model]
             )
             out.append((board, cost))
     return out
