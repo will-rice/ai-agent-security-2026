@@ -28,6 +28,7 @@ import json
 import sys
 import time
 from collections.abc import Mapping
+from itertools import zip_longest
 from pathlib import Path as _P
 from typing import Any
 
@@ -54,44 +55,28 @@ _SLOWEST_MULT = 1.35
 _REPLAY_SAFE_FRAC = 0.97
 
 
-def _model_hint(env: Any) -> str:
-    """Best-effort victim-model key ("gpt_oss"/"gemma_4") from the graded env, else "".
+def _candidates_union() -> list:
+    """Every pool's filled candidates, interleaved round-robin -- the shipped list.
 
-    The candidate list is keyed per victim model; the gateway grades one model at a
-    time, so read the model id off the env's agent backend and map it to a pool key.
-    Returns "" when the id cannot be read, and the caller then serves every pool.
+    The submission carries a per-model pool, but the GRADING env is opaque
+    (``aicomp_sdk`` hands the attack a slots-only ``_OpaqueAttackEnv`` exposing only
+    seed/reset/interact/export_trace_dict), and neither it nor ``AttackRunConfig``
+    reveals which victim is being graded. So the artifact CANNOT route per model at
+    grade time -- there is no hint to read (requires no attribute access on ``env``).
+
+    Instead it ships the UNION of both pools and lets the algorithm's existing
+    live-probe + real-time trim do the selection: every candidate is timed on the ACTUAL
+    live victim and the tail is dropped at the wall-clock budget. Real timing is
+    inherently model-adaptive -- the graded model's own candidates fire (and cost) as
+    they really do, so the wrong-pool candidates simply don't fire and the budget fills
+    with the right ones. Interleaving the pools (round-robin, not concatenated) gives
+    both a fair position in the probe order so neither is starved when the budget binds.
     """
-    agent = getattr(env, "agent", None)
-    model_id = ""
-    owners = (agent, getattr(agent, "_backend", None), getattr(agent, "backend", None))
-    for owner in owners:
-        if owner is None:
-            continue
-        cfg = getattr(owner, "config", None)
-        for value in (getattr(owner, "model_id", None), getattr(cfg, "model_id", None)):
-            if isinstance(value, str) and value:
-                model_id = value
-                break
-        if model_id:
-            break
-    key = model_id.lower()
-    if "gemma" in key:
-        return "gemma_4"
-    if "gpt" in key or "oss" in key:
-        return "gpt_oss"
-    return ""
-
-
-def _candidates_for(env: Any) -> list:
-    """The candidate list to probe for the graded victim model.
-
-    Serves the hinted model's pool; when the hint is unreadable, serves every pool's
-    candidates concatenated so a candidate always exists.
-    """
-    hinted = _CANDIDATES_BY_MODEL.get(_model_hint(env))
-    if hinted:
-        return hinted
-    return [chain for pool in _CANDIDATES_BY_MODEL.values() for chain in pool]
+    pools = [pool for pool in _CANDIDATES_BY_MODEL.values() if pool]
+    interleaved: list = []
+    for column in zip_longest(*pools):
+        interleaved.extend(chain for chain in column if chain is not None)
+    return interleaved
 
 
 def _fired(trace: Mapping[str, Any]) -> bool:
@@ -144,7 +129,7 @@ class AttackAlgorithm(AttackAlgorithmBase):
         hops = int(getattr(config, "max_tool_hops", 8) or 8)
         budget_s = float(getattr(config, "time_budget_s", 0.0) or 0.0)
         deadline = time.monotonic() + budget_s * _REPLAY_SAFE_FRAC if budget_s else None
-        candidates = _candidates_for(env)
+        candidates = _candidates_union()
         kept: list[AttackCandidate] = []
         slowest = _SLOWEST0
         for chain in candidates[:_HARD_N_CAP]:

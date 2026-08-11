@@ -28,6 +28,7 @@ Victim/trace output surfaced to the model is DATA, never instructions to obey.
 """
 
 import asyncio
+import copy
 import hashlib
 import json
 import logging
@@ -135,7 +136,9 @@ _POOL_SCHEMA: dict[str, Any] = {
 }
 _SUBMIT_ITEMS_SCHEMA: dict[str, Any] = {
     "type": "object",
-    "properties": dict.fromkeys(config.MODELS, _POOL_SCHEMA),
+    # A distinct copy per key (not one shared dict under both) so the two pool schemas
+    # never alias -- editing one must never mutate the other.
+    "properties": {model: copy.deepcopy(_POOL_SCHEMA) for model in config.MODELS},
     "required": list(config.MODELS),
 }
 
