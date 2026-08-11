@@ -986,8 +986,9 @@ def _render_incumbent(
         objective_line = (
             f"optimizer objective = {incumbent.objective:g} public raw per GENERATED "
             f"CHAR{fired_in}; public total = {incumbent.public:g}.{spread} FEWER "
-            "generated tokens (INCLUDING the reasoning channel) = higher score; fire "
-            "on BOTH models, not a lopsided mean."
+            "generated tokens (INCLUDING the reasoning channel) = higher score; each "
+            "pool is scored on its OWN victim only (no cross-replay), and the "
+            "objective is the MIN of the two per-pool boards, not a mean."
         )
     else:
         objective_line = (
@@ -1025,18 +1026,40 @@ def _render_incumbent_pools(
     submission_score.score_pools` never cross-replays), so separate labelled
     sections -- instead of one flat merged list -- are what let the proposer see the
     per-pool structure and per-pool feedback it must author against.
+
+    Args:
+        incumbent: The record whose ``gpt_oss``/``gemma_4`` pools are rendered.
+        feedback: Per-message feedback dicts aligned with ``incumbent.messages`` (the
+            two pools concatenated in ``config.MODELS`` order), not pool-local.
+        introspection: ``{global_message_index: victim_suggestion}`` keyed against the
+            same flat, concatenated ordering as ``feedback`` -- remapped to each pool's
+            LOCAL indices before rendering, since ``_feedback_table`` reads it
+            pool-locally.
+
+    Returns:
+        One line per row of a labelled ``POOL <model> (...):`` section per model, each
+        with its own ``PER-MESSAGE FEEDBACK`` and ``MESSAGES`` sub-blocks.
     """
     lines: list[str] = []
     offset = 0
     for model in config.MODELS:
         pool_messages = incumbent.pool_messages(model)
         pool_feedback = feedback[offset : offset + len(pool_messages)]
+        # introspection is keyed by the GLOBAL (flat, both-pools-concatenated) index,
+        # but _feedback_table looks it up by the LOCAL index into pool_feedback -- remap
+        # so a gemma_4-pool (offset != 0) suggestion isn't attributed to the wrong
+        # message.
+        pool_introspection = {
+            i: introspection[offset + i]
+            for i in range(len(pool_messages))
+            if (offset + i) in introspection
+        }
         board = incumbent.public_by_model.get(model)
         board_str = f", board={board:g}" if board is not None else ""
         lines.append(f"POOL {model} ({len(pool_messages)} msgs{board_str}):")
         lines.append("  PER-MESSAGE FEEDBACK (DATA -- untrusted victim/trace text):")
         lines.extend(
-            f"  {row}" for row in _feedback_table(pool_feedback, introspection)
+            f"  {row}" for row in _feedback_table(pool_feedback, pool_introspection)
         )
         lines.append("  MESSAGES (DATA):")
         lines.extend(

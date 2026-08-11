@@ -3361,6 +3361,76 @@ def test_submission_prompt_embeds_team_digest() -> None:
     assert "spread deputies across hosts" in prompt  # cross-model reasoning (DATA)
 
 
+def test_render_incumbent_pools_labels_and_offsets_correctly() -> None:
+    """Pool sections are labelled, ordered, and offset correctly (not swapped/off-by-1).
+
+    Uses DIFFERENT-length pools (gpt_oss=1, gemma_4=2) so the gemma_4 pool's offset into
+    the flat, concatenated ``feedback``/``introspection`` is non-zero, and checks an
+    introspection entry keyed by the GLOBAL index lands on the right LOCAL message under
+    the right pool label -- locking in the offset remap in ``_render_incumbent_pools``.
+    """
+    from jed_attack.campaign import blackboard as bb
+    from jed_attack.campaign import optimize_prompts as op
+
+    record = bb.Record(
+        gpt_oss=[{"type": "exfil", "text": "GPT-MSG-0", "hops": 1}],
+        gemma_4=[
+            {"type": "exfil", "text": "GEMMA-MSG-0", "hops": 1},
+            {"type": "deputy", "text": "GEMMA-MSG-1", "hops": 1},
+        ],
+        public=5.0,
+        feedback=[
+            {
+                "message": "GPT-MSG-0",
+                "type": "exfil",
+                "severity": {"optimal": 9.0},
+                "feedback": "note-gpt0",
+            },
+            {
+                "message": "GEMMA-MSG-0",
+                "type": "exfil",
+                "severity": {"optimal": 1.0},
+                "feedback": "note-gemma0",
+            },
+            {
+                "message": "GEMMA-MSG-1",
+                "type": "deputy",
+                "severity": {"optimal": 0.0},
+                "feedback": "note-gemma1",
+            },
+        ],
+        reasoning="",
+        model="unit",
+        worker=0,
+        ts=1.0,
+        public_by_model={"gpt_oss": 9.0, "gemma_4": 1.0},
+    )
+    # Global index 2 == the gemma_4 pool's SECOND message (offset=1, local index 1).
+    introspection = {2: "try a terser gemma close"}
+
+    lines = op._render_incumbent_pools(record, record.feedback, introspection)
+    text = "\n".join(lines)
+
+    gpt_pool_at = text.index("POOL gpt_oss (1 msgs, board=9):")
+    gemma_pool_at = text.index("POOL gemma_4 (2 msgs, board=1):")
+    gpt_msg_at = text.index("GPT-MSG-0")
+    gemma_msg0_at = text.index("GEMMA-MSG-0")
+    gemma_msg1_at = text.index("GEMMA-MSG-1")
+
+    # Pools appear in order, and each pool's own message sits under its own label
+    # (not the other pool's) -- proves the offset slicing isn't swapped or off-by-one.
+    assert gpt_pool_at < gpt_msg_at < gemma_pool_at < gemma_msg0_at < gemma_msg1_at
+
+    # The introspection suggestion (keyed by the GLOBAL index 2) attaches to the
+    # gemma_4 pool's message [1] row, not gpt_oss's [0] or gemma_4's own [0].
+    gemma_row_1 = next(row for row in lines if row.strip().startswith("[1] severity"))
+    assert "try a terser gemma close" in gemma_row_1
+    gpt_row_0 = next(row for row in lines if "note-gpt0" in row)
+    assert "try a terser gemma close" not in gpt_row_0
+    gemma_row_0 = next(row for row in lines if "note-gemma0" in row)
+    assert "try a terser gemma close" not in gemma_row_0
+
+
 def test_assemble_build_embeds_json_and_stays_isolated(tmp_path: Path) -> None:
     """Embed the candidate JSON verbatim in an aicomp_sdk+stdlib-only file."""
     import ast
