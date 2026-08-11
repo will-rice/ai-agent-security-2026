@@ -12,13 +12,12 @@ the shipped submission replays one candidate per authored message on the gateway
 the local score matches it exactly -- each message scores on its own firing and its
 own novelty cell, and pays its own replay cost (there is no free domain-copy).
 
-The T4 tool-hop budget is a structural constraint on the
-:class:`~jed_attack.campaign.submission.Submission` schema (summed ``hops`` ≤ budget),
-so this scorer never receives an over-hops submission. The T4 replay-*time* budget
-(~9000s/model wall-clock) is enforced against the deterministic gen-char projection
-(see :func:`project_public_board`) rather than a measured green-replay budget; this
-scorer still records green replay seconds per model (:func:`replay_trace`'s timed
-``env.interact``) as telemetry, but no longer zeros ``public`` from it.
+The shape count is bounded by the ``Submission`` schema (``Field(max_length)`` =
+``config.MAX_SHIP_MESSAGES``). The T4 replay-*time* budget (~9000s/model wall-clock) is
+enforced against the deterministic gen-char projection (:func:`project_public_board`)
+rather than a measured green-replay budget; this scorer still records green replay
+seconds per model (:func:`replay_trace`'s timed ``env.interact``) as telemetry, but no
+longer zeros ``public`` from it.
 """
 
 import threading

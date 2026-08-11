@@ -652,22 +652,6 @@ def test_exfil_accepts_short_co_targets_and_counts_them() -> None:
     assert _exfil(text, 1)
 
 
-def test_count_cap_makes_hop_budget_unreachable() -> None:
-    """The summed-hop budget stays unreachable, so the count cap is the binding limit.
-
-    Every authored message is pinned to exactly ONE hop (one target -- one exfil URL or
-    one deputy address), so a full submission's worst-case summed hops is just
-    MAX_SHIP_MESSAGES. That stays under HOP_BUDGET, so hops are not the binding
-    constraint -- the real T4 limit is wall-clock replay time (~9000s/model), enforced
-    at grade time by the fill trim. This tripwire fires if the count cap is ever raised
-    past the hop budget, at which point the summed-hop validator would start rejecting
-    submissions and would need a real replay-time model instead.
-    """
-    from jed_attack.campaign import config
-
-    assert config.MAX_SHIP_MESSAGES <= config.HOP_BUDGET
-
-
 def test_validate_message_is_type_aware() -> None:
     """validate_message enforces the EXFIL/DEPUTY-specific invariants.
 
