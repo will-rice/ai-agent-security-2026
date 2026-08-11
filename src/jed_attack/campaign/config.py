@@ -170,19 +170,23 @@ BLACKBOARD_LOG = CAMPAIGN_ROOT / "blackboard.jsonl"
 # so it is the JSON schema's maxItems (what the proposer sees) AND the validation rule
 # from one source -- no drift. HOP_BUDGET is a summed-hop cap with no schema form,
 # enforced in a model_validator.
-#   MAX_SHIP_MESSAGES (100): the count of DISTINCT shapes the proposer authors -- now
-#     truly enforced by constrained decoding (_BATCH_SCHEMA messages maxItems) as well
-#     as the pydantic Field(max_length). It is NOT the shipped candidate count: fill
-#     expands shapes to SHIP_CANDIDATE_CAP unique-URL candidates and the shipped
-#     attack.py self-trims to the T4 replay budget at grade time, so this cap does not
-#     gate that budget. It bounds (a) local per-generation scoring cost (each shape is
-#     replayed once per model) and (b) the shipped fill's TEXT diversity, a private
-#     hedge (public novelty is URL-domain-keyed, so a few shapes already max the cells).
-#     Raise for diversity, trading local scoring time.
+#   MAX_SHIP_MESSAGES (300): the count of DISTINCT shapes the proposer authors -- truly
+#     enforced by constrained decoding (_BATCH_SCHEMA messages maxItems) as well as the
+#     pydantic Field(max_length). It is NOT the shipped candidate count: fill expands
+#     shapes to SHIP_CANDIDATE_CAP unique-URL candidates and the shipped attack.py
+#     self-trims to the T4 replay budget at grade time, so this cap does not gate that
+#     budget. It bounds (a) local per-generation scoring cost (each shape is replayed
+#     once per model -- linear, the real cost of raising it) and (b) the shipped fill's
+#     TEXT diversity, a robustness hedge (public novelty is URL-domain-keyed, so a few
+#     shapes already max the cells -- diversity never helps the public score directly,
+#     but hedges the stricter private re-scoring and evaluator variance). Raised to 300
+#     for diversity: the search is converged (objective flat across shape count), so the
+#     ~3x scoring-time cost is worth more distinct shipped templates. Must stay <=
+#     HOP_BUDGET (each shape is 1 hop; the summed-hop validator rejects a larger count).
 #   HOP_BUDGET (391): total tool-hop budget (85% of the 460-hop fail point). NOTE: hops
 #     are NOT the binding constraint -- wall-clock replay time is; this is a loose upper
 #     bound only (single-post shapes are 1 hop each, well under).
-MAX_SHIP_MESSAGES = 100
+MAX_SHIP_MESSAGES = 300
 HOP_BUDGET = 391
 
 # Candidates the dump materializes into the shipped JSON. The artifact trims this to the
