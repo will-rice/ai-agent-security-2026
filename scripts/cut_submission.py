@@ -41,12 +41,13 @@ def main() -> None:
     parser.add_argument(
         "--diversity-band",
         type=float,
-        default=0.0,
+        default=0.1,
         help=(
             "Ship the champion with the MOST distinct shapes whose objective is within "
-            "this fractional band of the best (e.g. 0.1 = within 10%%). 0.0 (default) "
-            "ships the strict-objective champion. Use a band for a private-board hedge: "
-            "more distinct shapes survive a stricter guardrail at a small throughput cost."
+            "this fractional band of the best (e.g. 0.1 = within 10%%). Default 0.1: "
+            "maximize distinct shapes for robustness -- diversity never hurts the public "
+            "board (throughput is shape-count-insensitive) and hedges the stricter "
+            "private re-scoring. Pass 0.0 to ship the strict-objective champion instead."
         ),
     )
     args = parser.parse_args()
