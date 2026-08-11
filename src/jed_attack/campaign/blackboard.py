@@ -27,11 +27,11 @@ from jed_attack.campaign.submission import MessageType
 _log = logging.getLogger(__name__)
 
 
-# Tag stamped on every record scored under the CURRENT optimizer objective (the MIN
-# over victims of each model's char-projected board -- a maximin). Bump this whenever
-# the objective changes scale: champion selection prefers rows carrying the current tag
-# so a prior scheme's incomparable magnitudes cannot freeze the champion. See
-# _objective_key. NOTE: ROBUSTNESS_LAMBDA is currently UN-WIRED under the MIN
+# Tag stamped on every record scored under the CURRENT optimizer objective (the MEAN
+# over models of each model's char-projected board -- the actual LB metric). Bump this
+# whenever the objective changes scale: champion selection prefers rows carrying the
+# current tag so a prior scheme's incomparable magnitudes cannot freeze the champion.
+# See _objective_key. NOTE: ROBUSTNESS_LAMBDA is currently UN-WIRED under the MEAN
 # objective -- _score_public_raw_per_gen_char never reads it, so a non-zero value only
 # changes the scheme tag/pool below, not the actual score.
 def objective_scheme_name(
@@ -41,26 +41,31 @@ def objective_scheme_name(
 ) -> str:
     """Scheme tag for the current objective weights.
 
-    The objective is the MIN over models of ``submission_score.project_public_board``'s
-    per-model board (a maximin): the shipped board projected from the deterministic
-    char cost model (``raw_gen_chars + FIXED_CHARS[model]`` walked round-robin to each
-    model's ``config.FILL_BUDGET_CHARS``), NO replay. The WEAKEST victim column bounds
-    the score, so the search must cover BOTH models -- ``v17`` retires the ``v16``
-    SUM pool (under which a lopsided gpt_oss-only optimum plateaued the board while
-    gemma stayed near-zero). Ranking is LEXICOGRAPHIC (see :func:`_objective_key`): the
-    maximin is primary, then the SUM over columns (``objective_sum``, total headroom),
-    then diversity (``objective_tiebreaker`` = distinct both-model shapes) -- none of
-    these later keys is added into the maximin itself. The scheme still encodes
-    the gate guardrail (``config.GATE_GUARDRAIL_NAME``) so switching guardrails
-    auto-starts a clean pool instead of comparing incomparable magnitudes; a non-zero
-    portfolio weight tags diversity-on, its own pool. NOTE: ``robustness_lambda`` is
-    currently UN-WIRED under this MIN objective (only affects the tag/pool below, never
-    the score itself); threaded through only so a future robustness-aware objective has
-    its own pool ready.
+    The objective is the MEAN over models of ``submission_score.project_public_board``'s
+    per-model board -- the actual leaderboard metric: the shipped board projected from
+    the deterministic char cost model (``raw_gen_chars + FIXED_CHARS[model]`` walked
+    round-robin to each model's ``config.FILL_BUDGET_CHARS``), NO replay. ``v18``
+    retires the ``v17`` MIN/maximin pool: that maximin forced the search to cover both
+    victims while a single shared submission could go lopsided, but Tasks 3-4 gave each
+    model its OWN independent pool (schema ``min_length`` makes both-pools-non-empty
+    structural), so a shared-submission lopsided optimum can no longer happen and the
+    MEAN -- what the LB actually scores -- is safe to use directly. Ranking is
+    LEXICOGRAPHIC (see :func:`_objective_key`): the mean is primary, then the SUM over
+    columns (``objective_sum``, total headroom -- now numerically redundant with the
+    mean primary since both derive from the same two-value sum, kept only so an
+    old-scheme row still orders sensibly), then diversity (``objective_tiebreaker`` =
+    distinct both-model shapes) -- none of these later keys is added into the mean
+    itself. The scheme still encodes the gate guardrail
+    (``config.GATE_GUARDRAIL_NAME``) so switching guardrails auto-starts a clean pool
+    instead of comparing incomparable magnitudes; a non-zero portfolio weight tags
+    diversity-on, its own pool. NOTE: ``robustness_lambda`` is currently UN-WIRED under
+    this MEAN objective (only affects the tag/pool below, never the score itself);
+    threaded through only so a future robustness-aware objective has its own pool
+    ready.
     """
-    base = f"{gate}_min_v17"
+    base = f"{gate}_mean_v18"
     if robustness_lambda != 0.0:
-        base = f"robust{robustness_lambda:g}_{gate}_min_v17"
+        base = f"robust{robustness_lambda:g}_{gate}_mean_v18"
     if portfolio_lambda != 0.0:
         base = f"portfolio{portfolio_lambda:g}_{base}"
     return base
@@ -248,14 +253,14 @@ def _objective_key(
     per-generated-char objective, which would otherwise freeze the champion forever).
     Only within one scheme is the numeric ``objective`` a valid comparison.
 
-    The comparison is LEXICOGRAPHIC: the maximin ``objective`` (weakest model column) is
-    primary, so coverage of BOTH victims comes first; ties break on ``objective_sum``
-    (total board across models — the strong-column headroom, "cover both, then maximize
-    total"), then ``objective_tiebreaker`` (distinct both-model shapes, a private
-    hedge), then ``public``. Records predating a field default it to 0.0, so a new row
-    with the same maximin but a real sum outranks an old sum-less row without a bump.
-    Legacy rows have no objective and only win by public score when no scored records
-    exist.
+    The comparison is LEXICOGRAPHIC: the MEAN ``objective`` (average of the two
+    per-model columns — the actual LB metric) is primary; ties break on
+    ``objective_sum`` (total board across models — numerically redundant with the mean
+    primary for two models, but kept as a defensive tiebreak for legacy/partial rows),
+    then ``objective_tiebreaker`` (distinct both-model shapes, a private hedge), then
+    ``public``. Records predating a field default it to 0.0, so a new row with the same
+    mean but a real sum outranks an old sum-less row without a bump. Legacy rows have no
+    objective and only win by public score when no scored records exist.
     """
     return (
         record.valid and record.fires,
