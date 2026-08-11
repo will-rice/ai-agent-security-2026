@@ -1,127 +1,385 @@
 <title>Per-Model Candidate Pools — Implementation Plan</title>
 <style>
   :root {
-    --bg: #f6f5f1; --surface: #ffffff; --surface-2: #fbfaf7;
-    --ink: #1b1f24; --muted: #5b636e; --faint: #8a919c;
-    --line: #e4e2db; --line-strong: #d3d0c7;
-    --accent: #0d7266; --accent-ink: #0a5a50;
-    --warn: #9a5b00; --warn-bg: #fbf1de;
-    --danger: #b3261e; --danger-bg: #fbe9e7;
-    --ok: #1f7a3d; --ok-bg: #e8f4ec;
-    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
-    --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --bg: #f6f5f1;
+    --surface: #ffffff;
+    --surface-2: #fbfaf7;
+    --ink: #1b1f24;
+    --muted: #5b636e;
+    --faint: #8a919c;
+    --line: #e4e2db;
+    --line-strong: #d3d0c7;
+    --accent: #0d7266;
+    --accent-ink: #0a5a50;
+    --warn: #9a5b00;
+    --warn-bg: #fbf1de;
+    --danger: #b3261e;
+    --danger-bg: #fbe9e7;
+    --ok: #1f7a3d;
+    --ok-bg: #e8f4ec;
+    --mono:
+      ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas,
+      "Liberation Mono", monospace;
+    --sans:
+      system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #131619; --surface: #1a1e22; --surface-2: #1f242a;
-      --ink: #e7e9ec; --muted: #9aa2ac; --faint: #6d757f;
-      --line: #2a3037; --line-strong: #363d45;
-      --accent: #46c9bb; --accent-ink: #6ad6c9;
-      --warn: #e2a13c; --warn-bg: #2b2415;
-      --danger: #f0857c; --danger-bg: #2c1a18;
-      --ok: #58c47c; --ok-bg: #16241b;
+      --bg: #131619;
+      --surface: #1a1e22;
+      --surface-2: #1f242a;
+      --ink: #e7e9ec;
+      --muted: #9aa2ac;
+      --faint: #6d757f;
+      --line: #2a3037;
+      --line-strong: #363d45;
+      --accent: #46c9bb;
+      --accent-ink: #6ad6c9;
+      --warn: #e2a13c;
+      --warn-bg: #2b2415;
+      --danger: #f0857c;
+      --danger-bg: #2c1a18;
+      --ok: #58c47c;
+      --ok-bg: #16241b;
     }
   }
   :root[data-theme="light"] {
-    --bg: #f6f5f1; --surface: #ffffff; --surface-2: #fbfaf7;
-    --ink: #1b1f24; --muted: #5b636e; --faint: #8a919c;
-    --line: #e4e2db; --line-strong: #d3d0c7;
-    --accent: #0d7266; --accent-ink: #0a5a50;
-    --warn: #9a5b00; --warn-bg: #fbf1de;
-    --danger: #b3261e; --danger-bg: #fbe9e7;
-    --ok: #1f7a3d; --ok-bg: #e8f4ec;
+    --bg: #f6f5f1;
+    --surface: #ffffff;
+    --surface-2: #fbfaf7;
+    --ink: #1b1f24;
+    --muted: #5b636e;
+    --faint: #8a919c;
+    --line: #e4e2db;
+    --line-strong: #d3d0c7;
+    --accent: #0d7266;
+    --accent-ink: #0a5a50;
+    --warn: #9a5b00;
+    --warn-bg: #fbf1de;
+    --danger: #b3261e;
+    --danger-bg: #fbe9e7;
+    --ok: #1f7a3d;
+    --ok-bg: #e8f4ec;
   }
   :root[data-theme="dark"] {
-    --bg: #131619; --surface: #1a1e22; --surface-2: #1f242a;
-    --ink: #e7e9ec; --muted: #9aa2ac; --faint: #6d757f;
-    --line: #2a3037; --line-strong: #363d45;
-    --accent: #46c9bb; --accent-ink: #6ad6c9;
-    --warn: #e2a13c; --warn-bg: #2b2415;
-    --danger: #f0857c; --danger-bg: #2c1a18;
-    --ok: #58c47c; --ok-bg: #16241b;
+    --bg: #131619;
+    --surface: #1a1e22;
+    --surface-2: #1f242a;
+    --ink: #e7e9ec;
+    --muted: #9aa2ac;
+    --faint: #6d757f;
+    --line: #2a3037;
+    --line-strong: #363d45;
+    --accent: #46c9bb;
+    --accent-ink: #6ad6c9;
+    --warn: #e2a13c;
+    --warn-bg: #2b2415;
+    --danger: #f0857c;
+    --danger-bg: #2c1a18;
+    --ok: #58c47c;
+    --ok-bg: #16241b;
   }
 
-  * { box-sizing: border-box; }
+  * {
+    box-sizing: border-box;
+  }
   body {
-    margin: 0; background: var(--bg); color: var(--ink);
-    font-family: var(--sans); line-height: 1.62;
-    -webkit-font-smoothing: antialiased; font-size: 16px;
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+    font-size: 16px;
   }
-  .wrap { max-width: 820px; margin: 0 auto; padding: clamp(20px, 5vw, 56px) clamp(18px, 5vw, 40px) 96px; }
+  .wrap {
+    max-width: 820px;
+    margin: 0 auto;
+    padding: clamp(20px, 5vw, 56px) clamp(18px, 5vw, 40px) 96px;
+  }
 
-  header.doc { border-bottom: 1px solid var(--line-strong); padding-bottom: 26px; margin-bottom: 8px; }
-  .eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: .13em; text-transform: uppercase;
-    color: var(--accent); margin: 0 0 12px; font-weight: 600; }
-  h1 { font-size: clamp(28px, 5.4vw, 40px); line-height: 1.1; margin: 0 0 14px; letter-spacing: -.02em; text-wrap: balance; }
-  .lede { font-size: 18px; color: var(--muted); margin: 0; max-width: 62ch; }
-  .meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
-  .chip { font-family: var(--mono); font-size: 12px; padding: 4px 10px; border-radius: 999px;
-    border: 1px solid var(--line-strong); color: var(--muted); background: var(--surface); }
-  .chip.status { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, var(--line-strong)); background: var(--warn-bg); }
+  header.doc {
+    border-bottom: 1px solid var(--line-strong);
+    padding-bottom: 26px;
+    margin-bottom: 8px;
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 12px;
+    font-weight: 600;
+  }
+  h1 {
+    font-size: clamp(28px, 5.4vw, 40px);
+    line-height: 1.1;
+    margin: 0 0 14px;
+    letter-spacing: -0.02em;
+    text-wrap: balance;
+  }
+  .lede {
+    font-size: 18px;
+    color: var(--muted);
+    margin: 0;
+    max-width: 62ch;
+  }
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 20px;
+  }
+  .chip {
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--line-strong);
+    color: var(--muted);
+    background: var(--surface);
+  }
+  .chip.status {
+    color: var(--warn);
+    border-color: color-mix(in srgb, var(--warn) 40%, var(--line-strong));
+    background: var(--warn-bg);
+  }
 
-  section { margin-top: 44px; }
-  h2 { font-size: 13px; font-family: var(--mono); letter-spacing: .12em; text-transform: uppercase;
-    color: var(--faint); margin: 0 0 6px; font-weight: 600; }
-  h2 + .h2sub { font-size: 22px; font-weight: 650; letter-spacing: -.01em; margin: 0 0 18px; line-height: 1.25; text-wrap: balance; }
-  h3 { font-size: 17px; margin: 26px 0 8px; letter-spacing: -.01em; }
-  p { margin: 0 0 14px; }
-  a { color: var(--accent-ink); text-underline-offset: 2px; }
-  strong { font-weight: 650; }
-  code { font-family: var(--mono); font-size: .88em; background: var(--surface-2);
-    border: 1px solid var(--line); padding: 1px 5px; border-radius: 5px; }
+  section {
+    margin-top: 44px;
+  }
+  h2 {
+    font-size: 13px;
+    font-family: var(--mono);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--faint);
+    margin: 0 0 6px;
+    font-weight: 600;
+  }
+  h2 + .h2sub {
+    font-size: 22px;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    margin: 0 0 18px;
+    line-height: 1.25;
+    text-wrap: balance;
+  }
+  h3 {
+    font-size: 17px;
+    margin: 26px 0 8px;
+    letter-spacing: -0.01em;
+  }
+  p {
+    margin: 0 0 14px;
+  }
+  a {
+    color: var(--accent-ink);
+    text-underline-offset: 2px;
+  }
+  strong {
+    font-weight: 650;
+  }
+  code {
+    font-family: var(--mono);
+    font-size: 0.88em;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    padding: 1px 5px;
+    border-radius: 5px;
+  }
 
-  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
-    padding: 20px 22px; margin: 16px 0; }
-  .card.tight { padding: 16px 18px; }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 20px 22px;
+    margin: 16px 0;
+  }
+  .card.tight {
+    padding: 16px 18px;
+  }
 
-  .callout { border-radius: 12px; padding: 16px 18px; margin: 18px 0; border: 1px solid; display: grid; gap: 4px; }
-  .callout .k { font-family: var(--mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; font-weight: 600; }
-  .callout.danger { background: var(--danger-bg); border-color: color-mix(in srgb, var(--danger) 35%, transparent); }
-  .callout.danger .k { color: var(--danger); }
-  .callout.ok { background: var(--ok-bg); border-color: color-mix(in srgb, var(--ok) 30%, transparent); }
-  .callout.ok .k { color: var(--ok); }
-  .callout.warn { background: var(--warn-bg); border-color: color-mix(in srgb, var(--warn) 30%, transparent); }
-  .callout.warn .k { color: var(--warn); }
+  .callout {
+    border-radius: 12px;
+    padding: 16px 18px;
+    margin: 18px 0;
+    border: 1px solid;
+    display: grid;
+    gap: 4px;
+  }
+  .callout .k {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    font-weight: 600;
+  }
+  .callout.danger {
+    background: var(--danger-bg);
+    border-color: color-mix(in srgb, var(--danger) 35%, transparent);
+  }
+  .callout.danger .k {
+    color: var(--danger);
+  }
+  .callout.ok {
+    background: var(--ok-bg);
+    border-color: color-mix(in srgb, var(--ok) 30%, transparent);
+  }
+  .callout.ok .k {
+    color: var(--ok);
+  }
+  .callout.warn {
+    background: var(--warn-bg);
+    border-color: color-mix(in srgb, var(--warn) 30%, transparent);
+  }
+  .callout.warn .k {
+    color: var(--warn);
+  }
 
-  .tablewrap { overflow-x: auto; margin: 16px 0; border: 1px solid var(--line); border-radius: 12px; }
-  table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
-  th, td { text-align: left; padding: 11px 16px; border-bottom: 1px solid var(--line); white-space: nowrap; }
-  thead th { font-family: var(--mono); font-size: 12px; letter-spacing: .04em; text-transform: uppercase;
-    color: var(--faint); font-weight: 600; background: var(--surface-2); }
-  tbody tr:last-child td { border-bottom: none; }
-  td.num, th.num { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
-  .model { font-family: var(--mono); font-weight: 600; }
-  .gpt { color: var(--accent-ink); }
-  .gem { color: var(--warn); }
+  .tablewrap {
+    overflow-x: auto;
+    margin: 16px 0;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 14.5px;
+  }
+  th,
+  td {
+    text-align: left;
+    padding: 11px 16px;
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  thead th {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--faint);
+    font-weight: 600;
+    background: var(--surface-2);
+  }
+  tbody tr:last-child td {
+    border-bottom: none;
+  }
+  td.num,
+  th.num {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+  .model {
+    font-family: var(--mono);
+    font-weight: 600;
+  }
+  .gpt {
+    color: var(--accent-ink);
+  }
+  .gem {
+    color: var(--warn);
+  }
 
-  ul, ol { margin: 0 0 14px; padding-left: 22px; }
-  li { margin: 6px 0; }
-  li::marker { color: var(--faint); }
+  ul,
+  ol {
+    margin: 0 0 14px;
+    padding-left: 22px;
+  }
+  li {
+    margin: 6px 0;
+  }
+  li::marker {
+    color: var(--faint);
+  }
 
-  .tasks { counter-reset: task; display: grid; gap: 12px; margin-top: 18px; }
-  .task { display: grid; grid-template-columns: auto 1fr; gap: 14px; align-items: start;
-    background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
-  .task .n { counter-increment: task; font-family: var(--mono); font-weight: 700; color: var(--accent);
-    font-size: 15px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px;
-    width: 30px; height: 30px; display: grid; place-items: center; }
-  .task .n::before { content: counter(task); }
-  .task h3 { margin: 3px 0 4px; font-size: 16px; }
-  .task p { margin: 0; color: var(--muted); font-size: 14.5px; }
-  .task .files { font-family: var(--mono); font-size: 12.5px; color: var(--faint); margin-top: 7px; }
+  .tasks {
+    counter-reset: task;
+    display: grid;
+    gap: 12px;
+    margin-top: 18px;
+  }
+  .task {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 14px;
+    align-items: start;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 16px 18px;
+  }
+  .task .n {
+    counter-increment: task;
+    font-family: var(--mono);
+    font-weight: 700;
+    color: var(--accent);
+    font-size: 15px;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    width: 30px;
+    height: 30px;
+    display: grid;
+    place-items: center;
+  }
+  .task .n::before {
+    content: counter(task);
+  }
+  .task h3 {
+    margin: 3px 0 4px;
+    font-size: 16px;
+  }
+  .task p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 14.5px;
+  }
+  .task .files {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--faint);
+    margin-top: 7px;
+  }
 
-  .q { border-left: 3px solid var(--accent); padding: 2px 0 2px 16px; margin: 16px 0; }
-  .q .qh { font-weight: 650; margin: 0 0 3px; }
-  .q p { margin: 0; color: var(--muted); font-size: 14.5px; }
+  .q {
+    border-left: 3px solid var(--accent);
+    padding: 2px 0 2px 16px;
+    margin: 16px 0;
+  }
+  .q .qh {
+    font-weight: 650;
+    margin: 0 0 3px;
+  }
+  .q p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 14.5px;
+  }
 
-  footer.doc { margin-top: 56px; padding-top: 22px; border-top: 1px solid var(--line);
-    color: var(--faint); font-size: 13px; font-family: var(--mono); }
+  footer.doc {
+    margin-top: 56px;
+    padding-top: 22px;
+    border-top: 1px solid var(--line);
+    color: var(--faint);
+    font-size: 13px;
+    font-family: var(--mono);
+  }
 </style>
 
 <div class="wrap">
   <header class="doc">
     <p class="eyebrow">Implementation Plan · jed_attack</p>
     <h1>Per-Model Candidate Pools</h1>
-    <p class="lede">Replace the shared-submission maximin objective with independent per-model optimization — each victim model gets its own pool, cost model, budget, and scored column, because the gateway already scores them that way.</p>
+    <p class="lede">
+      Replace the shared-submission maximin objective with independent per-model
+      optimization — each victim model gets its own pool, cost model, budget,
+      and scored column, because the gateway already scores them that way.
+    </p>
     <div class="meta">
       <span class="chip">2026-08-11</span>
       <span class="chip status">Design · A/B locked · budget provisional</span>
@@ -131,38 +389,107 @@
 
   <section>
     <h2>Why now</h2>
-    <p class="h2sub">Three facts from the T4 calibration and the gateway source force the redesign.</p>
+    <p class="h2sub">
+      Three facts from the T4 calibration and the gateway source force the
+      redesign.
+    </p>
 
     <div class="callout ok">
       <span class="k">Confirmed — two independent pools</span>
-      <span>The gateway loops <code>for model_name in MODEL_NAMES: _run_attack_for_model(model_name)</code>, each against a live env running that model. <code>attack.py</code> returns a <strong>separate candidate list per model</strong> and already specializes (per-model template order + live probing). The pools never share a slot.</span>
+      <span
+        >The gateway loops
+        <code
+          >for model_name in MODEL_NAMES:
+          _run_attack_for_model(model_name)</code
+        >, each against a live env running that model.
+        <code>attack.py</code> returns a
+        <strong>separate candidate list per model</strong> and already
+        specializes (per-model template order + live probing). The pools never
+        share a slot.</span
+      >
     </div>
 
     <div class="callout danger">
       <span class="k">Confirmed — the replay deadline is a hard fail</span>
-      <span><code>_run_until_deadline</code> runs the whole replay as one operation with a 9000&nbsp;s timeout, <strong>per (model, guardrail)</strong>. Overrun → <code>ModelEvaluationTimedOut</code> → <code>INVALID_SUBMISSION</code>. No partial credit, no graceful tail-trim. Ship count must fit the slowest model's replay <em>with margin</em>, or the whole column voids. This is the likely 86-rerun-failure mechanism.</span>
+      <span
+        ><code>_run_until_deadline</code> runs the whole replay as one operation
+        with a 9000&nbsp;s timeout, <strong>per (model, guardrail)</strong>.
+        Overrun → <code>ModelEvaluationTimedOut</code> →
+        <code>INVALID_SUBMISSION</code>. No partial credit, no graceful
+        tail-trim. Ship count must fit the slowest model's replay
+        <em>with margin</em>, or the whole column voids. This is the likely
+        86-rerun-failure mechanism.</span
+      >
     </div>
 
-    <p>And the T4 cost model, measured against <code>raw_gen_chars</code> (the objective's actual, reasoning-inclusive cost signal — <code>R²</code> in parens):</p>
+    <p>
+      And the T4 cost model, measured against <code>raw_gen_chars</code> (the
+      objective's actual, reasoning-inclusive cost signal — <code>R²</code> in
+      parens):
+    </p>
     <div class="tablewrap">
       <table>
-        <thead><tr>
-          <th>model</th><th class="num">a (fixed s)</th><th class="num">b (s/char)</th><th class="num">forge s/cand</th><th class="num">cands / 9000s</th><th class="num">R²</th>
-        </tr></thead>
+        <thead>
+          <tr>
+            <th>model</th>
+            <th class="num">a (fixed s)</th>
+            <th class="num">b (s/char)</th>
+            <th class="num">forge s/cand</th>
+            <th class="num">cands / 9000s</th>
+            <th class="num">R²</th>
+          </tr>
+        </thead>
         <tbody>
-          <tr><td class="model gpt">gpt_oss</td><td class="num">3.9</td><td class="num">0.0546</td><td class="num">13.2</td><td class="num">~684</td><td class="num">0.90</td></tr>
-          <tr><td class="model gem">gemma_4</td><td class="num">3.4</td><td class="num">0.1052</td><td class="num">16.4</td><td class="num">~548</td><td class="num">0.73</td></tr>
+          <tr>
+            <td class="model gpt">gpt_oss</td>
+            <td class="num">3.9</td>
+            <td class="num">0.0546</td>
+            <td class="num">13.2</td>
+            <td class="num">~684</td>
+            <td class="num">0.90</td>
+          </tr>
+          <tr>
+            <td class="model gem">gemma_4</td>
+            <td class="num">3.4</td>
+            <td class="num">0.1052</td>
+            <td class="num">16.4</td>
+            <td class="num">~548</td>
+            <td class="num">0.73</td>
+          </tr>
         </tbody>
       </table>
     </div>
-    <p><strong>gemma is the binding model on the shipped forge</strong> (~548 vs ~684 candidates) — but by ~20% in <em>candidate</em> terms, not 2× (the 2× is per-char; gemma writes fewer chars because it skips the reasoning the harmony forge suppresses on gpt_oss). Current config gives both models <code>FILL_BUDGET_CHARS = 171000</code>, over-projecting gemma and sizing the ship count off the wrong model.</p>
+    <p>
+      <strong>gemma is the binding model on the shipped forge</strong> (~548 vs
+      ~684 candidates) — but by ~20% in <em>candidate</em> terms, not 2× (the 2×
+      is per-char; gemma writes fewer chars because it skips the reasoning the
+      harmony forge suppresses on gpt_oss). Current config gives both models
+      <code>FILL_BUDGET_CHARS = 171000</code>, over-projecting gemma and sizing
+      the ship count off the wrong model.
+    </p>
   </section>
 
   <section>
     <h2>The reframe</h2>
-    <p class="h2sub">Maximin was a workaround for a constraint that doesn't exist.</p>
-    <p><code>min</code>-over-models assumed <em>one shared submission</em> where a template had to fire on both victims. With independent pools, a template that's great for gpt_oss and useless for gemma costs gemma <strong>nothing</strong> — gemma's pool simply excludes it. The columns don't compete for slots, so there is no reason to compromise between them.</p>
-    <p>Consequence: <strong>optimize each column to its own maximum</strong>, with its own best templates, budget, and ship count. And since the <strong>LB is the mean</strong> of the two columns, that <em>is</em> the objective — independently maximizing each pool maximizes the mean, with no competition to trade them off. The maximin was the mismatch: <code>min</code> caps the score at the weaker column and gives no reward for optimizing the stronger one past it.</p>
+    <p class="h2sub">
+      Maximin was a workaround for a constraint that doesn't exist.
+    </p>
+    <p>
+      <code>min</code>-over-models assumed <em>one shared submission</em> where
+      a template had to fire on both victims. With independent pools, a template
+      that's great for gpt_oss and useless for gemma costs gemma
+      <strong>nothing</strong> — gemma's pool simply excludes it. The columns
+      don't compete for slots, so there is no reason to compromise between them.
+    </p>
+    <p>
+      Consequence: <strong>optimize each column to its own maximum</strong>,
+      with its own best templates, budget, and ship count. And since the
+      <strong>LB is the mean</strong> of the two columns, that <em>is</em> the
+      objective — independently maximizing each pool maximizes the mean, with no
+      competition to trade them off. The maximin was the mismatch:
+      <code>min</code> caps the score at the weaker column and gives no reward
+      for optimizing the stronger one past it.
+    </p>
   </section>
 
   <section>
@@ -170,105 +497,305 @@
     <p class="h2sub">Per-model everything, driven by the measured constants.</p>
 
     <h3>1 · Cost stays in characters — deterministic, rescaled per model</h3>
-    <p>Keep <code>raw_gen_chars</code> as the cost signal: it is greedy-<strong>deterministic</strong>, carries no wall-clock noise, and is reproducible in the local scorer with no timing. The per-model 2× rate is absorbed into <em>calibration</em>, not into the unit. Two char-native edits: (a) replace the global <code>55·turns</code> floor with a per-model <code>FIXED_CHARS</code>, and (b) set a per-model <code>FILL_BUDGET_CHARS</code>. Seconds appear <em>once</em> — to derive those two char constants from the pinned rates — and never enter the objective.</p>
+    <p>
+      Keep <code>raw_gen_chars</code> as the cost signal: it is
+      greedy-<strong>deterministic</strong>, carries no wall-clock noise, and is
+      reproducible in the local scorer with no timing. The per-model 2× rate is
+      absorbed into <em>calibration</em>, not into the unit. Two char-native
+      edits: (a) replace the global <code>55·turns</code> floor with a per-model
+      <code>FIXED_CHARS</code>, and (b) set a per-model
+      <code>FILL_BUDGET_CHARS</code>. Seconds appear <em>once</em> — to derive
+      those two char constants from the pinned rates — and never enter the
+      objective.
+    </p>
 
     <h3>2 · Budgets &amp; ship sizing → gemma-safe with margin</h3>
-    <p>Ship count per model = <code>safe_frac · budget_s / t_candidate(pool)</code>, sized to the <em>slowest-firing</em> template in that pool, targeting <strong>~7500&nbsp;s not 9000&nbsp;s</strong> so run-to-run T4 variance can't push the replay over the hard deadline. The 86 died on that variance; margin is not optional.</p>
+    <p>
+      Ship count per model =
+      <code>safe_frac · budget_s / t_candidate(pool)</code>, sized to the
+      <em>slowest-firing</em> template in that pool, targeting
+      <strong>~7500&nbsp;s not 9000&nbsp;s</strong> so run-to-run T4 variance
+      can't push the replay over the hard deadline. The 86 died on that
+      variance; margin is not optional.
+    </p>
 
     <h3>3 · Objective → mean of the two columns (= the LB)</h3>
-    <p>The LB is the <strong>mean</strong> of the two model columns, so the objective is exactly <code>(gpt_oss_column + gemma_column) / 2</code>, each column projected from its own pool (both already computed independently in <code>project_public_board</code>). Retire the maximin. Gate on both pools non-empty so neither starts abandoned. <strong>Dependency:</strong> this flips <em>with</em> the two-pool change, not before — on today's shared submission, mean would reintroduce the lopsidedness <code>min</code> guards against, so <code>min</code> stays until the two pools exist.</p>
+    <p>
+      The LB is the <strong>mean</strong> of the two model columns, so the
+      objective is exactly <code>(gpt_oss_column + gemma_column) / 2</code>,
+      each column projected from its own pool (both already computed
+      independently in <code>project_public_board</code>). Retire the maximin.
+      Gate on both pools non-empty so neither starts abandoned.
+      <strong>Dependency:</strong> this flips <em>with</em> the two-pool change,
+      not before — on today's shared submission, mean would reintroduce the
+      lopsidedness <code>min</code> guards against, so <code>min</code> stays
+      until the two pools exist.
+    </p>
 
     <h3>4 · Two explicit pools — a proposer schema change</h3>
-    <p>The proposer's output pydantic model becomes two named per-model message lists — <code>Submission { gpt_oss: list[Message], gemma_4: list[Message] }</code>, each with its own <code>min_length</code>/<code>max_length</code>. This makes <strong>"both pools non-empty" a structural invariant</strong> (the <code>min_length</code> floor) instead of a runtime gate, and gives constrained decoding a per-pool target. <code>score_submission</code> scores each list on its own model; the objective is the mean of the two columns. Per-model diversity, feedback, and the incumbent/team blocks in <code>prompts.toml</code> all fork per pool. Ship-side is ready — <code>attack.py</code> already serves per-model pools via live probing.</p>
+    <p>
+      The proposer's output pydantic model becomes two named per-model message
+      lists —
+      <code>Submission { gpt_oss: list[Message], gemma_4: list[Message] }</code
+      >, each with its own <code>min_length</code>/<code>max_length</code>. This
+      makes <strong>"both pools non-empty" a structural invariant</strong> (the
+      <code>min_length</code> floor) instead of a runtime gate, and gives
+      constrained decoding a per-pool target.
+      <code>score_submission</code> scores each list on its own model; the
+      objective is the mean of the two columns. Per-model diversity, feedback,
+      and the incumbent/team blocks in <code>prompts.toml</code> all fork per
+      pool. Ship-side is ready — <code>attack.py</code> already serves per-model
+      pools via live probing.
+    </p>
   </section>
 
   <section>
     <h2>Pinned constants</h2>
-    <p class="h2sub">Measured on real T4 — expensive to reproduce. Persist to config + memory.</p>
+    <p class="h2sub">
+      Measured on real T4 — expensive to reproduce. Persist to config + memory.
+    </p>
     <div class="card tight">
-      <p style="margin:0 0 10px;font-size:13.5px;color:var(--muted);">Measured on T4 (seconds), then converted to the deterministic char constants the objective actually uses.</p>
-      <div class="tablewrap" style="margin:0;border:none;">
+      <p style="margin: 0 0 10px; font-size: 13.5px; color: var(--muted)">
+        Measured on T4 (seconds), then converted to the deterministic char
+        constants the objective actually uses.
+      </p>
+      <div class="tablewrap" style="margin: 0; border: none">
         <table>
-          <thead><tr>
-            <th>model</th><th class="num">a (s)</th><th class="num">b (s/char)</th>
-            <th class="num">FIXED_CHARS = a/b</th><th class="num">FILL_BUDGET_CHARS<br>(7500s ÷ b)</th>
-          </tr></thead>
+          <thead>
+            <tr>
+              <th>model</th>
+              <th class="num">a (s)</th>
+              <th class="num">b (s/char)</th>
+              <th class="num">FIXED_CHARS = a/b</th>
+              <th class="num">FILL_BUDGET_CHARS<br />(7500s ÷ b)</th>
+            </tr>
+          </thead>
           <tbody>
-            <tr><td class="model gpt">gpt_oss</td><td class="num">3.9</td><td class="num">0.0546</td><td class="num">71</td><td class="num">~137 000</td></tr>
-            <tr><td class="model gem">gemma_4</td><td class="num">3.4</td><td class="num">0.1052</td><td class="num">32</td><td class="num">~71 000</td></tr>
+            <tr>
+              <td class="model gpt">gpt_oss</td>
+              <td class="num">3.9</td>
+              <td class="num">0.0546</td>
+              <td class="num">71</td>
+              <td class="num">~137 000</td>
+            </tr>
+            <tr>
+              <td class="model gem">gemma_4</td>
+              <td class="num">3.4</td>
+              <td class="num">0.1052</td>
+              <td class="num">32</td>
+              <td class="num">~71 000</td>
+            </tr>
           </tbody>
         </table>
       </div>
-      <p style="margin:12px 0 0;font-size:13px;color:var(--faint);font-family:var(--mono);">cost_chars(model) = raw_gen_chars + FIXED_CHARS[model] &nbsp;·&nbsp; x-var = raw_gen_chars (deterministic)</p>
+      <p
+        style="
+          margin: 12px 0 0;
+          font-size: 13px;
+          color: var(--faint);
+          font-family: var(--mono);
+        "
+      >
+        cost_chars(model) = raw_gen_chars + FIXED_CHARS[model] &nbsp;·&nbsp;
+        x-var = raw_gen_chars (deterministic)
+      </p>
     </div>
-    <p style="color:var(--muted);font-size:14.5px;">Gateway invariants: <code>DEFAULT_BUDGET_S = 9000</code> per (model, guardrail); <code>MAX_REPLAY_FINDINGS = 2000</code>; two phases per model (attack → replay); replay timeout ⇒ <code>INVALID_SUBMISSION</code>. The 7500s in the budget column is the safety margin (Decision C).</p>
+    <p style="color: var(--muted); font-size: 14.5px">
+      Gateway invariants: <code>DEFAULT_BUDGET_S = 9000</code> per (model,
+      guardrail); <code>MAX_REPLAY_FINDINGS = 2000</code>; two phases per model
+      (attack → replay); replay timeout ⇒ <code>INVALID_SUBMISSION</code>. The
+      7500s in the budget column is the safety margin (Decision C).
+    </p>
   </section>
 
   <section>
     <h2>Implementation</h2>
     <p class="h2sub">Sequenced — each step is independently testable.</p>
     <div class="tasks">
-      <div class="task"><div class="n"></div><div>
-        <h3>Per-model char constants</h3>
-        <p>Add <code>FIXED_CHARS = {gpt_oss:71, gemma_4:32}</code> and set the existing per-model <code>FILL_BUDGET_CHARS</code> dict to <code>{gpt_oss:~137k, gemma_4:~71k}</code>. Keep the seconds rates <code>(a,b)</code> in a comment for future re-derivation.</p>
-        <p class="files">config.py</p>
-      </div></div>
-      <div class="task"><div class="n"></div><div>
-        <h3>Swap the per-candidate cost term</h3>
-        <p><code>project_public_board</code> already walks a per-model char budget — only the cost term changes: replace <code>gen_chars + 55·turns</code> with <code>raw_gen_chars + FIXED_CHARS[model]</code>. Stays a pure field-read: deterministic, no replay, no timing.</p>
-        <p class="files">submission_score.py</p>
-      </div></div>
-      <div class="task"><div class="n"></div><div>
-        <h3>Proposer schema → two per-model pools (pydantic)</h3>
-        <p>Rework <code>Submission</code> to two named lists <code>{gpt_oss, gemma_4}</code>, each <code>Field(min_length, max_length)</code>; regenerate the JSON schema the proposer is constrained to. Update <code>candidate_chains</code>/<code>to_shipped_json</code> to fill per pool. This is the foundation — everything downstream keys off it.</p>
-        <p class="files">submission.py · submission_score.py</p>
-      </div></div>
-      <div class="task"><div class="n"></div><div>
-        <h3>Two explicit pools in the proposer loop</h3>
-        <p>Per-model authoring/curation on the new schema: separate diversity and feedback, forked incumbent/team blocks in the prompt. Each pool scored on its own model, advanced on its own column. <em>Lands before / with the mean flip.</em></p>
-        <p class="files">optimize_prompts.py · blackboard.py · prompts.toml</p>
-      </div></div>
-      <div class="task"><div class="n"></div><div>
-        <h3>Mean objective (flip from min)</h3>
-        <p>Replace the maximin <code>_objective_key</code> with <code>(gpt_column + gemma_column) / 2</code> — the LB metric. Both-non-empty is now structural (schema <code>min_length</code>). Per-column wandb metrics. <strong>Only after the two-pool tasks are live.</strong></p>
-        <p class="files">blackboard.py · optimize_prompts.py</p>
-      </div></div>
-      <div class="task"><div class="n"></div><div>
-        <h3>Gemma-safe ship sizing + margin</h3>
-        <p>Ship count per model from its char budget (7500s-derived), sized to the slowest firing template in that pool. Assert neither model's projected replay exceeds 9000s.</p>
-        <p class="files">attack.py (calib/shipped) · submission.py</p>
-      </div></div>
-      <div class="task"><div class="n"></div><div>
-        <h3>Validation against the LB</h3>
-        <p>Re-score the champion; confirm projected fired-count per model matches <code>LB_col × 200 / 18</code> on a rerun-surviving submission. Recalibrate <code>safe_frac</code> if reruns still fail.</p>
-        <p class="files">scripts/score_artifact.py</p>
-      </div></div>
+      <div class="task">
+        <div class="n"></div>
+        <div>
+          <h3>Per-model char constants</h3>
+          <p>
+            Add <code>FIXED_CHARS = {gpt_oss:71, gemma_4:32}</code> and set the
+            existing per-model <code>FILL_BUDGET_CHARS</code> dict to
+            <code>{gpt_oss:~137k, gemma_4:~71k}</code>. Keep the seconds rates
+            <code>(a,b)</code> in a comment for future re-derivation.
+          </p>
+          <p class="files">config.py</p>
+        </div>
+      </div>
+      <div class="task">
+        <div class="n"></div>
+        <div>
+          <h3>Swap the per-candidate cost term</h3>
+          <p>
+            <code>project_public_board</code> already walks a per-model char
+            budget — only the cost term changes: replace
+            <code>gen_chars + 55·turns</code> with
+            <code>raw_gen_chars + FIXED_CHARS[model]</code>. Stays a pure
+            field-read: deterministic, no replay, no timing.
+          </p>
+          <p class="files">submission_score.py</p>
+        </div>
+      </div>
+      <div class="task">
+        <div class="n"></div>
+        <div>
+          <h3>Proposer schema → two per-model pools (pydantic)</h3>
+          <p>
+            Rework <code>Submission</code> to two named lists
+            <code>{gpt_oss, gemma_4}</code>, each
+            <code>Field(min_length, max_length)</code>; regenerate the JSON
+            schema the proposer is constrained to. Update
+            <code>candidate_chains</code>/<code>to_shipped_json</code> to fill
+            per pool. This is the foundation — everything downstream keys off
+            it.
+          </p>
+          <p class="files">submission.py · submission_score.py</p>
+        </div>
+      </div>
+      <div class="task">
+        <div class="n"></div>
+        <div>
+          <h3>Two explicit pools in the proposer loop</h3>
+          <p>
+            Per-model authoring/curation on the new schema: separate diversity
+            and feedback, forked incumbent/team blocks in the prompt. Each pool
+            scored on its own model, advanced on its own column.
+            <em>Lands before / with the mean flip.</em>
+          </p>
+          <p class="files">
+            optimize_prompts.py · blackboard.py · prompts.toml
+          </p>
+        </div>
+      </div>
+      <div class="task">
+        <div class="n"></div>
+        <div>
+          <h3>Mean objective (flip from min)</h3>
+          <p>
+            Replace the maximin <code>_objective_key</code> with
+            <code>(gpt_column + gemma_column) / 2</code> — the LB metric.
+            Both-non-empty is now structural (schema <code>min_length</code>).
+            Per-column wandb metrics.
+            <strong>Only after the two-pool tasks are live.</strong>
+          </p>
+          <p class="files">blackboard.py · optimize_prompts.py</p>
+        </div>
+      </div>
+      <div class="task">
+        <div class="n"></div>
+        <div>
+          <h3>Gemma-safe ship sizing + margin</h3>
+          <p>
+            Ship count per model from its char budget (7500s-derived), sized to
+            the slowest firing template in that pool. Assert neither model's
+            projected replay exceeds 9000s.
+          </p>
+          <p class="files">attack.py (calib/shipped) · submission.py</p>
+        </div>
+      </div>
+      <div class="task">
+        <div class="n"></div>
+        <div>
+          <h3>Validation against the LB</h3>
+          <p>
+            Re-score the champion; confirm projected fired-count per model
+            matches <code>LB_col × 200 / 18</code> on a rerun-surviving
+            submission. Recalibrate <code>safe_frac</code> if reruns still fail.
+          </p>
+          <p class="files">scripts/score_artifact.py</p>
+        </div>
+      </div>
     </div>
   </section>
 
   <section>
     <h2>Decisions</h2>
     <p class="h2sub">Two locked, one provisional.</p>
-    <div class="q" style="border-left-color:var(--ok);">
-      <p class="qh"><span style="color:var(--ok);font-family:var(--mono);font-size:12px;letter-spacing:.06em;">✓ LOCKED</span> &nbsp;A · Two explicit pools</p>
-      <p>The proposer maintains two per-model pools (not one union filtered at ship time) — cleaner per-column gradient for the search. Drives Task 3.</p>
+    <div class="q" style="border-left-color: var(--ok)">
+      <p class="qh">
+        <span
+          style="
+            color: var(--ok);
+            font-family: var(--mono);
+            font-size: 12px;
+            letter-spacing: 0.06em;
+          "
+          >✓ LOCKED</span
+        >
+        &nbsp;A · Two explicit pools
+      </p>
+      <p>
+        The proposer maintains two per-model pools (not one union filtered at
+        ship time) — cleaner per-column gradient for the search. Drives Task 3.
+      </p>
     </div>
-    <div class="q" style="border-left-color:var(--ok);">
-      <p class="qh"><span style="color:var(--ok);font-family:var(--mono);font-size:12px;letter-spacing:.06em;">✓ LOCKED</span> &nbsp;B · LB = mean of the two model columns</p>
-      <p>Objective is <code>(gpt_oss_column + gemma_column) / 2</code>. This retires the maximin (which capped the score at the weaker column). Flips <em>with</em> Task 3, not before — mean on a shared submission reintroduces lopsidedness.</p>
+    <div class="q" style="border-left-color: var(--ok)">
+      <p class="qh">
+        <span
+          style="
+            color: var(--ok);
+            font-family: var(--mono);
+            font-size: 12px;
+            letter-spacing: 0.06em;
+          "
+          >✓ LOCKED</span
+        >
+        &nbsp;B · LB = mean of the two model columns
+      </p>
+      <p>
+        Objective is <code>(gpt_oss_column + gemma_column) / 2</code>. This
+        retires the maximin (which capped the score at the weaker column). Flips
+        <em>with</em> Task 3, not before — mean on a shared submission
+        reintroduces lopsidedness.
+      </p>
     </div>
     <div class="q">
-      <p class="qh"><span style="color:var(--warn);font-family:var(--mono);font-size:12px;letter-spacing:.06em;">◔ PROVISIONAL</span> &nbsp;C · Real surviving budget &amp; margin</p>
-      <p>Default to a conservative <strong>7500s</strong> margin (the ~137k/71k budgets) and validate empirically off the next rerun-<em>surviving</em> submission's per-column LB (<code>fired = LB × 200 / 18</code>) — not the dead 86 anchor. Tighten or loosen from that. No need to block the build.</p>
+      <p class="qh">
+        <span
+          style="
+            color: var(--warn);
+            font-family: var(--mono);
+            font-size: 12px;
+            letter-spacing: 0.06em;
+          "
+          >◔ PROVISIONAL</span
+        >
+        &nbsp;C · Real surviving budget &amp; margin
+      </p>
+      <p>
+        Default to a conservative <strong>7500s</strong> margin (the ~137k/71k
+        budgets) and validate empirically off the next rerun-<em>surviving</em>
+        submission's per-column LB (<code>fired = LB × 200 / 18</code>) — not
+        the dead 86 anchor. Tighten or loosen from that. No need to block the
+        build.
+      </p>
     </div>
   </section>
 
   <section>
     <h2>Risks</h2>
     <ul>
-      <li><strong>Hard-fail on overrun.</strong> Any sizing error that pushes either column's replay past 9000s voids that column entirely. Margin + per-model sizing are the mitigations; the ship-sizing task must include an assertion that projected replay &lt; budget.</li>
-      <li><strong>gemma R² = 0.73.</strong> Lower than gpt_oss; one template (<code>inj_skip_to_commentary</code>) left ~8s unexplained at fixed <code>raw_gen_chars</code>. Pending: inspect gemma's <code>raw_gen_sample</code> to rule out mis-measured generation before trusting <code>b_gemma</code>.</li>
-      <li><strong>Budget variance.</strong> The failure mode is silent (a voided column reads as a bad score). Validation (task 6) must diff projected vs LB-implied fired-count every submission.</li>
+      <li>
+        <strong>Hard-fail on overrun.</strong> Any sizing error that pushes
+        either column's replay past 9000s voids that column entirely. Margin +
+        per-model sizing are the mitigations; the ship-sizing task must include
+        an assertion that projected replay &lt; budget.
+      </li>
+      <li>
+        <strong>gemma R² = 0.73.</strong> Lower than gpt_oss; one template
+        (<code>inj_skip_to_commentary</code>) left ~8s unexplained at fixed
+        <code>raw_gen_chars</code>. Pending: inspect gemma's
+        <code>raw_gen_sample</code> to rule out mis-measured generation before
+        trusting <code>b_gemma</code>.
+      </li>
+      <li>
+        <strong>Budget variance.</strong> The failure mode is silent (a voided
+        column reads as a bad score). Validation (task 6) must diff projected vs
+        LB-implied fired-count every submission.
+      </li>
     </ul>
   </section>
 
