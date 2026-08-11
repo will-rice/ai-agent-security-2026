@@ -3679,6 +3679,76 @@ def test_assembled_attack_ships_pool_union_without_touching_opaque_env(
     assert [c.user_messages[0] for c in kept] == ["gpt fire 0", "gemma fire 0"]
 
 
+def test_assembled_attack_trims_at_replay_margin_fraction(tmp_path: Path) -> None:
+    """The shipped trim deadline uses REPLAY_MARGIN_S/ARTIFACT_SCORE_BUDGET_S = 0.8333.
+
+    The old 0.97 fraction left only 3% margin against the 9000s HARD replay deadline
+    (overrun => INVALID_SUBMISSION, no partial credit) -- too tight for T4 run-to-run
+    variance, and inconsistent with the green-side projection budget
+    (``config.REPLAY_MARGIN_S`` = 7500s = 0.8333 of 9000s). This locks the shipped
+    constant to that ratio and proves the trim loop actually computes its deadline
+    from it (not just that the unused constant happens to hold the right value).
+    """
+    from aicomp_sdk.attacks.contracts import AttackRunConfig
+    from aicomp_sdk.core.env.api import AttackEnvProtocol
+
+    from jed_attack.campaign import assemble, config
+
+    path = assemble.build(
+        {"gpt_oss": json.dumps([["fire 0"]]), "gemma_4": "[]"}, tmp_path / "build"
+    )
+    namespace: dict[str, object] = {}
+    exec(compile(path.read_text(), "attack.py", "exec"), namespace)  # noqa: S102
+
+    frac = cast("float", namespace["_REPLAY_SAFE_FRAC"])
+    assert frac == pytest.approx(
+        config.REPLAY_MARGIN_S / config.ARTIFACT_SCORE_BUDGET_S, abs=1e-4
+    )
+    assert frac == pytest.approx(0.8333, abs=1e-4)
+
+    # Behavioral check: pick a budget where the FIRST deadline check (before any
+    # probe) trips under the new tighter fraction (first_check > budget_s * frac,
+    # so the loop breaks with zero probes) but would NOT trip under the old looser
+    # 0.97 fraction (first_check < budget_s * 0.97, i.e. old code ran >= 1 probe).
+    slowest0 = cast("float", namespace["_SLOWEST0"])
+    mult = cast("float", namespace["_SLOWEST_MULT"])
+    first_check = slowest0 * mult
+    budget_s = first_check * (1.0 / frac + 1.0 / 0.97) / 2.0
+    assert first_check > budget_s * frac, (
+        "budget_s should trip the new tighter deadline"
+    )
+    assert first_check < budget_s * 0.97, (
+        "budget_s must not also trip the old 0.97 frac"
+    )
+
+    class FakeEnv:
+        seed = 123
+
+        def __init__(self) -> None:
+            self.probed = False
+
+        def reset(self) -> None:
+            self.probed = True
+
+        def interact(self, message: str, max_tool_hops: int) -> None:
+            raise AssertionError(
+                "no probe should run: the tighter deadline trims first"
+            )
+
+        def export_trace_dict(self) -> dict[str, object]:
+            return {}
+
+    attack_cls = cast("type[AttackAlgorithmBase]", namespace["AttackAlgorithm"])
+    env = FakeEnv()
+    kept = attack_cls().run(
+        cast("AttackEnvProtocol", env),
+        AttackRunConfig(time_budget_s=budget_s, max_tool_hops=1),
+    )
+    assert env.probed is False
+    # Nothing was probed -> falls back to the first embedded candidate, never empty.
+    assert [c.user_messages[0] for c in kept] == ["fire 0"]
+
+
 def test_blackboard_load_raises_when_all_rows_malformed(tmp_path: Path) -> None:
     """Fail loudly on a fully-degraded board rather than warm-starting empty.
 

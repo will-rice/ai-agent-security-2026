@@ -52,7 +52,14 @@ _HARD_N_CAP = __HARD_N_CAP__
 _LAT_FLOOR_S = 0.001
 _SLOWEST0 = 25.0
 _SLOWEST_MULT = 1.35
-_REPLAY_SAFE_FRAC = 0.97
+# REPLAY_MARGIN_S / ARTIFACT_SCORE_BUDGET_S = 7500/9000 (config.py; not importable
+# here -- the shipped skeleton is isolated to aicomp_sdk + stdlib, so the ratio is
+# inlined as a literal). The old 0.97 (8730s against the 9000s HARD replay deadline)
+# left only 3% margin for T4 run-to-run variance -- too tight; a rerun that overruns
+# the deadline is INVALID_SUBMISSION with no partial credit (the 86-rerun failure
+# mode). 0.8333 matches the green-side REPLAY_MARGIN_S projection and leaves ~17%
+# (1500s) of headroom instead.
+_REPLAY_SAFE_FRAC = 0.8333
 
 
 def _candidates_union() -> list:
