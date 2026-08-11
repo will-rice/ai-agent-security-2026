@@ -144,7 +144,7 @@ async def _assess_uncached(
         return _assessment_result("skipped_nonfiring", identity, refs, novelty)
 
     try:
-        robustness_request = build_robustness_request(submission, score)
+        robustness_request = build_robustness_request(submission.all_messages(), score)
         mechanism_request = MechanismRequest(
             candidate=robustness_request.messages,
             reference_mechanisms=list(reference_mechanisms),

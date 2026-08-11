@@ -10,6 +10,8 @@ first-party import. It prepends a Kaggle sys.path preamble (no-op off-Kaggle), s
 ``build_next`` is directly shippable.
 """
 
+import json
+from collections.abc import Mapping
 from pathlib import Path
 
 # Mirrors ``config.SHIP_CANDIDATE_CAP``: the most candidates the skeleton will probe.
@@ -43,13 +45,53 @@ from aicomp_sdk.attacks.contracts import (
 from aicomp_sdk.core.env.api import AttackEnvProtocol
 from aicomp_sdk.core.predicates import eval_predicates
 
-_CANDIDATES = json.loads(r"""__CANDIDATES_JSON__""")
+_CANDIDATES_BY_MODEL = json.loads(r"""__CANDIDATES_JSON__""")
 _PAYLOAD = "SECRET_MARKER"
 _HARD_N_CAP = __HARD_N_CAP__
 _LAT_FLOOR_S = 0.001
 _SLOWEST0 = 25.0
 _SLOWEST_MULT = 1.35
 _REPLAY_SAFE_FRAC = 0.97
+
+
+def _model_hint(env: Any) -> str:
+    """Best-effort victim-model key ("gpt_oss"/"gemma_4") from the graded env, else "".
+
+    The candidate list is keyed per victim model; the gateway grades one model at a
+    time, so read the model id off the env's agent backend and map it to a pool key.
+    Returns "" when the id cannot be read, and the caller then serves every pool.
+    """
+    agent = getattr(env, "agent", None)
+    model_id = ""
+    owners = (agent, getattr(agent, "_backend", None), getattr(agent, "backend", None))
+    for owner in owners:
+        if owner is None:
+            continue
+        cfg = getattr(owner, "config", None)
+        for value in (getattr(owner, "model_id", None), getattr(cfg, "model_id", None)):
+            if isinstance(value, str) and value:
+                model_id = value
+                break
+        if model_id:
+            break
+    key = model_id.lower()
+    if "gemma" in key:
+        return "gemma_4"
+    if "gpt" in key or "oss" in key:
+        return "gpt_oss"
+    return ""
+
+
+def _candidates_for(env: Any) -> list:
+    """The candidate list to probe for the graded victim model.
+
+    Serves the hinted model's pool; when the hint is unreadable, serves every pool's
+    candidates concatenated so a candidate always exists.
+    """
+    hinted = _CANDIDATES_BY_MODEL.get(_model_hint(env))
+    if hinted:
+        return hinted
+    return [chain for pool in _CANDIDATES_BY_MODEL.values() for chain in pool]
 
 
 def _fired(trace: Mapping[str, Any]) -> bool:
@@ -102,9 +144,10 @@ class AttackAlgorithm(AttackAlgorithmBase):
         hops = int(getattr(config, "max_tool_hops", 8) or 8)
         budget_s = float(getattr(config, "time_budget_s", 0.0) or 0.0)
         deadline = time.monotonic() + budget_s * _REPLAY_SAFE_FRAC if budget_s else None
+        candidates = _candidates_for(env)
         kept: list[AttackCandidate] = []
         slowest = _SLOWEST0
-        for chain in _CANDIDATES[:_HARD_N_CAP]:
+        for chain in candidates[:_HARD_N_CAP]:
             if deadline is not None:
                 if time.monotonic() + slowest * _SLOWEST_MULT > deadline:
                     break
@@ -113,26 +156,32 @@ class AttackAlgorithm(AttackAlgorithmBase):
             if fired:
                 kept.append(AttackCandidate.from_messages(list(chain)))
         if not kept:
-            kept = [AttackCandidate.from_messages(list(c)) for c in _CANDIDATES[:1]]
+            kept = [AttackCandidate.from_messages(list(c)) for c in candidates[:1]]
         return kept
 '''
 
 
-def build(candidates_json: str, out_dir: Path) -> Path:
-    """Write the shipped ``attack.py`` with the pre-filled candidate list embedded.
+def build(candidates_by_model: Mapping[str, str], out_dir: Path) -> Path:
+    """Write the shipped ``attack.py`` with the pre-filled per-model candidate map.
 
     Args:
-        candidates_json: ``Submission.to_shipped_json(cap)`` -- the exact candidate
-            list, a JSON array of message chains.
+        candidates_by_model: ``Submission.to_shipped_json(caps)`` -- ``{model:
+            candidates_json}``, each value a JSON array of message chains for that
+            victim model. Embedded as a ``{model: [candidates]}`` map the artifact
+            serves by the graded model's hint.
         out_dir: Output directory (typically ``config.BUILD_NEXT_DIR``).
 
     Returns:
         The path to the written ``attack.py``.
 
     Raises:
-        ValueError: If ``candidates_json`` contains a ``\"\"\"`` sequence that would
-            break out of the embedded string literal.
+        ValueError: If the embedded JSON contains a ``\"\"\"`` sequence that would break
+            out of the embedded string literal.
     """
+    candidates_json = json.dumps(
+        {model: json.loads(chains) for model, chains in candidates_by_model.items()},
+        separators=(",", ":"),
+    )
     if '"""' in candidates_json:
         raise ValueError("candidates_json must not contain a triple-quote sequence")
     out_dir.mkdir(parents=True, exist_ok=True)

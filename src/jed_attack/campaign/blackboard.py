@@ -73,9 +73,16 @@ OBJECTIVE_NAME = objective_scheme_name(
 
 @dataclass(frozen=True)
 class Record:
-    """One scored submission on the blackboard."""
+    """One scored submission on the blackboard.
 
-    messages: list[dict]
+    Carries both per-model pools (``gpt_oss``/``gemma_4``, matching ``config.MODELS``);
+    each is the list of authored message dicts for that victim's column. The champion
+    reship fills each pool into its own candidate list and ships a ``{model: [...]}``
+    map (see :func:`_champion_map`).
+    """
+
+    gpt_oss: list[dict]
+    gemma_4: list[dict]
     public: float
     feedback: list[dict]
     reasoning: str
@@ -99,15 +106,48 @@ class Record:
     # so the robustness objective and the incumbent block can see per-victim spread.
     public_by_model: dict[str, float] = field(default_factory=dict)
 
+    @property
+    def messages(self) -> list[dict]:
+        """Both pools concatenated in ``config.MODELS`` order -- the flat message view.
+
+        The record stores one pool per model; consumers that only need the authored
+        shapes (diversity count, judge-study candidate source, incumbent prompt block)
+        read this flat concatenation.
+        """
+        return [
+            message for model in config.MODELS for message in self.pool_messages(model)
+        ]
+
+    def pool_messages(self, model: str) -> list[dict]:
+        """Return the stored message dicts authored for ``model``."""
+        if model not in config.MODELS:
+            raise ValueError(
+                f"unknown model {model!r}; expected one of {config.MODELS}"
+            )
+        return getattr(self, model)
+
     def to_json(self) -> dict[str, Any]:
         """Return a JSON-serializable dict for this record."""
         return asdict(self)
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> "Record":
-        """Build a Record from a parsed JSON dict (tolerant of older/missing fields)."""
+        """Build a Record from a parsed JSON dict (tolerant of older/missing fields).
+
+        Legacy single-list rows (pre per-model pools, a flat ``messages`` field) load
+        their whole list into the ``gpt_oss`` pool so a persisted champion still reships
+        without wiping the warm-started board; the ``gemma_4`` pool falls back at grade
+        time (assemble serves every pool when a model's pool is empty).
+        """
+        if "gpt_oss" in data or "gemma_4" in data:
+            gpt_oss = list(data.get("gpt_oss", []))
+            gemma_4 = list(data.get("gemma_4", []))
+        else:
+            gpt_oss = list(data.get("messages", []))
+            gemma_4 = []
         return cls(
-            messages=list(data["messages"]),
+            gpt_oss=gpt_oss,
+            gemma_4=gemma_4,
             public=float(data["public"]),
             feedback=list(data["feedback"]),
             reasoning=str(data.get("reasoning", "")),
@@ -138,19 +178,26 @@ class Record:
         )
 
 
-def _champion_json(record: "Record") -> str:
-    """Serialize a champion record's messages as the filled candidate-list JSON.
+def _champion_map(record: "Record") -> dict[str, str]:
+    """Per-model filled candidate-list JSON for a champion record's two pools.
 
-    Fills the record's message shapes into the shipped candidate list via the shared
-    :mod:`fill` round-robin -- the same one the scorer projects -- so what ships matches
-    what was scored. Fills directly (no ``Submission`` re-validation) so a persisted
-    record always ships.
+    Fills each pool's shapes into its own candidate list via the shared :mod:`fill`
+    round-robin -- the same one the scorer projects -- so what ships matches what was
+    scored. Fills directly (no ``Submission`` re-validation) so a persisted record
+    always ships. The result is the ``{model: candidates_json}`` map
+    :func:`assemble.build` embeds and serves per victim model.
     """
-    templates = [
-        fill.templatize(str(m["text"])) or str(m["text"]) for m in record.messages
-    ]
-    chains = fill.ordered_chains(templates, config.SHIP_CANDIDATE_CAP)
-    return json.dumps([list(chain) for chain in chains], separators=(",", ":"))
+    out: dict[str, str] = {}
+    for model in config.MODELS:
+        templates = [
+            fill.templatize(str(m["text"])) or str(m["text"])
+            for m in record.pool_messages(model)
+        ]
+        chains = fill.ordered_chains(templates, config.SHIP_CANDIDATE_CAP)
+        out[model] = json.dumps(
+            [list(chain) for chain in chains], separators=(",", ":")
+        )
+    return out
 
 
 def _severity_sum(entry: dict) -> float:
@@ -401,7 +448,7 @@ class Blackboard:
                 handle.write(json.dumps(record.to_json(), sort_keys=True) + "\n")
                 handle.flush()
             if reship and self.best_objective() is record and record is not prior_best:
-                assemble.build(_champion_json(record), out_dir)
+                assemble.build(_champion_map(record), out_dir)
                 return True
             return False
 
@@ -416,13 +463,13 @@ class Blackboard:
         """
         best = self.best_objective()
         if best is not None:
-            assemble.build(_champion_json(best), out_dir)
+            assemble.build(_champion_map(best), out_dir)
 
     def reship_champions(self, public_out_dir: Path, robust_out_dir: Path) -> None:
         """Rewrite exact-public and robust champion artifacts independently."""
         public = self.best_public()
         robust = self.best_robust()
         if public is not None:
-            assemble.build(_champion_json(public), public_out_dir)
+            assemble.build(_champion_map(public), public_out_dir)
         if robust is not None:
-            assemble.build(_champion_json(robust), robust_out_dir)
+            assemble.build(_champion_map(robust), robust_out_dir)

@@ -71,7 +71,7 @@ from jed_attack.campaign.submission import (
 from jed_attack.campaign.submission_score import (
     SubmissionScore,
     project_public_board,
-    score_submission,
+    score_pools,
 )
 
 
@@ -151,7 +151,8 @@ def make_record(
         for ms in score.per_message
     ]
     return blackboard.Record(
-        messages=[m.model_dump(mode="json") for m in submission.messages],
+        gpt_oss=[m.model_dump(mode="json") for m in submission.pool("gpt_oss")],
+        gemma_4=[m.model_dump(mode="json") for m in submission.pool("gemma_4")],
         public=score.public,
         feedback=feedback,
         reasoning=reasoning,
@@ -410,7 +411,7 @@ async def _score_batch(batch: list[Submission]) -> list[SubmissionScore]:
     Returns:
         One :class:`SubmissionScore` per submission, in order.
     """
-    return [await asyncio.to_thread(score_submission, s.messages) for s in batch]
+    return [await asyncio.to_thread(score_pools, s) for s in batch]
 
 
 async def _score_artifact_metrics(

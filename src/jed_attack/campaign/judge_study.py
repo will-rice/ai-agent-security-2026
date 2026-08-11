@@ -37,7 +37,7 @@ from jed_attack.campaign.judge import (
     judge_robustness,
     robustness_messages,
 )
-from jed_attack.campaign.submission import Message, MessageType, Submission
+from jed_attack.campaign.submission import Message, MessageType
 from jed_attack.campaign.submission_score import SubmissionScore, score_submission
 
 
@@ -218,7 +218,19 @@ def _load_records(path: Path) -> tuple[list[dict[str, Any]], int]:
         except json.JSONDecodeError:
             malformed += 1
             continue
-        if isinstance(record, dict) and isinstance(record.get("messages"), list):
+        if isinstance(record, dict) and all(
+            isinstance(record.get(model), list) for model in config.MODELS
+        ):
+            # The board stores one pool per model; the study treats the board purely as
+            # a source of candidate messages, so flatten the pools into a single ordered
+            # ``messages`` list (config.MODELS order) the rest of the study reads.
+            record["messages"] = [
+                message for model in config.MODELS for message in record[model]
+            ]
+            records.append(record)
+        elif isinstance(record, dict) and isinstance(record.get("messages"), list):
+            # Legacy single-list rows (pre per-model pools) already carry a flat
+            # ``messages`` list -- the study reads it directly.
             records.append(record)
         else:
             malformed += 1
@@ -977,9 +989,7 @@ def _labelled_rows(
         identity = str(selected["candidate_hash"])
         record, messages, optimal_score = records_by_hash[identity]
         try:
-            request = build_robustness_request(
-                Submission(messages=messages), optimal_score
-            )
+            request = build_robustness_request(messages, optimal_score)
         except Exception:
             build_errors += 1
             continue

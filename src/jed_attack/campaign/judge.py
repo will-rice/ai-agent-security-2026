@@ -6,13 +6,14 @@ serialized as quoted JSON evidence; it is never an instruction for the judge to 
 
 import dataclasses
 import json
+from collections.abc import Sequence
 from typing import Annotated, Literal
 
 import httpx
 import pydantic
 
 from jed_attack.campaign import config
-from jed_attack.campaign.submission import Submission
+from jed_attack.campaign.submission import Message
 from jed_attack.campaign.submission_score import SubmissionScore
 
 _BEGIN_UNTRUSTED_DATA = "BEGIN_UNTRUSTED_ATTACK_DATA"
@@ -302,15 +303,21 @@ class PairwisePreference(pydantic.BaseModel):
 
 
 def build_robustness_request(
-    submission: Submission,
+    messages: Sequence[Message],
     score: SubmissionScore,
     guardrail: str = config.GATE_GUARDRAIL_NAME,
 ) -> RobustnessRequest:
-    """Translate authoritative scorer output into the sole judge-facing fact shape."""
+    """Translate authoritative scorer output into the sole judge-facing fact shape.
+
+    Args:
+        messages: The scored messages in the SAME order as ``score.per_message`` -- the
+            per-pool flat order (:meth:`Submission.all_messages`) for a per-pool score,
+            or the authored list for a cross-model score.
+        score: The authoritative submission score.
+        guardrail: The guardrail whose per-message facts are surfaced.
+    """
     facts = []
-    for message, message_score in zip(
-        submission.messages, score.per_message, strict=True
-    ):
+    for message, message_score in zip(messages, score.per_message, strict=True):
         facts.append(
             ReplayMessageFacts(
                 type=message.type.value,

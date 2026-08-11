@@ -23,7 +23,7 @@ import sys
 
 from jed_attack.campaign import config
 from jed_attack.campaign.assemble import build as build_attack
-from jed_attack.campaign.blackboard import Blackboard, Record, _champion_json
+from jed_attack.campaign.blackboard import Blackboard, Record, _champion_map
 
 KERNEL_DIR = config.CAMPAIGN_ROOT / "submission_kernel" / "jed-attack-submission"
 NOTEBOOK = KERNEL_DIR / "jed-attack-submission.ipynb"
@@ -78,9 +78,9 @@ def build_and_inject(log: logging.Logger, diversity_band: float = 0.0) -> Record
     if champion is None:
         sys.exit("no champion in blackboard -- nothing to ship")
 
-    candidates_json = _champion_json(champion)
-    n_candidates = len(json.loads(candidates_json))
-    attack_path = build_attack(candidates_json, config.BUILD_NEXT_DIR)
+    candidates_map = _champion_map(champion)
+    n_candidates = sum(len(json.loads(chains)) for chains in candidates_map.values())
+    attack_path = build_attack(candidates_map, config.BUILD_NEXT_DIR)
     py_compile.compile(str(attack_path), doraise=True)
     attack_src = attack_path.read_text(encoding="utf-8")
 

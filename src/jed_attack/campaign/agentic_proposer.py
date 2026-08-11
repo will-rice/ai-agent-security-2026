@@ -118,26 +118,25 @@ def get_trace(trace_id: str, trace_cache: dict[str, Any]) -> dict[str, Any]:
 
 
 # The batch shape submit_batch accepts mirrors the one-shot _BATCH_SCHEMA: an array of
-# submissions, each an object with a `messages` array of {type, text, hops}. Each
-# submission is re-validated against the real Submission model, so an over-budget or
-# malformed one is reported back, not silently shipped.
+# submissions, each an object with two per-model pools (`gpt_oss`/`gemma_4`), each a
+# `messages`-style array of {type, text, hops}. Each submission is re-validated against
+# the real two-pool Submission model, so a malformed one is reported back, not shipped.
+_POOL_SCHEMA: dict[str, Any] = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "type": {"type": "string"},
+            "text": {"type": "string"},
+            "hops": {"type": "integer"},
+        },
+        "required": ["type", "text", "hops"],
+    },
+}
 _SUBMIT_ITEMS_SCHEMA: dict[str, Any] = {
     "type": "object",
-    "properties": {
-        "messages": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "type": {"type": "string"},
-                    "text": {"type": "string"},
-                    "hops": {"type": "integer"},
-                },
-                "required": ["type", "text", "hops"],
-            },
-        }
-    },
-    "required": ["messages"],
+    "properties": dict.fromkeys(config.MODELS, _POOL_SCHEMA),
+    "required": list(config.MODELS),
 }
 
 TOOLS: list[ChatCompletionToolParam] = [
