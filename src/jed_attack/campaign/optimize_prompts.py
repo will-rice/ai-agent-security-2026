@@ -298,11 +298,17 @@ async def _seed_archive(board: blackboard.Blackboard, out_dir: Path) -> None:
     instead of waiting for the loop to rediscover the incumbent's shapes.
 
     Guarded so it runs exactly once and never corrupts a live frontier: the loop-scoped
-    lock (:func:`_seed_gate`) serializes concurrent lanes; an empty-frontier check
-    inside the lock skips a warm/persisted archive and every lane after the first; a
-    missing incumbent (a truly cold board) is a no-op. If the incumbent's stored shapes
-    no longer validate the seed is skipped (logged) rather than raising -- the MIN
-    cold-start fallback still covers the unseeded frontier, so a bad seed cannot ship.
+    lock (:func:`_seed_gate`) serializes concurrent lanes; a missing incumbent (a truly
+    cold board) is a no-op. If the incumbent's stored shapes no longer validate the seed
+    is skipped (logged) rather than raising -- the MIN cold-start fallback still covers
+    the unseeded frontier, so a bad seed cannot ship.
+
+    When the frontier is ALREADY non-empty at entry -- a warm restart from a persisted
+    archive, or a lane after the first this loop -- there is nothing to seed, but the
+    frontier is still reshipped so ``attack.py`` reflects the authoritative Pareto pool
+    immediately (``main`` only writes the MIN champion when the frontier is empty, so a
+    warm restart would otherwise lag on the MIN champion until some later generation
+    changed the frontier). The reship is idempotent (the frontier is unchanged).
 
     Args:
         board: The shared team blackboard; its archive is seeded in place.
@@ -310,7 +316,10 @@ async def _seed_archive(board: blackboard.Blackboard, out_dir: Path) -> None:
     """
     async with _seed_gate():
         if board.archive.frontier():
-            return  # warm/persisted archive, or another lane already seeded this loop
+            # Warm restart / a later lane: nothing to seed, but reship the frontier so
+            # the authoritative Pareto pool ships, not main()'s cold-start MIN fallback.
+            await board.reship_frontier(out_dir)
+            return
         incumbent = board.best_objective()
         if incumbent is None:
             return  # truly cold board -- no accumulated incumbent to seed from yet
@@ -1974,6 +1983,26 @@ def _setup_logging() -> None:
     )
 
 
+def _ship_startup_fallback(board: blackboard.Blackboard, out_dir: Path) -> None:
+    """Ship the MIN champion at startup ONLY as the cold-start fallback (no frontier).
+
+    Reship the best-so-far immediately so ``attack.py`` never lags a warm restart:
+    reship-on-new-best only fires when a future generation beats the champion. But the
+    Pareto frontier is the authoritative shipped pool (design spec), so the MIN champion
+    ships only while the frontier is empty. On a warm restart a persisted archive
+    already carries a non-empty frontier, which :func:`_seed_archive` reships at
+    worker_loop startup, so writing the MIN champion here would transiently clobber that
+    superior artifact. Gating the startup MIN write to an empty frontier holds the same
+    invariant steady state enforces (ship MIN only when the frontier is empty).
+
+    Args:
+        board: The loaded team blackboard.
+        out_dir: Where :meth:`Blackboard.reship_best` writes ``attack.py``.
+    """
+    if not board.archive.frontier():
+        board.reship_best(out_dir)
+
+
 def main() -> None:
     """CLI: run the async team optimizer until cancelled."""
     load_dotenv(config.ENV_FILE)  # explicit path: find_dotenv() fails under `python -m`
@@ -1983,10 +2012,7 @@ def main() -> None:
         f"team-{_git_hash()}"
     )  # ONE run for the whole team, tagged by commit
     board = blackboard.Blackboard.load(config.BLACKBOARD_LOG)
-    # Reship the best-so-far immediately: on a warm restart the flat file already holds
-    # the best submission, but reship-on-new-best only fires when a future generation
-    # beats it -- so without this ``attack.py`` would lag (or stay empty) until then.
-    board.reship_best(config.BUILD_NEXT_DIR)
+    _ship_startup_fallback(board, config.BUILD_NEXT_DIR)
     try:
         asyncio.run(_run_team(board, run))
     finally:

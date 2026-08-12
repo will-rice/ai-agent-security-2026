@@ -368,9 +368,10 @@ def _firing_templates(
 
     ``board`` is one candidate's contribution: ``(severity + NOVELTY_PER_CELL) / 200``.
     ``cost = raw_gen_chars + FIXED_CHARS[model]`` -- deterministic per-model char cost
-    (``gen_chars_by_model`` is the reasoning-inclusive ``raw_gen_chars``). Measured on
-    T4 2026-08-11: ``FIXED_CHARS`` is the per-candidate floor in chars (gpt_oss ~71,
-    gemma_4 ~32), replacing the old global ``55*turns``. GENERATION dominates -- it
+    (``gen_chars_by_model`` is the reasoning-inclusive ``raw_gen_chars``). Recalibrated
+    2026-08-12 (``FIXED_CHARS = T4_FIXED_S / T4_RATE_S_PER_CHAR``): the per-candidate
+    floor in chars is gpt_oss ~25.6, gemma_4 ~14.3, replacing the old global
+    ``55*turns``. GENERATION dominates -- it
     separates the fast forge (~145-175 chars) from slow reasoning (~500-776); the
     per-model budget (``config.FILL_BUDGET_CHARS``) carries the 2x per-char rate gap.
     """

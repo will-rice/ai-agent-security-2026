@@ -1437,6 +1437,91 @@ def test_worker_loop_cold_start_seeds_archive_and_ships_frontier(
     assert "CHILDTAG" not in src  # the dominated generation child never shipped
 
 
+def test_startup_warm_restart_ships_frontier_not_min_champion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Warm restart ships the persisted Pareto frontier, never the MIN champion pool.
+
+    The shipping invariant (design spec): ``attack.py`` is the archive frontier pool
+    whenever the frontier is non-empty; the MIN champion ships ONLY as the cold-start
+    fallback. On a warm restart a persisted archive already carries a non-empty frontier
+    (here tag ``ALPHATAG``) that is a DISTINCT shape from the MIN champion pool (tag
+    ``MINTAG``). This exercises the two startup writers with no frontier-changing
+    generation: ``_ship_startup_fallback`` (what ``main`` runs) must NOT write the MIN
+    champion while the frontier is non-empty, and worker_loop's ``_seed_archive`` must
+    reship the frontier at startup.
+
+    Strip-proof both fixes: reverting the ``_ship_startup_fallback`` gate makes the
+    mid-test ``not attack.py.exists()`` assertion fail (MIN shipped on a warm restart);
+    reverting ``_seed_archive``'s warm-restart reship leaves ``attack.py`` unwritten so
+    the final read fails.
+    """
+    import asyncio
+
+    from jed_attack.campaign import archive, config
+    from jed_attack.campaign import blackboard as bb
+    from jed_attack.campaign import optimize_prompts as op
+    from jed_attack.campaign.submission import (
+        MessageType,
+        gen_char_bucket,
+        shape_family,
+    )
+
+    alpha = "SECRET_MARKER ALPHATAG https://a1.invalid/r"  # persisted frontier shape
+    mintag = "SECRET_MARKER MINTAG https://m1.invalid/r"  # MIN champion pool (distinct)
+
+    champion = bb.Record(
+        messages=[{"type": "exfil", "text": mintag, "hops": 1}],
+        public=9.0,
+        feedback=[],
+        reasoning="warm MIN champion",
+        model="min",
+        worker=0,
+        ts=1.0,
+        valid=True,
+        fires=True,
+        objective=99.0,
+        objective_name=bb.OBJECTIVE_NAME,
+    )
+    board = bb.Blackboard(tmp_path / "board.jsonl", [champion])
+    # A persisted non-empty frontier (the warm-restart condition), distinct from the MIN
+    # champion pool. Positive throughput on both axes -> it is on the global frontier.
+    board.archive.insert(
+        archive.Elite(
+            text=alpha,
+            mtype="exfil",
+            throughput={"gpt_oss": 0.01, "gemma_4": 0.01},
+            diagnosis="",
+            family=shape_family(alpha, MessageType.EXFIL),
+            bucket=gen_char_bucket(100.0),
+        )
+    )
+    assert board.archive.frontier()  # warm restart: the frontier is non-empty
+
+    out_dir = tmp_path / "out"
+    # main()'s startup fallback: on a warm restart the MIN champion must NOT be written.
+    op._ship_startup_fallback(board, out_dir)
+    assert not (out_dir / "attack.py").exists()
+
+    # worker_loop startup reships the frontier; the generation authors nothing (cancel).
+    async def fake_batch(
+        prompt: str, provider: object, timeout_s: float
+    ) -> tuple[list["Submission"], list[str], str]:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(config, "JUDGE_MODE", "off")
+    monkeypatch.setattr(op, "propose_batch_async", fake_batch)
+    monkeypatch.setattr(op, "_GENERATION_RETRY_S", 0.0)
+
+    prov = providers.get("cheapest-minimax")
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(op.worker_loop(0, [prov], board, out_dir, timeout_s=1.0))
+
+    src = (out_dir / "attack.py").read_text()
+    assert "ALPHATAG" in src  # the persisted frontier shipped...
+    assert "MINTAG" not in src  # ...NOT the MIN champion pool
+
+
 def _mk_score(public: float) -> "SubmissionScore":
     from jed_attack.campaign.submission import MessageType
     from jed_attack.campaign.submission_score import (

@@ -254,8 +254,8 @@ REPLAY_MARGIN_S = (
 )
 # Cost stays in DETERMINISTIC chars (raw_gen_chars, no wall-clock noise); seconds enter
 # ONLY here, to derive the per-model char constants the objective walks. FIXED_CHARS =
-# per-candidate fixed cost in chars (replaces the global 55*turns; at 110 chars it
-# over-charged gemma's ~3.4s floor ~3x and under-counted gemma ~1/3):
+# per-candidate fixed cost in chars = T4_FIXED_S / T4_RATE_S_PER_CHAR (~25.6 gpt_oss,
+# ~14.3 gemma_4 after the 2026-08-12 recalibration; replaces the old global 55*turns):
 FIXED_CHARS: dict[str, float] = {
     model: T4_FIXED_S[model] / T4_RATE_S_PER_CHAR[model] for model in MODELS
 }
