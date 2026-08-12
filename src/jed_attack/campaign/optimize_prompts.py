@@ -393,7 +393,14 @@ async def worker_loop(
             batch_objective = _batch_refine_objective(local_scores)
 
             # Store EVERY submission of the kept batch as its own candidate in the
-            # flat-file blackboard; a new objective best reships ``attack.py``.
+            # flat-file blackboard. The archive's Pareto frontier is the authoritative
+            # shipped pool (design spec); the MIN champion pool may write ``attack.py``
+            # ONLY as a cold-start fallback while the frontier is still empty. Otherwise
+            # a later MIN-best whose elite does NOT enter the frontier would clobber the
+            # superior frontier artifact across generations. ``append`` always records
+            # the row + updates the logging champion regardless of ``reship``; only its
+            # artifact write is gated here. The frontier below then supersedes it.
+            ship_min_fallback = not board.archive.frontier()
             artifact_reshipped = False
             for submission, score, assessment in zip(
                 local_batch, local_scores, local_assessments, strict=True
@@ -408,18 +415,22 @@ async def worker_loop(
                         assessment=assessment,
                     ),
                     out_dir,
+                    reship=ship_min_fallback,
                 )
                 artifact_reshipped = artifact_reshipped or reshipped
 
-            # Grow the MAP-Elites + Pareto archive from the kept batch's scored shapes
-            # (the archive is the authoritative ship path; the MIN append above is kept
-            # for now). Reship the frontier only when it changed -- reship_frontier also
-            # persists the archive to its sibling JSONL, so nothing is lost on restart.
+            # Grow the MAP-Elites + Pareto archive from the kept batch's scored shapes,
+            # then reship the frontier whenever it changed -- the frontier is what ships
+            # (reship_frontier also persists the archive to its sibling JSONL, so
+            # nothing is lost on restart). A changed frontier wins the artifact for this
+            # generation; an unchanged frontier leaves the prior frontier artifact
+            # intact (the gated MIN append above never overwrites it).
             frontier_changed = False
             for elite in _shape_elites(local_batch, local_scores, diagnoses):
                 frontier_changed = board.archive.insert(elite) or frontier_changed
             if frontier_changed:
                 await board.reship_frontier(out_dir)
+                artifact_reshipped = True
 
             objective_best = board.best_objective()
             assert objective_best is not None  # just appended -> the board is non-empty

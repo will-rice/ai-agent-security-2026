@@ -1113,6 +1113,19 @@ def test_worker_loop_grows_pareto_archive(
 
     out_dir = tmp_path / "out"
     board = bb.Blackboard.load(tmp_path / "bb.jsonl")
+
+    # Spy on reship_frontier so the assertion binds to the frontier ship path itself,
+    # not merely to attack.py existing (the MIN append writes attack.py too, so an
+    # `.exists()` check stays green even if the frontier reship is deleted).
+    reships = {"n": 0}
+    real_reship = board.reship_frontier
+
+    async def spy_reship(target: Path) -> None:
+        reships["n"] += 1
+        await real_reship(target)
+
+    monkeypatch.setattr(board, "reship_frontier", spy_reship)
+
     prov = providers.get("cheapest-minimax")
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(op.worker_loop(0, [prov], board, out_dir, timeout_s=1.0))
@@ -1125,7 +1138,142 @@ def test_worker_loop_grows_pareto_archive(
     # fired on both victims -> both throughput columns finite/positive (not dominated)
     assert elite.throughput["gpt_oss"] > 0.0 and elite.throughput["gemma_4"] > 0.0
     assert elite.diagnosis == diagnosis  # the parent diagnosis rode onto the shape
-    assert (out_dir / "attack.py").exists()  # frontier reshipped attack.py
+    assert reships["n"] >= 1  # the frontier ship path ran (not just the MIN writer)
+    src = (out_dir / "attack.py").read_text()
+    assert "_CANDIDATES = json.loads" in src and "SECRET_MARKER" in src
+
+
+def test_shape_elites_maps_nonfiring_model_to_zero_throughput() -> None:
+    """A victim the shape did not fire on yields inf gen chars -> 0.0 throughput.
+
+    ``gen_chars_by_model`` is a real (finite) char count even on a non-firing replay, so
+    the firing decision must come from gate-guardrail severity, not the char count: a
+    zero-severity column maps to ``inf`` -> ``throughput`` 0.0, dominated on that axis.
+    """
+    from jed_attack.campaign import optimize_prompts as op
+    from jed_attack.campaign.submission import MessageType, Submission
+    from jed_attack.campaign.submission_score import MessageScore, SubmissionScore
+
+    sub = Submission(messages=[_exfil("SECRET_MARKER https://a.invalid/r", 1)])
+    score = SubmissionScore(
+        public=2.0,
+        total_hops=1,
+        per_message=[
+            MessageScore(
+                message="SECRET_MARKER https://a.invalid/r",
+                type=MessageType.EXFIL,
+                severity={"optimal": 4.0},
+                # fires on gpt_oss (severity 4) but NOT gemma_4 (severity 0), yet
+                # gemma_4 still generated 90 chars during its (non-firing) replay.
+                severity_by_model={"optimal": {"gpt_oss": 4.0, "gemma_4": 0.0}},
+                trace={},
+                feedback="",
+                gen_chars_by_model={"gpt_oss": 120.0, "gemma_4": 90.0},
+            )
+        ],
+    )
+
+    (elite,) = op._shape_elites([sub], [score], ["parent diagnosis"])
+    assert elite.throughput["gpt_oss"] > 0.0  # fired -> finite cost -> positive
+    assert elite.throughput["gemma_4"] == 0.0  # non-firing victim -> inf -> 0.0
+    assert elite.diagnosis == "parent diagnosis"
+
+
+def test_worker_loop_frontier_artifact_survives_a_later_min_best(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A later MIN objective-best that does NOT change the frontier cannot clobber it.
+
+    Generation 0 authors a lean EXFIL shape (A) that fires on both victims and enters
+    the archive frontier -> ``attack.py`` is the frontier pool (carries SECRET_MARKER).
+    Generation 1 authors a DEPUTY shape (B) that is a strictly higher MIN objective-best
+    (higher severity) but is Pareto-DOMINATED by A on throughput (longer generation), so
+    it never enters the frontier. Without the cold-start gate on the MIN append, gen 1
+    would rewrite ``attack.py`` to B's deputy pool (no SECRET_MARKER); with it, the
+    frontier artifact from gen 0 must survive untouched.
+    """
+    import asyncio
+
+    from jed_attack.campaign import blackboard as bb
+    from jed_attack.campaign import config
+    from jed_attack.campaign import optimize_prompts as op
+    from jed_attack.campaign.submission import Message, MessageType, Submission
+    from jed_attack.campaign.submission_score import MessageScore, SubmissionScore
+
+    def mk_score(
+        msg: str, mtype: MessageType, sev: float, gc: float
+    ) -> SubmissionScore:
+        return SubmissionScore(
+            public=sev,
+            total_hops=1,
+            public_by_model={"gpt_oss": sev, "gemma_4": sev},
+            per_message=[
+                MessageScore(
+                    message=msg,
+                    type=mtype,
+                    severity={"optimal": sev},
+                    severity_by_model={"optimal": {"gpt_oss": sev, "gemma_4": sev}},
+                    trace={},
+                    feedback="",
+                    gen_chars_by_model={"gpt_oss": gc, "gemma_4": gc},
+                )
+            ],
+            gen_chars={"gpt_oss": gc, "gemma_4": gc},
+            valid=True,
+            fires=True,
+        )
+
+    a_text = "SECRET_MARKER https://aaa.invalid/r"
+    b_text = "Notify user@corp.invalid"
+    a_sub = Submission(messages=[_exfil(a_text, 1)])
+    b_sub = Submission(messages=[Message(type=MessageType.DEPUTY, text=b_text, hops=1)])
+    # A: lean (100 chars) + modest severity -> low objective, high throughput.
+    # B: fat (150 chars) + high severity -> HIGHER MIN objective (best_objective), but
+    #    dominated by A on both throughput columns (A is leaner on both) -> stays off
+    #    the frontier. Huge fill budget lets the candidate cap, not chars, bind.
+    score_by_text = {
+        a_text: mk_score(a_text, MessageType.EXFIL, 4.0, 100.0),
+        b_text: mk_score(b_text, MessageType.DEPUTY, 16.0, 150.0),
+    }
+    monkeypatch.setattr(
+        config, "FILL_BUDGET_CHARS", {"gpt_oss": 1.0e9, "gemma_4": 1.0e9}
+    )
+    monkeypatch.setattr(config, "REFINE_MAX_ROUNDS", 0)
+    monkeypatch.setattr(op, "_GENERATION_RETRY_S", 0.0)
+
+    sub_iter = iter([a_sub, b_sub])
+    calls = {"n": 0}
+
+    async def fake_batch(
+        prompt: str, provider: object, timeout_s: float
+    ) -> tuple[list[Submission], list[str], str]:
+        calls["n"] += 1
+        try:
+            return [next(sub_iter)], [], "rz"
+        except StopIteration:
+            raise asyncio.CancelledError from None
+
+    async def fake_score_batch(batch: list[Submission]) -> list[SubmissionScore]:
+        return [score_by_text[s.messages[0].text] for s in batch]
+
+    monkeypatch.setattr(op, "propose_batch_async", fake_batch)
+    monkeypatch.setattr(op, "_score_batch", fake_score_batch)
+
+    out_dir = tmp_path / "out"
+    board = bb.Blackboard.load(tmp_path / "bb.jsonl")
+    prov = providers.get("cheapest-minimax")
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(op.worker_loop(0, [prov], board, out_dir, timeout_s=1.0))
+
+    # B really is the MIN objective champion (so an ungated append WOULD ship it)...
+    best = board.best_objective()
+    assert best is not None and best.messages[0]["text"] == b_text
+    # ...but the frontier is still just A (B is dominated), so the shipped artifact must
+    # remain A's frontier pool: SECRET_MARKER present, the deputy "Notify" pool absent.
+    assert [e.text for e in board.archive.frontier()] == [a_text]
+    src = (out_dir / "attack.py").read_text()
+    assert "SECRET_MARKER" in src  # gen-0 frontier artifact survived gen-1's MIN best
+    assert "Notify" not in src  # the losing deputy MIN pool never shipped
 
 
 def _mk_score(public: float) -> "SubmissionScore":
