@@ -52,6 +52,11 @@ sleep 1
 # lane authored batches as text, not tool calls). The pin intersects with live models, so
 # an unavailable model is simply skipped.
 #
+# JED_JUDGE_MODE=off drops the dylan robustness/mechanism judge entirely (_assess_batch
+# returns all-None, zero HTTP calls to DYLAN_JUDGE_URL). The public-board objective is
+# scored in-process from the gpt_oss/gemma GGUFs and needs no judge, so the optimizer runs
+# standalone on green with the dylan judge fleet down.
+#
 # codex-gpt55 is a separate lane (its own key): gpt-5.5 via the codex ChatGPT-account
 # Responses backend, authed by the OAuth token in ~/.codex/auth.json (no env key). It
 # spends the PERSONAL ChatGPT Pro quota per generation and the token expires (~days, then
@@ -61,8 +66,8 @@ tmux new-session -d -s "$SESSION" -c "$REPO" \
     export JED_CAMPAIGN_ROOT=\"$REPO/run\" JED_WANDB=1 \
       JED_ARTIFACT_SCORE=0 \
       JED_TEAM_PROPOSERS=\"cheapest-mimo,cheapest-minimax,codex-gpt55\" \
+      JED_JUDGE_MODE=off \
       CUDA_DEVICE_ORDER=PCI_BUS_ID \
-      DYLAN_JUDGE_URL=http://192.168.1.220:8100 \
       LD_LIBRARY_PATH=\"/usr/local/cuda-12.8/lib64:\${LD_LIBRARY_PATH:-}\"; \
     uv run python -m jed_attack.campaign.optimize_prompts 2>&1 \
       | tee -a run/logs/optimizer.log'"
