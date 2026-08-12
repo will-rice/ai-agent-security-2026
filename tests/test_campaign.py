@@ -7146,13 +7146,39 @@ def test_submission_prompt_embeds_opro_and_parents_tokens() -> None:
 
 
 def test_submission_prompt_instructs_diagnoses_before_submissions() -> None:
-    """Reflection contract: PROSE (not just the schema dump) orders diagnoses first."""
+    """Reflection contract + EvoPrompt PROSE, not just the schema dump, ride the prompt.
+
+    The {{SCHEMA}} block always carries ``SubmissionBatch.diagnoses``'s Field
+    description verbatim (it includes "Reflection BEFORE authoring: one short
+    diagnosis per parent..."), so markers drawn from THAT text would pass even if the
+    prompts.toml prose sections were deleted. Assert on markers unique to the toml
+    prose instead -- verified (in the test below) to be absent from the schema-only
+    dump -- so a prose regression actually fails this test.
+    """
     from jed_attack.campaign import optimize_prompts as op
 
     prompt = op.submission_prompt(None, [], {}, top_messages={}, reasoning=[])
-    # A distinctive prose instruction, not merely the compact {{SCHEMA}} JSON blob
-    # (which always carries the field name regardless of whether prose was updated).
-    assert "diagnosis per parent" in prompt
-    assert "before" in prompt.lower()
+    assert "REFLECT FIRST" in prompt  # reflection-contract section header
+    assert "EVOPROMPT" in prompt and "crossover" in prompt  # crossover/mutation section
     # The stale reply-shape prose is reconciled to match SubmissionBatch's real shape.
     assert '{"diagnoses": [...], "submissions": [' in prompt
+
+
+def test_prose_markers_absent_from_schema_only_dump() -> None:
+    """Guards the markers above: none are smuggled in via the {{SCHEMA}} JSON blob."""
+    from jed_attack.campaign import optimize_prompts as op
+
+    schema_only = op._submission_schema_json()
+    for marker in ("REFLECT FIRST", "EVOPROMPT", "crossover"):
+        assert marker not in schema_only
+
+
+def test_render_parents_falls_back_when_diagnosis_missing() -> None:
+    """A parent with no cached diagnosis renders a harmless placeholder, not a blank."""
+    from jed_attack.campaign import archive as ar
+    from jed_attack.campaign import optimize_prompts as op
+
+    parents = [
+        ar.Elite("plain t", "exfil", {"gpt_oss": 0.4, "gemma_4": 0.6}, "", "plain", 5)
+    ]
+    assert "(none recorded)" in op._render_parents(parents)
