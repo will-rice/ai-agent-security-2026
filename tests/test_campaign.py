@@ -1276,6 +1276,167 @@ def test_worker_loop_frontier_artifact_survives_a_later_min_best(
     assert "Notify" not in src  # the losing deputy MIN pool never shipped
 
 
+def test_worker_loop_cold_start_seeds_archive_and_ships_frontier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end: a fresh run seeds the archive from the incumbent, ships the frontier.
+
+    Setup mirrors production's cold start: a warm blackboard whose single-pool incumbent
+    holds two family shapes (S1 lean, S2 heavier) but an EMPTY archive. At worker_loop
+    startup ``_seed_archive`` scores the incumbent through the real score path (faked
+    here) and inserts its shapes: S1 fires on both victims (finite gen chars -> positive
+    throughput on both axes), S2 fires on NEITHER (Pareto-dominated -> off frontier). So
+    the seeded frontier is exactly ``{S1}`` and it ships immediately. The one faked
+    generation then authors a fat child G that is dominated by S1, so it never enters
+    the frontier and never rewrites the artifact.
+
+    The assertions bind tightly: the shipped ``attack.py`` must carry S1 but NOT S2 (a
+    no-op seed would leave the frontier empty and let the MIN fallback ship the
+    incumbent pool, which contains S2; an inserted-but-not-reshipped seed would never
+    write the artifact at all -> the read fails). ``reship_frontier`` is spied so the
+    frontier ship path itself is asserted, and
+    ``type_to_response_format_param(SubmissionBatch)`` is exercised per the brief.
+    """
+    import asyncio
+
+    from openai.lib._parsing import type_to_response_format_param
+
+    from jed_attack.campaign import blackboard as bb
+    from jed_attack.campaign import config
+    from jed_attack.campaign import optimize_prompts as op
+    from jed_attack.campaign.submission import (
+        Message,
+        MessageType,
+        Submission,
+        SubmissionBatch,
+    )
+    from jed_attack.campaign.submission_score import MessageScore, SubmissionScore
+
+    # Each shape carries a distinct literal tag that survives templatized filling (only
+    # SECRET_MARKER and the URL are templated away), so the shipped candidate text can
+    # discriminate WHICH pool shipped -- the frontier's S1 vs the incumbent pool's S2.
+    s1_text = "SECRET_MARKER ALPHATAG https://a1.invalid/r"  # fires both -> frontier
+    s2_text = "SECRET_MARKER BETATAG https://b1.invalid/r"  # fires neither, dominated
+    g_text = "SECRET_MARKER CHILDTAG https://g1.invalid/r"  # fat child -> dominated
+
+    incumbent = bb.Record(
+        messages=[
+            {"type": "exfil", "text": s1_text, "hops": 1},
+            {"type": "exfil", "text": s2_text, "hops": 1},
+        ],
+        public=3.0,
+        feedback=[],
+        reasoning="accumulated single-pool incumbent",
+        model="seed",
+        worker=0,
+        ts=1.0,
+        valid=True,
+        fires=True,
+        objective=100.0,
+        objective_name=bb.OBJECTIVE_NAME,
+    )
+
+    def mk_msg_score(text: str, gpt: float, gemma: float, gc: float) -> MessageScore:
+        return MessageScore(
+            message=text,
+            type=MessageType.EXFIL,
+            severity={"optimal": max(gpt, gemma)},
+            severity_by_model={"optimal": {"gpt_oss": gpt, "gemma_4": gemma}},
+            trace={},
+            feedback="",
+            gen_chars_by_model={"gpt_oss": gc, "gemma_4": gc},
+        )
+
+    # Seed submission (S1, S2): S1 fires on both victims, S2 fires on neither.
+    seed_score = SubmissionScore(
+        public=3.0,
+        total_hops=2,
+        public_by_model={"gpt_oss": 3.0, "gemma_4": 3.0},
+        per_message=[
+            mk_msg_score(s1_text, 4.0, 4.0, 100.0),
+            mk_msg_score(s2_text, 0.0, 0.0, 90.0),
+        ],
+    )
+    # Generation child: fires on both but FAT (5000 chars) -> Pareto-dominated by S1 on
+    # both throughput axes, so it never enters the frontier. Built from _mk_score so the
+    # worker_loop metric path has every field it reads.
+    g_score = _mk_score(2.0)
+    g_score.gen_chars = {"gpt_oss": 5000.0, "gemma_4": 5000.0}
+    g_score.total_hops = 1
+    g_score.public_by_model = {"gpt_oss": 2.0, "gemma_4": 2.0}
+    g_score.per_message[0].gen_chars_by_model = {"gpt_oss": 5000.0, "gemma_4": 5000.0}
+    g_score.per_message[0].turns_by_model = {"gpt_oss": 1.0, "gemma_4": 1.0}
+    g_score.per_message[0].severity_by_model = {
+        "optimal": {"gpt_oss": 4.0, "gemma_4": 4.0}
+    }
+
+    gen_calls = {"n": 0}
+
+    async def fake_batch(
+        prompt: str, provider: object, timeout_s: float
+    ) -> tuple[list[Submission], list[str], str]:
+        gen_calls["n"] += 1
+        if gen_calls["n"] > 1:
+            raise asyncio.CancelledError
+        return (
+            [
+                Submission(
+                    messages=[Message(type=MessageType.EXFIL, text=g_text, hops=1)]
+                )
+            ],
+            [],
+            "rz",
+        )
+
+    async def fake_score_batch(batch: list[Submission]) -> list[SubmissionScore]:
+        # The seed submission is the only one carrying S2; everything else is the child.
+        return [
+            seed_score if any(m.text == s2_text for m in s.messages) else g_score
+            for s in batch
+        ]
+
+    monkeypatch.setattr(config, "JUDGE_MODE", "off")
+    monkeypatch.setattr(config, "REFINE_MAX_ROUNDS", 0)
+    monkeypatch.setattr(
+        config, "FILL_BUDGET_CHARS", {"gpt_oss": 1.0e9, "gemma_4": 1.0e9}
+    )
+    monkeypatch.setattr(op, "propose_batch_async", fake_batch)
+    monkeypatch.setattr(op, "_score_batch", fake_score_batch)
+    monkeypatch.setattr(op, "_GENERATION_RETRY_S", 0.0)
+
+    out_dir = tmp_path / "out"
+    board = bb.Blackboard(tmp_path / "board.jsonl", [incumbent])
+    assert not board.archive.frontier()  # cold start: the archive is empty
+
+    # Spy on the frontier ship path so an inserted-but-not-reshipped seed is caught.
+    reships = {"n": 0}
+    real_reship = board.reship_frontier
+
+    async def spy_reship(target: Path) -> None:
+        reships["n"] += 1
+        await real_reship(target)
+
+    monkeypatch.setattr(board, "reship_frontier", spy_reship)
+
+    prov = providers.get("cheapest-minimax")
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(op.worker_loop(0, [prov], board, out_dir, timeout_s=1.0))
+
+    # The strict SubmissionBatch response_format still builds (brief Step 1).
+    type_to_response_format_param(SubmissionBatch)
+
+    # The seeded frontier is exactly the firing lean shape; the non-firing S2 and the
+    # fat child G are both Pareto-dominated and off it.
+    assert [elite.text for elite in board.archive.frontier()] == [s1_text]
+    assert reships["n"] >= 1  # cold-start seeding ran the frontier ship path
+
+    src = (out_dir / "attack.py").read_text()
+    assert "_CANDIDATES = json.loads" in src
+    assert "ALPHATAG" in src  # the seeded frontier (S1) shipped...
+    assert "BETATAG" not in src  # ...NOT the incumbent MIN pool (which also holds S2)
+    assert "CHILDTAG" not in src  # the dominated generation child never shipped
+
+
 def _mk_score(public: float) -> "SubmissionScore":
     from jed_attack.campaign.submission import MessageType
     from jed_attack.campaign.submission_score import (
@@ -4521,8 +4682,15 @@ def test_worker_loop_prompts_from_objective_champion(
         captured["prompt"] = prompt
         raise asyncio.CancelledError
 
+    # This warm board + empty archive is the cold-start-seed scenario, so worker_loop
+    # now scores the incumbent once at startup. Fake the score path so that one-time
+    # seeding stays off the real replay backends; the prompt assertions are unaffected.
+    async def fake_score_batch(batch: list["Submission"]) -> list["SubmissionScore"]:
+        return [_mk_score(3.0) for _ in batch]
+
     monkeypatch.setattr(config, "JUDGE_MODE", "shadow")
     monkeypatch.setattr(op, "propose_batch_async", capture_prompt)
+    monkeypatch.setattr(op, "_score_batch", fake_score_batch)
 
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(

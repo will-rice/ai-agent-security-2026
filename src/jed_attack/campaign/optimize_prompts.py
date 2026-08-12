@@ -261,6 +261,81 @@ def _shape_elites(
     return elites
 
 
+_seed_lock: asyncio.Lock | None = None
+_seed_lock_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _seed_gate() -> asyncio.Lock:
+    """One lock serializing cold-start archive seeding across every lane on this loop.
+
+    Mirrors :func:`_judge_gate`: an ``asyncio.Lock`` bound to the running loop and
+    reused across lanes, so the FIRST lane to start seeds the empty archive while the
+    others block on the lock, then find the frontier non-empty and skip. The archive is
+    thus never double-seeded even when all lanes start concurrently. Rebinds when the
+    running loop changes (a lock binds to the loop that first awaits it), so a cache
+    reused across a fresh ``asyncio.run`` loop stays correct.
+    """
+    global _seed_lock, _seed_lock_loop
+    loop = asyncio.get_running_loop()
+    if _seed_lock is None or _seed_lock_loop is not loop:
+        _seed_lock = asyncio.Lock()
+        _seed_lock_loop = loop
+    return _seed_lock
+
+
+async def _seed_archive(board: blackboard.Blackboard, out_dir: Path) -> None:
+    """Cold-start: seed the empty Pareto archive from the incumbent's scored shapes.
+
+    On a fresh run the archive frontier is empty, so only the MIN cold-start fallback
+    ships until the loop discovers Pareto shapes. This seeds the frontier ONCE from the
+    accumulated single-pool incumbent (:meth:`Blackboard.best_objective`, whose
+    ``messages`` are the current family shapes): it reconstructs that incumbent as a
+    :class:`Submission`, scores it through the SAME real replay path as a normal
+    generation (:func:`_score_batch` -> :func:`score_submission`, so every seed elite
+    carries its true per-model ``gen_chars`` -- never a fabricated throughput), converts
+    the scored shapes to elites (:func:`_shape_elites`), inserts each, and -- if the
+    frontier became non-empty -- reships it so a strong artifact ships immediately
+    instead of waiting for the loop to rediscover the incumbent's shapes.
+
+    Guarded so it runs exactly once and never corrupts a live frontier: the loop-scoped
+    lock (:func:`_seed_gate`) serializes concurrent lanes; an empty-frontier check
+    inside the lock skips a warm/persisted archive and every lane after the first; a
+    missing incumbent (a truly cold board) is a no-op. If the incumbent's stored shapes
+    no longer validate the seed is skipped (logged) rather than raising -- the MIN
+    cold-start fallback still covers the unseeded frontier, so a bad seed cannot ship.
+
+    Args:
+        board: The shared team blackboard; its archive is seeded in place.
+        out_dir: Where :meth:`Blackboard.reship_frontier` writes ``attack.py``.
+    """
+    async with _seed_gate():
+        if board.archive.frontier():
+            return  # warm/persisted archive, or another lane already seeded this loop
+        incumbent = board.best_objective()
+        if incumbent is None:
+            return  # truly cold board -- no accumulated incumbent to seed from yet
+        try:
+            submission = Submission.model_validate({"messages": incumbent.messages})
+        except pydantic.ValidationError:
+            _log.warning(
+                "cold-start seed skipped: incumbent shapes no longer validate; "
+                "MIN fallback still ships",
+                exc_info=True,
+            )
+            return
+        scores = await _score_batch([submission])
+        for elite in _shape_elites([submission], scores, []):
+            board.archive.insert(elite)
+        frontier = board.archive.frontier()
+        if frontier:
+            await board.reship_frontier(out_dir)
+            _log.info(
+                "cold-start seed: archive frontier seeded with %d shape(s) from the "
+                "incumbent; the frontier now ships",
+                len(frontier),
+            )
+
+
 async def worker_loop(
     worker_id: int,
     providers_cycle: list[providers.Provider],
@@ -299,6 +374,11 @@ async def worker_loop(
         timeout_s: Per-generation proposer timeout.
         run: The shared W&B run to log to, or ``None``.
     """
+    # Cold-start: seed the empty archive from the incumbent's scored shapes so the
+    # Pareto frontier is non-empty (and a strong artifact ships) on the first run,
+    # instead of only the MIN fallback shipping until the loop rediscovers those shapes.
+    # One-time + lock-guarded, so a warm archive and every lane after the first skip it.
+    await _seed_archive(board, out_dir)
     gen = 0
     # Per-model [valid, dropped] tally so a lane's log/wandb shows which models author a
     # parseable batch and which drop out (validation failure or refusal). Drop-prone
