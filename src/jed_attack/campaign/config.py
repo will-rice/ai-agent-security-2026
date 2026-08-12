@@ -306,6 +306,16 @@ VLLM_URL = os.getenv(
 VLLM_MODEL = os.getenv("VLLM_MODEL", "bullerwins/Qwen3-32B-awq")
 
 
+SHAPE_FAMILIES: tuple[str, ...] = (
+    "plain",
+    "forge",
+    "verb_variant",
+    "injection_variant",
+    "deputy",
+)
+GEN_CHAR_BUCKET_S = 25.0  # quantization bin (chars) for the archive's cost axis
+
+
 def ensure_dirs() -> None:
     """Create the runtime directories the submission pipeline writes to."""
     for path in (

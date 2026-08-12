@@ -10,6 +10,7 @@ runtime guard, enforces the shape.
 """
 
 import json
+import math
 from enum import Enum
 from urllib.parse import urlsplit
 
@@ -284,3 +285,29 @@ def _validate_deputy(text: str) -> tuple[bool, str]:
     if any(bad in address.lower() for address in addresses for bad in _DIRTY):
         return False, "forbidden substring in address"
     return True, ""
+
+
+def gen_char_bucket(gen_chars: float) -> int:
+    """Quantize a shape's generation cost into the archive's cost-axis bin index."""
+    return int(math.ceil(gen_chars / config.GEN_CHAR_BUCKET_S))
+
+
+def shape_family(text: str, message_type: "MessageType") -> str:
+    """Coarse structural family of a shape (a MAP-Elites behavioral descriptor).
+
+    Pure function of the literal text + type: deputy is its own family; among exfil
+    shapes, a harmony forge injection is 'forge', a non-'Call'/'http.post-first' lead
+    verb is 'verb_variant', extra channel scaffolding beyond a single analysis close is
+    'injection_variant', else 'plain'.
+    """
+    if message_type is MessageType.DEPUTY:
+        return "deputy"
+    if "<|channel|>" in text:
+        # more than one channel token pair -> a richer injection than the plain close
+        if text.count("<|channel|>") > 1 or "commentary" in text:
+            return "injection_variant"
+        return "forge"
+    lead = text.split(None, 1)[0].lower() if text.split() else ""
+    if lead not in ("call", "http.post"):
+        return "verb_variant"
+    return "plain"
