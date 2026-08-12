@@ -27,7 +27,6 @@ import json
 import sys
 import time
 from collections.abc import Mapping
-from itertools import zip_longest
 from pathlib import Path as _P
 from typing import Any
 
@@ -50,15 +49,16 @@ _PAYLOAD = "SECRET_MARKER"
 _HARD_N_CAP = __HARD_N_CAP__
 _LAT_FLOOR_S = 0.001
 _SLOWEST0 = 25.0
-_SLOWEST_MULT = 1.35
-# REPLAY_MARGIN_S / ARTIFACT_SCORE_BUDGET_S = 7500/9000 (config.py; not importable
-# here -- the shipped skeleton is isolated to aicomp_sdk + stdlib, so the ratio is
-# inlined as a literal). The old 0.97 (8730s against the 9000s HARD replay deadline)
-# left only 3% margin for T4 run-to-run variance -- too tight; a rerun that overruns
-# the deadline is INVALID_SUBMISSION with no partial credit (the 86-rerun failure
-# mode). 0.8333 matches the green-side REPLAY_MARGIN_S projection and leaves ~17%
-# (1500s) of headroom instead.
-_REPLAY_SAFE_FRAC = 0.8333
+# Variance margin on the MEASURED per-phase latency budget. Grading runs two phases,
+# each capped at time_budget_s and each a HARD FAIL if overrun (ModelEvaluationTimedOut
+# -> INVALID_SUBMISSION, NO partial credit -- the 86-rerun failure mode): this
+# probe loop
+# (generation) and the gateway's replay of the returned set. `run` keeps BOTH cumulative
+# latencies under time_budget_s * _REPLAY_SAFE_FRAC, so the fraction is the buffer for
+# the gateway replaying slower than we probed (T4 run-to-run variance), NOT a blunt
+# candidate-count cut. Climb toward 1.0 to pack more; back off if a rerun
+# goes INVALID.
+_REPLAY_SAFE_FRAC = 0.90
 
 
 def _fired(trace: Mapping[str, Any]) -> bool:
@@ -110,18 +110,28 @@ class AttackAlgorithm(AttackAlgorithmBase):
     ) -> list[AttackCandidate]:
         hops = int(getattr(config, "max_tool_hops", 8) or 8)
         budget_s = float(getattr(config, "time_budget_s", 0.0) or 0.0)
-        deadline = time.monotonic() + budget_s * _REPLAY_SAFE_FRAC if budget_s else None
+        # Latency-precise trim: bound BOTH phases by measured cumulative latency, each
+        # under budget_s * _REPLAY_SAFE_FRAC. generation = this probe loop's wall-clock;
+        # replay = the summed latency of the KEPT (returned) candidates the gateway will
+        # re-replay. `slowest` conservatively estimates the next candidate before we
+        # measure it. limit=None (no budget given) -> probe all up to _HARD_N_CAP.
+        limit = budget_s * _REPLAY_SAFE_FRAC if budget_s else None
         candidates = _CANDIDATES
         kept: list[AttackCandidate] = []
+        replay_spent = 0.0  # summed latency of the returned set (replay-phase budget)
         slowest = _SLOWEST0
+        start = time.monotonic()
         for chain in candidates[:_HARD_N_CAP]:
-            if deadline is not None:
-                if time.monotonic() + slowest * _SLOWEST_MULT > deadline:
-                    break
+            if limit is not None and (
+                (time.monotonic() - start) + slowest > limit
+                or replay_spent + slowest > limit
+            ):
+                break
             fired, elapsed = _probe(env, tuple(chain), hops)
             slowest = max(slowest, elapsed)
             if fired:
                 kept.append(AttackCandidate.from_messages(list(chain)))
+                replay_spent += elapsed
         if not kept:
             kept = [AttackCandidate.from_messages(list(c)) for c in candidates[:1]]
         return kept

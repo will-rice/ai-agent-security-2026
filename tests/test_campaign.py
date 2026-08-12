@@ -3670,72 +3670,68 @@ def test_assembled_attack_ships_flat_list_without_touching_opaque_env(
     assert [c.user_messages[0] for c in kept] == ["fire 0", "fire 2"]
 
 
-def test_assembled_attack_trims_at_replay_margin_fraction(tmp_path: Path) -> None:
-    """The shipped trim deadline uses REPLAY_MARGIN_S/ARTIFACT_SCORE_BUDGET_S = 0.8333.
+def test_assembled_attack_trim_is_latency_precise(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The trim bounds the returned set's SUMMED measured latency by budget_s * frac.
 
-    The old 0.97 fraction left only 3% margin against the 9000s HARD replay deadline
-    (overrun => INVALID_SUBMISSION, no partial credit) -- too tight for T4 run-to-run
-    variance, and inconsistent with the green-side projection budget
-    (``config.REPLAY_MARGIN_S`` = 7500s = 0.8333 of 9000s). This locks the shipped
-    constant to that ratio and proves the trim loop actually computes its deadline
-    from it (not just that the unused constant happens to hold the right value).
+    The old blanket-fraction deadline is replaced by a latency-precise bound: with a
+    fake env costing 1.0s per probe and slowest0 as the next-candidate estimate,
+    the loop
+    keeps candidates until (summed kept latency + slowest0) would exceed budget_s * frac
+    -- so the kept count is (budget_s * frac - slowest0), well below the shipped list.
     """
     from aicomp_sdk.attacks.contracts import AttackRunConfig
     from aicomp_sdk.core.env.api import AttackEnvProtocol
 
-    from jed_attack.campaign import assemble, config
+    from jed_attack.campaign import assemble
 
-    path = assemble.build(json.dumps([["fire 0"]]), tmp_path / "build")
+    candidates = [[f"fire {i}"] for i in range(200)]
+    path = assemble.build(json.dumps(candidates), tmp_path / "build")
     namespace: dict[str, object] = {}
     exec(compile(path.read_text(), "attack.py", "exec"), namespace)  # noqa: S102
-
-    frac = cast("float", namespace["_REPLAY_SAFE_FRAC"])
-    assert frac == pytest.approx(
-        config.REPLAY_MARGIN_S / config.ARTIFACT_SCORE_BUDGET_S, abs=1e-4
-    )
-    assert frac == pytest.approx(0.8333, abs=1e-4)
-
-    # Behavioral check: pick a budget where the FIRST deadline check (before any
-    # probe) trips under the new tighter fraction (first_check > budget_s * frac,
-    # so the loop breaks with zero probes) but would NOT trip under the old looser
-    # 0.97 fraction (first_check < budget_s * 0.97, i.e. old code ran >= 1 probe).
+    clock = _FakeMonotonicClock()
+    monkeypatch.setattr(namespace["time"], "monotonic", clock.monotonic)
     slowest0 = cast("float", namespace["_SLOWEST0"])
-    mult = cast("float", namespace["_SLOWEST_MULT"])
-    first_check = slowest0 * mult
-    budget_s = first_check * (1.0 / frac + 1.0 / 0.97) / 2.0
-    assert first_check > budget_s * frac, (
-        "budget_s should trip the new tighter deadline"
-    )
-    assert first_check < budget_s * 0.97, (
-        "budget_s must not also trip the old 0.97 frac"
-    )
+    frac = cast("float", namespace["_REPLAY_SAFE_FRAC"])
+    # The margin fraction is now decoupled from REPLAY_MARGIN_S (a variance buffer).
+    assert frac == pytest.approx(0.90)
 
-    class FakeEnv:
+    class FireEnv:
         seed = 123
 
-        def __init__(self) -> None:
-            self.probed = False
+        def __init__(self, c: _FakeMonotonicClock) -> None:
+            self.clock = c
+            self.trace: dict[str, object] = {}
 
         def reset(self) -> None:
-            self.probed = True
+            self.trace = {"user_messages": [], "tool_events": []}
 
         def interact(self, message: str, max_tool_hops: int) -> None:
-            raise AssertionError(
-                "no probe should run: the tighter deadline trims first"
+            self.clock.now += 1.0  # every probe costs 1.0s
+            cast("list[str]", self.trace["user_messages"]).append(message)
+            cast("list[dict[str, object]]", self.trace["tool_events"]).append(
+                {
+                    "ok": True,
+                    "name": "http.post",
+                    "args": {"url": "http://ok.co", "data": "SECRET_MARKER"},
+                }
             )
 
         def export_trace_dict(self) -> dict[str, object]:
-            return {}
+            return self.trace
 
+    budget_s = 100.0
     attack_cls = cast("type[AttackAlgorithmBase]", namespace["AttackAlgorithm"])
-    env = FakeEnv()
     kept = attack_cls().run(
-        cast("AttackEnvProtocol", env),
+        cast("AttackEnvProtocol", FireEnv(clock)),
         AttackRunConfig(time_budget_s=budget_s, max_tool_hops=1),
     )
-    assert env.probed is False
-    # Nothing was probed -> falls back to the first embedded candidate, never empty.
-    assert [c.user_messages[0] for c in kept] == ["fire 0"]
+    # Kept while (running latency + slowest0) <= budget_s * frac, then one boundary
+    # candidate: keeps until wall == limit - slowest0 (=65), so 66 are returned.
+    expected = int(budget_s * frac - slowest0) + 1  # 90 - 25 + 1 = 66
+    assert len(kept) == expected
+    assert len(kept) < len(candidates)  # genuinely trimmed below the shipped list
 
 
 def test_blackboard_load_raises_when_all_rows_malformed(tmp_path: Path) -> None:
