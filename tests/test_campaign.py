@@ -1217,6 +1217,40 @@ def test_shape_elites_carries_per_model_severity() -> None:
     assert elite.severity["gpt_oss"] > 0.0 and elite.throughput["gpt_oss"] > 0.0
 
 
+def test_ship_min_fallback_suppressed_when_frontier_nonempty(tmp_path: Path) -> None:
+    """The MIN-champion cold-start fallback gate binds on the archive frontier alone.
+
+    ``_ship_min_fallback`` decides whether ``board.append`` is allowed to write
+    ``attack.py`` from the raw MIN-objective record: True (ships) only while the
+    archive frontier is empty (cold start); False (suppressed) once the frontier is
+    non-empty, so a later MIN-best can never clobber the frontier's shipped artifact.
+    This binds the invariant directly, independent of ``frontier_changed`` masking it
+    (see ``test_worker_loop_frontier_artifact_survives_a_later_min_best``'s docstring:
+    under 4-D dominance a strictly-improving single-message MIN-best now always joins
+    the frontier too, so that test alone can no longer catch a gate that's wrongly
+    True on a non-empty frontier).
+    """
+    from jed_attack.campaign import archive as ar
+    from jed_attack.campaign import blackboard as bb
+    from jed_attack.campaign import optimize_prompts as op
+
+    board = bb.Blackboard(tmp_path / "board.jsonl", [])
+    assert op._ship_min_fallback(board) is True  # empty frontier -> cold-start ships
+
+    board.archive.insert(
+        ar.Elite(
+            "t",
+            "exfil",
+            {"gpt_oss": 0.01, "gemma_4": 0.01},
+            {"gpt_oss": 5.0, "gemma_4": 5.0},
+            "",
+            "plain",
+            5,
+        )
+    )
+    assert op._ship_min_fallback(board) is False  # non-empty -> steady-state suppressed
+
+
 def test_worker_loop_frontier_artifact_survives_a_later_min_best(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1232,7 +1266,12 @@ def test_worker_loop_frontier_artifact_survives_a_later_min_best(
     (Under the old throughput-only archive B was fully dominated by leaner A and
     excluded; severity now being a first-class axis means a shape that wins on
     severity can never be fully dominated by a merely-leaner one -- the scenario this
-    test used to guard against is structurally unreachable now.)
+    test used to guard against is structurally unreachable now. This holds for
+    SINGLE-message submissions like A and B here, where one elite's per-model
+    severity IS the submission's MIN-objective input; a multi-message submission's
+    MIN-objective aggregates several distinct elites, so no single elite's dominance
+    bounds it and a MIN-dominated shape could still ship there -- the archive is not
+    universally immune.)
 
     The shipped artifact must reflect the FULL grown frontier -- a naive "ship
     whatever the new MIN best is" implementation would replace A with B and silently
@@ -7667,7 +7706,7 @@ def test_elite_4d_dominance_uses_throughput_and_severity() -> None:
     assert not ar.dominates(tradeoff, lean_strong)
 
 
-def test_ship_set_ranks_by_board_density(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ship_set_ranks_by_board_density() -> None:
     """ship_set orders the frontier by summed per-model board-density, best first."""
     from jed_attack.campaign import archive as ar
 

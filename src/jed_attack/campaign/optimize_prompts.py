@@ -264,6 +264,17 @@ def _shape_elites(
     return elites
 
 
+def _ship_min_fallback(board: blackboard.Blackboard) -> bool:
+    """MIN champion ships to ``attack.py`` only as a cold-start fallback.
+
+    True while the archive's Pareto frontier is empty (nothing better to ship yet);
+    False once the frontier is non-empty, so a later MIN-objective record whose elite
+    does NOT itself change the frontier can never clobber the superior frontier
+    artifact already shipped -- the frontier below always supersedes it.
+    """
+    return not board.archive.frontier()
+
+
 _seed_lock: asyncio.Lock | None = None
 _seed_lock_loop: asyncio.AbstractEventLoop | None = None
 
@@ -492,7 +503,7 @@ async def worker_loop(
             # superior frontier artifact across generations. ``append`` always records
             # the row + updates the logging champion regardless of ``reship``; only its
             # artifact write is gated here. The frontier below then supersedes it.
-            ship_min_fallback = not board.archive.frontier()
+            ship_min_fallback = _ship_min_fallback(board)
             artifact_reshipped = False
             for submission, score, assessment in zip(
                 local_batch, local_scores, local_assessments, strict=True
