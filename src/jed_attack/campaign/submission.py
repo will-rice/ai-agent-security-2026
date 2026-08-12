@@ -181,6 +181,15 @@ class SubmissionBatch(BaseModel):
 
     model_config = ConfigDict(extra="forbid")  # additionalProperties:false (strict)
 
+    diagnoses: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Reflection BEFORE authoring: one short diagnosis per parent shown in the "
+            "prompt -- why a parent's gpt_oss or gemma_4 column is weak and what to "
+            "trim (e.g. 'gemma echoes the harmony tokens; drop them for its shapes'). "
+            "Author these first, then let them steer the submissions below."
+        ),
+    )
     submissions: list[Submission] = Field(
         min_length=1,
         max_length=config.MAX_SCORE_BATCH,
