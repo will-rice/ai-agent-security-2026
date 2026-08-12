@@ -223,7 +223,7 @@ TOOLS: list[ChatCompletionToolParam] = [
 
 async def propose_batch_agentic(
     prompt: str, provider: providers.Provider, idle_timeout_s: float
-) -> tuple[list[Submission], str]:
+) -> tuple[list[Submission], list[str], str]:
     """Author a batch via a native OpenAI function-calling tool loop that live-tests.
 
     Mirrors :func:`jed_attack.campaign.optimize_prompts.propose_batch_async`'s signature
@@ -246,8 +246,10 @@ async def propose_batch_agentic(
             agentic loop makes discrete (non-streaming) calls and does not use it.
 
     Returns:
-        The submitted submissions (possibly empty) and the model's concatenated
-        assistant text (empty if none).
+        The submitted submissions (possibly empty), an empty ``diagnoses`` list (the
+        ``submit_batch`` tool schema carries no per-parent diagnoses -- see the module
+        docstring; an agentic lane's archive elites therefore get no cached diagnosis),
+        and the model's concatenated assistant text (empty if none).
     """
     from jed_attack.campaign.optimize_prompts import (
         _PROPOSER_TEMPERATURE,
@@ -298,7 +300,7 @@ async def propose_batch_agentic(
             )
         if collected:
             break  # submit_batch handed back at least one valid submission -> ship it
-    return collected, "".join(reasoning_parts)
+    return collected, [], "".join(reasoning_parts)
 
 
 async def _dispatch_tool_call(

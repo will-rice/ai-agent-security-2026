@@ -67,7 +67,7 @@ def _client() -> AsyncOpenAI:
 
 async def propose_batch_codex(
     prompt: str, provider: providers.Provider, idle_timeout_s: float
-) -> tuple[list[Submission], str]:
+) -> tuple[list[Submission], list[str], str]:
     """Author a batch on the codex Responses backend (ChatGPT-account ``gpt-5.x``).
 
     Mirrors :func:`optimize_prompts.propose_batch_async`: streams a single structured
@@ -85,8 +85,9 @@ async def propose_batch_codex(
         idle_timeout_s: Max seconds to wait for the next streamed event before aborting.
 
     Returns:
-        The parsed submissions (empty if the reply carried no valid batch) and the
-        backend's reasoning summary text (empty if none).
+        The parsed submissions (empty if the reply carried no valid batch), the batch's
+        per-parent ``diagnoses`` reflections (empty on a drop), and the backend's
+        reasoning summary text (empty if none).
     """
     # Lazy import breaks the optimize_prompts <-> codex_proposer cycle.
     from jed_attack.campaign.optimize_prompts import _load_prompts
@@ -139,8 +140,8 @@ async def propose_batch_codex(
         not_json = any(e.get("type") == "json_invalid" for e in exc.errors())
         reason = "reply was not JSON (refusal/prose)" if not_json else "ship-invariants"
         _log.info("proposed batch dropped (%s): %s", provider.model, reason)
-        return [], "".join(reasoning)
+        return [], [], "".join(reasoning)
     _log.info(
         "proposed batch (%s): %d submissions", provider.model, len(batch.submissions)
     )
-    return batch.submissions, "".join(reasoning)
+    return batch.submissions, batch.diagnoses, "".join(reasoning)

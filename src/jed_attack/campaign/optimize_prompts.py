@@ -70,11 +70,14 @@ from jed_attack.campaign.submission import (
     MessageType,
     Submission,
     SubmissionBatch,
+    gen_char_bucket,
+    shape_family,
 )
 from jed_attack.campaign.submission_score import (
     SubmissionScore,
     project_public_board,
     score_submission,
+    throughput,
 )
 
 
@@ -112,6 +115,11 @@ _PREDICATE_METRIC_SUFFIX = {
 # a genuine stall (no token for this long) rotates the lane to its next model.
 PROPOSER_IDLE_TIMEOUT_S = float(os.getenv("JED_PROPOSER_IDLE_TIMEOUT_S", "300"))
 
+# Archive parents recombined/mutated into each generation (EvoPrompt "1-2 elites"). A
+# small cap on purpose: _render_parents has no own bound, and every parent adds a shape
+# + diagnosis block to the prompt, so a large k would grow the proposer prompt (and its
+# token quota) linearly with the frontier as the archive fills.
+_ARCHIVE_PARENTS_K = 2
 _TEAM_TOP_K = 8  # teammate best-messages per shape shown in each proposer prompt
 _TEAM_REASONING_K = (
     3  # recent cross-model reasoning blobs shown in each proposer prompt
@@ -180,6 +188,79 @@ def make_record(
     )
 
 
+def _shape_elites(
+    batch: list[Submission],
+    scores: list[SubmissionScore],
+    diagnoses: list[str],
+) -> list[archive.Elite]:
+    """Convert every scored authored shape in a kept batch into an archive elite.
+
+    The archive's unit is a single shape (one authored :class:`Submission` message), so
+    this flattens the batch's submissions into their messages and pairs each message
+    with its per-message score entry (:attr:`SubmissionScore.per_message` is one entry
+    per input message, in order -- the alignment that lets a shape read its own
+    generated-char cost). Per-model throughput reads that entry's
+    ``gen_chars_by_model``; a model the shape did NOT fire on (zero gate-guardrail
+    severity) is mapped to ``inf`` gen chars so
+    :func:`~jed_attack.campaign.submission_score.throughput` returns ``0.0`` and the
+    shape is Pareto-dominated on that victim's column (``gen_chars_by_model`` itself is
+    never ``inf`` -- it accrues real chars even on a non-firing replay, so firing is
+    decided by severity, not by the char count). The cost bucket keys on the raw
+    generated-char max over models (the design's "bucket on max over models").
+
+    Diagnoses are per-parent-shown (authored before the submissions, one per sampled
+    archive parent), so they carry no structural link to an authored CHILD shape. They
+    are attached positionally: the i-th authored shape (batch order) inherits
+    ``diagnoses[i]`` when it exists, else ``""`` -- a best-effort association, never
+    fabricated, and safe against a short or empty diagnoses list.
+
+    Args:
+        batch: The kept batch's submissions.
+        scores: The kept batch's per-submission scores, aligned with ``batch``.
+        diagnoses: The batch's per-parent diagnosis reflections (may be short/empty).
+
+    Returns:
+        One :class:`~jed_attack.campaign.archive.Elite` per authored shape, in batch
+        order.
+    """
+    elites: list[archive.Elite] = []
+    shape_index = 0
+    for submission, score in zip(batch, scores, strict=True):
+        for message, message_score in zip(
+            submission.messages, score.per_message, strict=True
+        ):
+            gen_chars = {
+                model: message_score.gen_chars_by_model.get(model, 0.0)
+                for model in config.MODELS
+            }
+            fires = {
+                model: message_score.severity_by_model.get(
+                    config.GATE_GUARDRAIL_NAME, {}
+                ).get(model, 0.0)
+                > 0.0
+                for model in config.MODELS
+            }
+            throughputs = {
+                model: throughput(
+                    gen_chars[model] if fires[model] else float("inf"), model
+                )
+                for model in config.MODELS
+            }
+            diagnosis = diagnoses[shape_index] if shape_index < len(diagnoses) else ""
+            elites.append(
+                archive.Elite(
+                    text=message.text,
+                    mtype=message.type.value,
+                    throughput=throughputs,
+                    diagnosis=diagnosis,
+                    family=shape_family(message.text, message.type),
+                    bucket=gen_char_bucket(max(gen_chars.values(), default=0.0)),
+                )
+            )
+            shape_index += 1
+    return elites
+
+
 async def worker_loop(
     worker_id: int,
     providers_cycle: list[providers.Provider],
@@ -240,21 +321,32 @@ async def worker_loop(
                 if config.JUDGE_MODE == "active"
                 else board.best_objective()
             )
+            # Sample archive parents (EvoPrompt material) and render the OPRO trajectory
+            # from the current Pareto frontier; both are DATA the proposer recombines.
+            parents = board.archive.parents(_ARCHIVE_PARENTS_K)
             prompt = submission_prompt(
                 incumbent,
                 incumbent.feedback if incumbent else [],
                 {},
                 top_messages=team,
                 reasoning=reasoning_digest,
+                opro=board.archive.frontier(),
+                parents=parents,
             )
             # Agentic lanes live-test candidates via a tool loop before submitting; all
             # other lanes stay one-shot. Refinement (below) stays one-shot regardless.
+            # ``diagnoses`` are the per-parent reflections authored ahead of the batch;
+            # agentic lanes return none (their submit_batch schema omits them).
             if provider.agentic:
-                batch, reasoning = await agentic_proposer.propose_batch_agentic(
+                (
+                    batch,
+                    diagnoses,
+                    reasoning,
+                ) = await agentic_proposer.propose_batch_agentic(
                     prompt, provider, timeout_s
                 )
             else:
-                batch, reasoning = await _propose_batch_oneshot(
+                batch, diagnoses, reasoning = await _propose_batch_oneshot(
                     prompt, provider, timeout_s
                 )
             tally = outcomes.setdefault(model, [0, 0])
@@ -318,6 +410,16 @@ async def worker_loop(
                     out_dir,
                 )
                 artifact_reshipped = artifact_reshipped or reshipped
+
+            # Grow the MAP-Elites + Pareto archive from the kept batch's scored shapes
+            # (the archive is the authoritative ship path; the MIN append above is kept
+            # for now). Reship the frontier only when it changed -- reship_frontier also
+            # persists the archive to its sibling JSONL, so nothing is lost on restart.
+            frontier_changed = False
+            for elite in _shape_elites(local_batch, local_scores, diagnoses):
+                frontier_changed = board.archive.insert(elite) or frontier_changed
+            if frontier_changed:
+                await board.reship_frontier(out_dir)
 
             objective_best = board.best_objective()
             assert objective_best is not None  # just appended -> the board is non-empty
@@ -730,9 +832,14 @@ async def _refine_batch(
                 reasoning=reasoning_digest,
                 incumbent_batch=incumbent_batch,
             )
-            refined, refined_reasoning = await _propose_batch_oneshot(
-                prompt, provider, timeout_s
-            )
+            # Refine re-authors against the incumbent BATCH, not the archive parents, so
+            # its diagnoses do not describe the shipped shapes; the Elite diagnoses come
+            # from round 0 (worker_loop) instead, and refine's are discarded here.
+            (
+                refined,
+                _refined_diagnoses,
+                refined_reasoning,
+            ) = await _propose_batch_oneshot(prompt, provider, timeout_s)
             if not refined:
                 break  # empty refine reply -> stop the climb, keep the best
             refined_scores = await _score_batch(refined)
@@ -1596,13 +1703,13 @@ def _batch_predicate_counts(scores: list[SubmissionScore]) -> dict[str, int]:
 
 async def _propose_batch_oneshot(
     prompt: str, provider: providers.Provider, idle_timeout_s: float
-) -> tuple[list[Submission], str]:
+) -> tuple[list[Submission], list[str], str]:
     """Route a one-shot batch proposal to the right backend and return its result.
 
     The codex ChatGPT-account lane speaks the Responses API, so it has its own proposer
     (:func:`codex_proposer.propose_batch_codex`); every other lane uses the
     chat-completions streamer. Agentic lanes are dispatched separately (round 0 only),
-    so this helper never sees them.
+    so this helper never sees them. Returns ``(submissions, diagnoses, reasoning)``.
     """
     if provider.kind == providers.CODEX_RESPONSES_KIND:
         return await codex_proposer.propose_batch_codex(
@@ -1613,7 +1720,7 @@ async def _propose_batch_oneshot(
 
 async def propose_batch_async(
     prompt: str, provider: providers.Provider, idle_timeout_s: float
-) -> tuple[list[Submission], str]:
+) -> tuple[list[Submission], list[str], str]:
     """Author a batch of submissions on ``provider`` by STREAMING a structured call.
 
     ``response_format`` is the strict param the SDK derives from
@@ -1642,7 +1749,8 @@ async def propose_batch_async(
         idle_timeout_s: Max seconds to wait for the next streamed token before aborting.
 
     Returns:
-        The parsed submissions (empty if the reply carried no valid batch) and the
+        The parsed submissions (empty if the reply carried no valid batch), the batch's
+        per-parent ``diagnoses`` reflections (empty on a drop or a cold start), and the
         backend's reasoning text (empty if none).
     """
     client = providers.async_openai_client(provider)
@@ -1693,11 +1801,11 @@ async def propose_batch_async(
         not_json = any(e.get("type") == "json_invalid" for e in exc.errors())
         reason = "reply was not JSON (refusal/prose)" if not_json else "ship-invariants"
         _log.info("proposed batch dropped (%s): %s", provider.model, reason)
-        return [], "".join(reasoning)
+        return [], [], "".join(reasoning)
     _log.info(
         "proposed batch (%s): %d submissions", provider.model, len(batch.submissions)
     )
-    return batch.submissions, "".join(reasoning)
+    return batch.submissions, batch.diagnoses, "".join(reasoning)
 
 
 def _log_wandb(run: _WandbRun | None, metrics: dict[str, Any]) -> None:
