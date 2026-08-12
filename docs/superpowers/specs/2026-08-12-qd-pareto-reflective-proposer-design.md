@@ -33,6 +33,20 @@ what makes the search robust to the proxy bias.
   one structured request) to bound gpt-5.5 load.
 - **Built as one integrated system** (not phased).
 
+## Framework decision: hand-build, DSPy as reference
+
+DSPy ships GEPA and MIPROv2 as optimizers and was evaluated. It is rejected as the primary
+framework because its abstraction does not fit this problem: DSPy optimizes a
+`dspy.Module`'s *instructions* against a *trainset* of labeled examples, with a scalar (or
+scalar+text-feedback) metric and a Pareto frontier over *trainset instances*. Our problem
+optimizes the *outputs* (attack shapes) themselves, wants a diverse *pool* as the artifact,
+selects by **Pareto over the two model columns** (not trainset instances), keys diversity on
+a **behavioral MAP-Elites archive**, and runs inside an **async multi-lane team + in-process
+GGUF scorer + custom shipping** pipeline. Adopting DSPy would force either fighting its loop
+or dropping the QD/2-D-Pareto core. We therefore hand-build the loop, but read DSPy's GEPA
+source to replicate its proven reflection/propose/Pareto mechanics and its `ScoreWithFeedback`
+primitive rather than reinvent them.
+
 ## Architecture
 
 ### Unit and score vector
