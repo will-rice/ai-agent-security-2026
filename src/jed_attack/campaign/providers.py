@@ -108,8 +108,13 @@ PROVIDERS: dict[str, Provider] = {
     "codex": Provider("codex"),
     # codex ChatGPT-account Responses backend (token from ~/.codex/auth.json, no
     # key_env). gpt-5.5 COMPLIES with the red-team proposer prompt and hard-enforces the
-    # two-pool schema via Responses text.format; the gpt-5.6 family is moderation-
-    # blocked and daybreak "cyber" isn't entitled on a ChatGPT plan. See codex_proposer.
+    # two-pool schema via Responses text.format; the gpt-5.6 family is moderation-blocked.
+    # daybreak ("gpt-daybreak-blue-latest", the cyber model) is now ENTITLED on the
+    # ChatGPT plan and speaks this backend + strict structured output for benign inputs,
+    # but its input moderation returns invalid_prompt ("Request blocked") for BOTH the
+    # SubmissionBatch schema's attack Field descriptions AND the red-team proposer prompt
+    # itself (probed 2026-08-12). So it authors nothing here -- deliberately NOT a lane.
+    # See codex_proposer.
     "codex-gpt55": Provider(CODEX_RESPONSES_KIND, model="gpt-5.5"),
     "codex-gpt54": Provider(CODEX_RESPONSES_KIND, model="gpt-5.4"),
 }
