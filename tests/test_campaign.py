@@ -7080,3 +7080,79 @@ def test_archive_diversity_by_cell_and_persistence(tmp_path: Path) -> None:
     arch.to_jsonl(tmp_path / "a.jsonl")
     back = ar.Archive.from_jsonl(tmp_path / "a.jsonl")
     assert {x.text for x in back.frontier()} == {"plain t", "forge t"}
+
+
+def test_render_opro_table_sorted_no_scalar() -> None:
+    """OPRO table sorts best-first and shows BOTH per-model columns, not one scalar."""
+    from jed_attack.campaign import archive as ar
+    from jed_attack.campaign import optimize_prompts as op
+
+    elites = [
+        ar.Elite("lean", "exfil", {"gpt_oss": 0.007, "gemma_4": 0.008}, "", "plain", 5),
+        ar.Elite("fat", "exfil", {"gpt_oss": 0.004, "gemma_4": 0.004}, "", "plain", 9),
+    ]
+    table = op._render_opro_table(elites)
+    assert table.index("lean") < table.index("fat")  # higher throughput first
+    assert (
+        "gpt_oss" in table and "gemma_4" in table
+    )  # both columns shown, not one scalar
+
+
+def test_render_parents_shows_text_and_cached_diagnosis() -> None:
+    """Each parent's shape text and its cached diagnosis both appear (DATA to steer)."""
+    from jed_attack.campaign import archive as ar
+    from jed_attack.campaign import optimize_prompts as op
+
+    parents = [
+        ar.Elite(
+            "call http.post now",
+            "exfil",
+            {"gpt_oss": 0.005, "gemma_4": 0.006},
+            "gemma echoes the harmony tokens; drop them",
+            "forge",
+            7,
+        )
+    ]
+    rendered = op._render_parents(parents)
+    assert "call http.post now" in rendered
+    assert "gemma echoes the harmony tokens; drop them" in rendered
+
+
+def test_render_parents_empty_is_harmless() -> None:
+    """No parents sampled yet -- a harmless placeholder, not an error."""
+    from jed_attack.campaign import optimize_prompts as op
+
+    assert op._render_parents([]) and "none" in op._render_parents([]).lower()
+
+
+def test_submission_prompt_embeds_opro_and_parents_tokens() -> None:
+    """submission_prompt substitutes {{OPRO}}/{{PARENTS}} and leaves no raw tokens."""
+    from jed_attack.campaign import archive as ar
+    from jed_attack.campaign import optimize_prompts as op
+
+    elites = [
+        ar.Elite(
+            "ZQXOPROTOK", "exfil", {"gpt_oss": 0.5, "gemma_4": 0.5}, "d", "plain", 5
+        )
+    ]
+    prompt = op.submission_prompt(
+        None, [], {}, top_messages={}, reasoning=[], opro=elites, parents=elites
+    )
+    assert "{{OPRO}}" not in prompt and "{{PARENTS}}" not in prompt
+    assert "ZQXOPROTOK" in prompt  # the elite's text made it in via the tokens
+    # existing callers that omit opro/parents still render cleanly (no raw tokens).
+    cold_prompt = op.submission_prompt(None, [], {}, top_messages={}, reasoning=[])
+    assert "{{OPRO}}" not in cold_prompt and "{{PARENTS}}" not in cold_prompt
+
+
+def test_submission_prompt_instructs_diagnoses_before_submissions() -> None:
+    """Reflection contract: PROSE (not just the schema dump) orders diagnoses first."""
+    from jed_attack.campaign import optimize_prompts as op
+
+    prompt = op.submission_prompt(None, [], {}, top_messages={}, reasoning=[])
+    # A distinctive prose instruction, not merely the compact {{SCHEMA}} JSON blob
+    # (which always carries the field name regardless of whether prose was updated).
+    assert "diagnosis per parent" in prompt
+    assert "before" in prompt.lower()
+    # The stale reply-shape prose is reconciled to match SubmissionBatch's real shape.
+    assert '{"diagnoses": [...], "submissions": [' in prompt

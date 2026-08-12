@@ -319,6 +319,10 @@ GEN_CHAR_BUCKET_S = 25.0  # quantization bin (chars) for the archive's cost axis
 # per-generation replay cost the same way MAX_SHIP_MESSAGES does for the flat pool.
 ARCHIVE_FRONTIER_CAP = int(os.getenv("JED_ARCHIVE_FRONTIER_CAP", "36"))
 
+# OPRO scored-trajectory table (optimize_prompts._render_opro_table): max elite rows
+# shown in the proposer prompt, best-first. Bounds prompt length, not archive size.
+OPRO_TABLE_ROWS = 20
+
 
 def ensure_dirs() -> None:
     """Create the runtime directories the submission pipeline writes to."""

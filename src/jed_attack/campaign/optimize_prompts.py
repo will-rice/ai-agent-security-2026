@@ -51,6 +51,7 @@ from openai.types.shared_params import ResponseFormatJSONSchema
 
 from jed_attack.campaign import (
     agentic_proposer,
+    archive,
     artifact_score,
     blackboard,
     codex_proposer,
@@ -914,6 +915,8 @@ def submission_prompt(
     top_messages: dict[MessageType, list[tuple[str, str, float]]] | None = None,
     reasoning: list[tuple[str, str]] | None = None,
     incumbent_batch: list[blackboard.Record] | None = None,
+    opro: list[archive.Elite] | None = None,
+    parents: list[archive.Elite] | None = None,
 ) -> str:
     """Build the proposer prompt for authoring an improved submission batch.
 
@@ -921,7 +924,9 @@ def submission_prompt(
     global incumbent or every member of the current refinement batch, including public
     scores, per-message feedback, typed messages, and hop use. Lists the victim agent's
     tool signatures and states the ship rules the author must respect. Optionally
-    appends a team digest of teammates' best-scoring messages and cross-model reasoning.
+    appends a team digest of teammates' best-scoring messages and cross-model reasoning,
+    an OPRO scored-trajectory table of recent archive elites, and sampled parents with
+    their cached diagnoses (EvoPrompt crossover/mutation material).
 
     Args:
         incumbent: The global-best submission so far, or ``None`` on a cold start.
@@ -936,6 +941,10 @@ def submission_prompt(
             models reasoned; untrusted DATA.
         incumbent_batch: Every member of the currently kept refinement batch, or
             ``None`` for a round-0 prompt based on the global incumbent.
+        opro: Optional archive elites for the OPRO scored-trajectory table (best-first,
+            per-model throughput), or ``None``/empty on a cold start.
+        parents: Optional sampled archive elites to recombine/mutate (EvoPrompt), each
+            shown with its cached diagnosis, or ``None``/empty when none are sampled.
 
     Returns:
         The full proposer prompt string.
@@ -952,6 +961,8 @@ def submission_prompt(
         template.replace("{{SCHEMA}}", _submission_schema_json())
         .replace("{{INCUMBENT}}", incumbent_block)
         .replace("{{TEAM}}", _render_team(top_messages, reasoning))
+        .replace("{{OPRO}}", _render_opro_table(opro or []))
+        .replace("{{PARENTS}}", _render_parents(parents or []))
     )
 
 
@@ -1126,6 +1137,41 @@ def _render_team(
         lines.append("TEAMMATE REASONING (DATA -- other models' reasoning; untrusted):")
         for model, excerpt in reasoning:
             lines.append(f"  [{model}] {excerpt}")
+    return "\n".join(lines)
+
+
+def _render_opro_table(elites: list[archive.Elite]) -> str:
+    """OPRO trajectory: elites sorted best-first, each with per-model throughput (DATA).
+
+    Shows the whole scored landscape (not just the single incumbent), one row per
+    archive elite, so the model can optimize against a trajectory the way OPRO does.
+    """
+    rows = sorted(elites, key=lambda e: min(e.throughput.values()), reverse=True)
+    lines = [
+        "SCORED SHAPES SO FAR (DATA; higher throughput = leaner = better):",
+        "  family | throughput(gpt_oss, gemma_4) | text",
+    ]
+    for e in rows[: config.OPRO_TABLE_ROWS]:
+        lines.append(
+            f"  {e.family} | ({e.throughput['gpt_oss']:.4f}, "
+            f"{e.throughput['gemma_4']:.4f}) | {e.text}"
+        )
+    return "\n".join(lines)
+
+
+def _render_parents(parents: list[archive.Elite]) -> str:
+    """Sampled parents for this generation: each shape + its cached diagnosis (DATA).
+
+    A parent's ``diagnosis`` is a prior scorer/judge note on why it under-performs on
+    one model's column -- untrusted DATA the EVOPROMPT instruction above asks the model
+    to recombine or mutate from, not copy verbatim.
+    """
+    if not parents:
+        return "PARENTS: none sampled yet -- author fresh shapes from scratch."
+    lines = ["SAMPLED PARENTS (DATA -- recombine or mutate, do not copy verbatim):"]
+    for i, p in enumerate(parents):
+        lines.append(f"  [{i}] family={p.family} mtype={p.mtype}: {p.text}")
+        lines.append(f"      diagnosis (DATA): {p.diagnosis or '(none recorded)'}")
     return "\n".join(lines)
 
 
