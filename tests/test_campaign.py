@@ -7686,3 +7686,22 @@ def test_render_parents_falls_back_when_diagnosis_missing() -> None:
         ar.Elite("plain t", "exfil", {"gpt_oss": 0.4, "gemma_4": 0.6}, "", "plain", 5)
     ]
     assert "(none recorded)" in op._render_parents(parents)
+
+
+def test_board_density_rewards_severity_and_leanness() -> None:
+    """board_density returns 0 for non-firing, else rewards severity and leanness."""
+    from jed_attack.campaign import config
+    from jed_attack.campaign.submission_score import board_density
+
+    lean_hi = board_density(16.0, 150.0, "gpt_oss")
+    lean_lo = board_density(1.0, 150.0, "gpt_oss")
+    fat_hi = board_density(16.0, 500.0, "gpt_oss")
+    assert lean_hi > lean_lo  # higher severity -> higher density
+    assert lean_hi > fat_hi  # leaner -> higher density
+    assert board_density(0.0, 150.0, "gpt_oss") == 0.0  # non-firing -> 0
+    exp = (
+        (16.0 + config.NOVELTY_PER_CELL)
+        / 200.0
+        / (150.0 + config.FIXED_CHARS["gpt_oss"])
+    )
+    assert lean_hi == exp

@@ -400,6 +400,22 @@ def throughput(gen_chars: float, model: str) -> float:
     return 1.0 / (gen_chars + config.FIXED_CHARS[model])
 
 
+def board_density(severity: float, gen_chars: float, model: str) -> float:
+    """Per-model board value-per-char: the LB board a shape earns per char of budget.
+
+    Mirrors _firing_templates' per-candidate board ((severity + NOVELTY_PER_CELL) / 200)
+    over its per-candidate cost (gen_chars + FIXED_CHARS[model]). This is what fills a
+    fixed char budget best, so ship_set ranks by it. 0 for non-firing (severity <= 0).
+    """
+    if severity <= 0.0:
+        return 0.0
+    return (
+        (severity + config.NOVELTY_PER_CELL)
+        / 200.0
+        / (gen_chars + config.FIXED_CHARS[model])
+    )
+
+
 def project_public_board(
     score: "SubmissionScore",
     budget_chars: Mapping[str, float],
