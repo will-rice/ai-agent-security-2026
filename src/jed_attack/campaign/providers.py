@@ -23,7 +23,9 @@ class Provider:
 
     Attributes:
         kind: ``"local"`` (a served target model), ``"api"`` (OpenAI-compatible chat
-            endpoint), or ``"codex"`` (the codex CLI).
+            endpoint), ``"codex"`` (the codex CLI), or ``"codex_responses"`` (the codex
+            ChatGPT-account Responses backend; see
+            :mod:`jed_attack.campaign.codex_proposer`).
         model: Model name — the served model key for ``local``, or the API model id.
         base_url: ``api`` only — the OpenAI-compatible base URL.
         key_env: ``api`` only — the env var holding the bearer token (never the token).
@@ -48,6 +50,9 @@ _ZAI = "https://api.z.ai/api/coding/paas/v4"
 CHEAPEST_BASE_URL = "https://api.cheapestinference.com/v1"
 CHEAPEST_KEY_ENV = "CHEAPEST_API_KEY"
 _CHEAP = CHEAPEST_BASE_URL
+# The codex ChatGPT-account Responses lane's kind (dispatched in optimize_prompts to
+# jed_attack.campaign.codex_proposer, which can't be imported here -- it imports this).
+CODEX_RESPONSES_KIND = "codex_responses"
 
 PROVIDERS: dict[str, Provider] = {
     # Local served target models: free, no provider block, but the weakest proposer.
@@ -101,6 +106,12 @@ PROVIDERS: dict[str, Provider] = {
     ),
     # codex CLI: provider-blocked on these red-team prompts here, kept for other envs.
     "codex": Provider("codex"),
+    # codex ChatGPT-account Responses backend (token from ~/.codex/auth.json, no
+    # key_env). gpt-5.5 COMPLIES with the red-team proposer prompt and hard-enforces the
+    # two-pool schema via Responses text.format; the gpt-5.6 family is moderation-
+    # blocked and daybreak "cyber" isn't entitled on a ChatGPT plan. See codex_proposer.
+    "codex-gpt55": Provider(CODEX_RESPONSES_KIND, model="gpt-5.5"),
+    "codex-gpt54": Provider(CODEX_RESPONSES_KIND, model="gpt-5.4"),
 }
 
 

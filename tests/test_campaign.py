@@ -595,6 +595,50 @@ def test_submission_schema_guides_distinct_template_batches() -> None:
     assert "NO reasoning channel" in schema_text  # gemma_4 pool
 
 
+def test_codex_responses_lane_registered_and_routed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The codex lane is registered, its schema builds, and it routes correctly."""
+    import asyncio
+
+    from openai.lib._pydantic import to_strict_json_schema
+
+    from jed_attack.campaign import codex_proposer
+    from jed_attack.campaign.submission import Submission, SubmissionBatch
+
+    for name in ("codex-gpt55", "codex-gpt54"):
+        assert providers.get(name).kind == providers.CODEX_RESPONSES_KIND
+    # The lane depends on SubmissionBatch converting to a strict schema — guard it.
+    assert to_strict_json_schema(SubmissionBatch)["type"] == "object"
+
+    calls: list[str] = []
+
+    async def fake_codex(
+        prompt: str, provider: providers.Provider, idle_timeout_s: float
+    ) -> tuple[list[Submission], str]:
+        calls.append("codex")
+        return [], ""
+
+    async def fake_chat(
+        prompt: str, provider: providers.Provider, idle_timeout_s: float
+    ) -> tuple[list[Submission], str]:
+        calls.append("chat")
+        return [], ""
+
+    monkeypatch.setattr(codex_proposer, "propose_batch_codex", fake_codex)
+    monkeypatch.setattr(optimize_prompts, "propose_batch_async", fake_chat)
+
+    asyncio.run(
+        optimize_prompts._propose_batch_oneshot("p", providers.get("codex-gpt55"), 1.0)
+    )
+    asyncio.run(
+        optimize_prompts._propose_batch_oneshot(
+            "p", providers.get("cheapest-mimo"), 1.0
+        )
+    )
+    assert calls == ["codex", "chat"]
+
+
 def test_message_rejects_bad_hops_and_inconsistent_target_count() -> None:
     """Message: hops MUST be exactly 1 and text must carry exactly one target."""
     from jed_attack.campaign.submission import Message, MessageType

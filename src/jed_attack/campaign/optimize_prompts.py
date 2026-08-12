@@ -52,6 +52,7 @@ from jed_attack.campaign import (
     agentic_proposer,
     artifact_score,
     blackboard,
+    codex_proposer,
     config,
     fill,
     private_proxy,
@@ -252,7 +253,7 @@ async def worker_loop(
                     prompt, provider, timeout_s
                 )
             else:
-                batch, reasoning = await propose_batch_async(
+                batch, reasoning = await _propose_batch_oneshot(
                     prompt, provider, timeout_s
                 )
             tally = outcomes.setdefault(model, [0, 0])
@@ -728,7 +729,7 @@ async def _refine_batch(
                 reasoning=reasoning_digest,
                 incumbent_batch=incumbent_batch,
             )
-            refined, refined_reasoning = await propose_batch_async(
+            refined, refined_reasoning = await _propose_batch_oneshot(
                 prompt, provider, timeout_s
             )
             if not refined:
@@ -1557,6 +1558,23 @@ def _batch_predicate_counts(scores: list[SubmissionScore]) -> dict[str, int]:
                         seen.add(key)
                         counts[predicate] = counts.get(predicate, 0) + 1
     return counts
+
+
+async def _propose_batch_oneshot(
+    prompt: str, provider: providers.Provider, idle_timeout_s: float
+) -> tuple[list[Submission], str]:
+    """Route a one-shot batch proposal to the right backend and return its result.
+
+    The codex ChatGPT-account lane speaks the Responses API, so it has its own proposer
+    (:func:`codex_proposer.propose_batch_codex`); every other lane uses the
+    chat-completions streamer. Agentic lanes are dispatched separately (round 0 only),
+    so this helper never sees them.
+    """
+    if provider.kind == providers.CODEX_RESPONSES_KIND:
+        return await codex_proposer.propose_batch_codex(
+            prompt, provider, idle_timeout_s
+        )
+    return await propose_batch_async(prompt, provider, idle_timeout_s)
 
 
 async def propose_batch_async(
