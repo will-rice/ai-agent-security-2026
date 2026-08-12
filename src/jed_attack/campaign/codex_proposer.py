@@ -73,7 +73,8 @@ async def propose_batch_codex(
     Mirrors :func:`optimize_prompts.propose_batch_async`: streams a single structured
     reply, accumulates raw chunks, and parses the whole accumulated content once with
     ``SubmissionBatch.model_validate_json`` -- so the model's ``@model_validator`` ship
-    invariants run in that parse and any invalid message drops the batch WHOLE. Streaming
+    invariants run in that parse and any invalid message drops the batch WHOLE.
+    Streaming
     uses an IDLE timeout (rescheduled per event), so a slow reply finishes and only a
     stall aborts. A backend failure (e.g. moderation ``Request blocked``) is raised so
     the lane's breakage is visible, not disguised as an empty drop.

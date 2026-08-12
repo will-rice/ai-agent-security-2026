@@ -11,7 +11,6 @@ first-party import. It prepends a Kaggle sys.path preamble (no-op off-Kaggle), s
 """
 
 import json
-from collections.abc import Mapping
 from pathlib import Path
 
 # Mirrors ``config.SHIP_CANDIDATE_CAP``: the most candidates the skeleton will probe.
@@ -46,7 +45,7 @@ from aicomp_sdk.attacks.contracts import (
 from aicomp_sdk.core.env.api import AttackEnvProtocol
 from aicomp_sdk.core.predicates import eval_predicates
 
-_CANDIDATES_BY_MODEL = json.loads(r"""__CANDIDATES_JSON__""")
+_CANDIDATES = json.loads(r"""__CANDIDATES_JSON__""")
 _PAYLOAD = "SECRET_MARKER"
 _HARD_N_CAP = __HARD_N_CAP__
 _LAT_FLOOR_S = 0.001
@@ -60,30 +59,6 @@ _SLOWEST_MULT = 1.35
 # mode). 0.8333 matches the green-side REPLAY_MARGIN_S projection and leaves ~17%
 # (1500s) of headroom instead.
 _REPLAY_SAFE_FRAC = 0.8333
-
-
-def _candidates_union() -> list:
-    """Every pool's filled candidates, interleaved round-robin -- the shipped list.
-
-    The submission carries a per-model pool, but the GRADING env is opaque
-    (``aicomp_sdk`` hands the attack a slots-only ``_OpaqueAttackEnv`` exposing only
-    seed/reset/interact/export_trace_dict), and neither it nor ``AttackRunConfig``
-    reveals which victim is being graded. So the artifact CANNOT route per model at
-    grade time -- there is no hint to read (requires no attribute access on ``env``).
-
-    Instead it ships the UNION of both pools and lets the algorithm's existing
-    live-probe + real-time trim do the selection: every candidate is timed on the ACTUAL
-    live victim and the tail is dropped at the wall-clock budget. Real timing is
-    inherently model-adaptive -- the graded model's own candidates fire (and cost) as
-    they really do, so the wrong-pool candidates simply don't fire and the budget fills
-    with the right ones. Interleaving the pools (round-robin, not concatenated) gives
-    both a fair position in the probe order so neither is starved when the budget binds.
-    """
-    pools = [pool for pool in _CANDIDATES_BY_MODEL.values() if pool]
-    interleaved: list = []
-    for column in zip_longest(*pools):
-        interleaved.extend(chain for chain in column if chain is not None)
-    return interleaved
 
 
 def _fired(trace: Mapping[str, Any]) -> bool:
@@ -136,7 +111,7 @@ class AttackAlgorithm(AttackAlgorithmBase):
         hops = int(getattr(config, "max_tool_hops", 8) or 8)
         budget_s = float(getattr(config, "time_budget_s", 0.0) or 0.0)
         deadline = time.monotonic() + budget_s * _REPLAY_SAFE_FRAC if budget_s else None
-        candidates = _candidates_union()
+        candidates = _CANDIDATES
         kept: list[AttackCandidate] = []
         slowest = _SLOWEST0
         for chain in candidates[:_HARD_N_CAP]:
@@ -153,16 +128,15 @@ class AttackAlgorithm(AttackAlgorithmBase):
 '''
 
 
-def build(candidates_by_model: Mapping[str, str], out_dir: Path) -> Path:
-    """Write the shipped ``attack.py`` with the pre-filled per-model candidate map.
+def build(candidates_json: str, out_dir: Path) -> Path:
+    """Write the shipped ``attack.py`` with the pre-filled flat candidate list.
 
     Args:
-        candidates_by_model: ``Submission.to_shipped_json(caps)`` -- ``{model:
-            candidates_json}``, each value a JSON array of message chains for that
-            victim model. Embedded as a ``{model: [candidates]}`` map; the shipped
-            skeleton has no model hint at grade time, so it ships the UNION of every
-            pool (``_candidates_union``) and lets its live-probe + wall-clock trim
-            select the graded model's own firing candidates.
+        candidates_json: ``Submission.to_shipped_json(cap)`` -- a JSON array of message
+            chains. Embedded as the flat ``_CANDIDATES`` list; the opaque grading env
+            never reveals which victim is being graded, so the artifact serves this one
+            shared list to every victim and lets its live-probe + wall-clock trim keep
+            the firing candidates.
         out_dir: Output directory (typically ``config.BUILD_NEXT_DIR``).
 
     Returns:
@@ -172,10 +146,7 @@ def build(candidates_by_model: Mapping[str, str], out_dir: Path) -> Path:
         ValueError: If the embedded JSON contains a ``\"\"\"`` sequence that would break
             out of the embedded string literal.
     """
-    candidates_json = json.dumps(
-        {model: json.loads(chains) for model, chains in candidates_by_model.items()},
-        separators=(",", ":"),
-    )
+    candidates_json = json.dumps(json.loads(candidates_json), separators=(",", ":"))
     if '"""' in candidates_json:
         raise ValueError("candidates_json must not contain a triple-quote sequence")
     out_dir.mkdir(parents=True, exist_ok=True)

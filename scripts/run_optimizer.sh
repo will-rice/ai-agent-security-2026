@@ -45,27 +45,24 @@ sleep 1
 # Env is set inside the pane's login shell: a new-session inherits the tmux
 # SERVER's stale environment (the server is already up for gemma/gptoss), not
 # this script's, so exporting here would not reach the worker.
-# Pin the proposer roster to the models measured to author clean batches. Without this
-# pin the CI lane tracks the full /v1/models list, which includes lanes we deliberately
-# dropped after a per-model drop-rate measurement (see config.TEAM_PROPOSERS): glm-5.2
-# (~80% refusals), deepseek-v4-flash (~50% malformed batches), and kimi-k2.7 (the agentic
-# lane authored batches as text, not tool calls). The pin intersects with live models, so
-# an unavailable model is simply skipped.
+# Sole proposer lane: codex-gpt55 (gpt-5.5 via the codex ChatGPT-account Responses
+# backend, authed by the OAuth token in ~/.codex/auth.json, no env key). Measured
+# 2026-08-12 as the steadiest author (obj 33-47, zero drops) while the CheapestInference
+# lanes had grown a ~30% ship-invariant drop rate and a wide low-side spread under the
+# schema-as-source-of-truth prompt, so mimo/minimax are dropped. CAVEAT: gpt-5.5 spends
+# the PERSONAL ChatGPT Pro quota per generation and the token expires (~days, then needs
+# `codex login`); as the SOLE lane it burns quota faster and a lapsed token stalls the
+# whole roster -- watch for 401s / quota 429s.
 #
 # JED_JUDGE_MODE=off drops the dylan robustness/mechanism judge entirely (_assess_batch
 # returns all-None, zero HTTP calls to DYLAN_JUDGE_URL). The public-board objective is
 # scored in-process from the gpt_oss/gemma GGUFs and needs no judge, so the optimizer runs
 # standalone on green with the dylan judge fleet down.
-#
-# codex-gpt55 is a separate lane (its own key): gpt-5.5 via the codex ChatGPT-account
-# Responses backend, authed by the OAuth token in ~/.codex/auth.json (no env key). It
-# spends the PERSONAL ChatGPT Pro quota per generation and the token expires (~days, then
-# needs `codex login`), so it is one deliberate extra author, not the whole roster.
 tmux new-session -d -s "$SESSION" -c "$REPO" \
   "exec bash -lc 'mkdir -p run/logs; \
     export JED_CAMPAIGN_ROOT=\"$REPO/run\" JED_WANDB=1 \
       JED_ARTIFACT_SCORE=0 \
-      JED_TEAM_PROPOSERS=\"cheapest-mimo,cheapest-minimax,codex-gpt55\" \
+      JED_TEAM_PROPOSERS=\"codex-gpt55\" \
       JED_JUDGE_MODE=off \
       CUDA_DEVICE_ORDER=PCI_BUS_ID \
       LD_LIBRARY_PATH=\"/usr/local/cuda-12.8/lib64:\${LD_LIBRARY_PATH:-}\"; \

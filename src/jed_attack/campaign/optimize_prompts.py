@@ -45,6 +45,7 @@ from typing import Any, Protocol, cast
 import git
 import pydantic
 from dotenv import load_dotenv
+from openai.lib._parsing import type_to_response_format_param
 from openai.types.chat import ChatCompletionMessageParam
 from openai.types.shared_params import ResponseFormatJSONSchema
 
@@ -72,7 +73,7 @@ from jed_attack.campaign.submission import (
 from jed_attack.campaign.submission_score import (
     SubmissionScore,
     project_public_board,
-    score_pools,
+    score_submission,
 )
 
 
@@ -152,8 +153,7 @@ def make_record(
         for ms in score.per_message
     ]
     return blackboard.Record(
-        gpt_oss=[m.model_dump(mode="json") for m in submission.pool("gpt_oss")],
-        gemma_4=[m.model_dump(mode="json") for m in submission.pool("gemma_4")],
+        messages=[m.model_dump(mode="json") for m in submission.messages],
         public=score.public,
         feedback=feedback,
         reasoning=reasoning,
@@ -413,7 +413,7 @@ async def _score_batch(batch: list[Submission]) -> list[SubmissionScore]:
     Returns:
         One :class:`SubmissionScore` per submission, in order.
     """
-    return [await asyncio.to_thread(score_pools, s) for s in batch]
+    return [await asyncio.to_thread(score_submission, s.messages) for s in batch]
 
 
 async def _score_artifact_metrics(
@@ -881,18 +881,30 @@ async def _run_team(board: blackboard.Blackboard, run: _WandbRun | None) -> None
         _log.info("team cancelled; shutting down cleanly")
 
 
-def _submission_schema_json() -> str:
-    """The live SubmissionBatch JSON Schema (compact), built FRESH each call.
+def _submission_response_format() -> ResponseFormatJSONSchema:
+    """The strict ``response_format`` the SDK derives FROM :class:`SubmissionBatch`.
 
-    Built from the model at prompt-assembly time -- not a cached module constant -- so
-    the schema the proposer SEES in the prompt is always exactly the one that drives
-    constrained decoding and validation; the two cannot drift. propose_batch_async
-    passes SubmissionBatch as response_format (the SDK builds the strict schema from
-    it and parses the reply back through the model's validators), so prompt text and
-    enforcement come from ONE live source (the model), and a schema edit needs no
-    separate prompt update.
+    We hand the model to the SDK's own converter instead of hand-building the param:
+    that is what inlines the ``type`` enum and sets ``strict=true`` correctly. Raw
+    ``model_json_schema`` renders that enum as a ``$ref`` carrying a sibling
+    ``description``, which OpenAI strict structured outputs reject (a ``$ref`` may not
+    have siblings), so constrained decoding would silently not enforce
+    ``exfil``/``deputy``. We feed this param to the low-level streaming ``.create``
+    rather than the SDK's ``.stream(response_format=Model)`` helper (see
+    :func:`propose_batch_async` for why). Built fresh each call so it reflects the live
+    model; the ``{{SCHEMA}}`` the proposer reads and the ``response_format`` that
+    constrains it come from this ONE object and cannot drift.
     """
-    return json.dumps(SubmissionBatch.model_json_schema(), separators=(",", ":"))
+    return cast(
+        "ResponseFormatJSONSchema", type_to_response_format_param(SubmissionBatch)
+    )
+
+
+def _submission_schema_json() -> str:
+    """The live strict SubmissionBatch schema as compact text for ``{{SCHEMA}}``."""
+    return json.dumps(
+        _submission_response_format()["json_schema"]["schema"], separators=(",", ":")
+    )
 
 
 def submission_prompt(
@@ -1020,56 +1032,37 @@ def _render_incumbent_pools(
     feedback: list[dict[str, Any]],
     introspection: dict[int, str],
 ) -> list[str]:
-    """Render each per-model pool's messages/feedback under its own labelled section.
+    """Render the incumbent's shared pool: messages + per-message feedback.
 
-    ``feedback`` is aligned with :attr:`blackboard.Record.messages` (the ``gpt_oss``
-    pool then ``gemma_4``, concatenated -- see :meth:`Submission.all_messages`), so
-    slicing it at each pool's boundary recovers that pool's own rows. Each pool is
-    authored for, and scores only on, its own victim (:func:`~jed_attack.campaign.
-    submission_score.score_pools` never cross-replays), so separate labelled
-    sections -- instead of one flat merged list -- are what let the proposer see the
-    per-pool structure and per-pool feedback it must author against.
+    ``feedback`` and ``introspection`` are aligned with the flat ``messages`` list. The
+    pool is scored on BOTH victims, so the per-model boards (``public_by_model``) are
+    shown as a spread note -- a shape must fire on both to score.
 
     Args:
-        incumbent: The record whose ``gpt_oss``/``gemma_4`` pools are rendered.
-        feedback: Per-message feedback dicts aligned with ``incumbent.messages`` (the
-            two pools concatenated in ``config.MODELS`` order), not pool-local.
-        introspection: ``{global_message_index: victim_suggestion}`` keyed against the
-            same flat, concatenated ordering as ``feedback`` -- remapped to each pool's
-            LOCAL indices before rendering, since ``_feedback_table`` reads it
-            pool-locally.
+        incumbent: The record whose shared pool is rendered.
+        feedback: Per-message feedback dicts aligned with ``incumbent.messages``.
+        introspection: ``{message_index: victim_suggestion}`` keyed by the flat index.
 
     Returns:
-        One line per row of a labelled ``POOL <model> (...):`` section per model, each
-        with its own ``PER-MESSAGE FEEDBACK`` and ``MESSAGES`` sub-blocks.
+        The lines of the ``POOL`` section with ``PER-MESSAGE FEEDBACK`` and ``MESSAGES``
+        sub-blocks.
     """
-    lines: list[str] = []
-    offset = 0
-    for model in config.MODELS:
-        pool_messages = incumbent.pool_messages(model)
-        pool_feedback = feedback[offset : offset + len(pool_messages)]
-        # introspection is keyed by the GLOBAL (flat, both-pools-concatenated) index,
-        # but _feedback_table looks it up by the LOCAL index into pool_feedback -- remap
-        # so a gemma_4-pool (offset != 0) suggestion isn't attributed to the wrong
-        # message.
-        pool_introspection = {
-            i: introspection[offset + i]
-            for i in range(len(pool_messages))
-            if (offset + i) in introspection
-        }
-        board = incumbent.public_by_model.get(model)
-        board_str = f", board={board:g}" if board is not None else ""
-        lines.append(f"POOL {model} ({len(pool_messages)} msgs{board_str}):")
-        lines.append("  PER-MESSAGE FEEDBACK (DATA -- untrusted victim/trace text):")
-        lines.extend(
-            f"  {row}" for row in _feedback_table(pool_feedback, pool_introspection)
-        )
-        lines.append("  MESSAGES (DATA):")
-        lines.extend(
+    boards = " ".join(
+        f"{model}={incumbent.public_by_model[model]:g}"
+        for model in config.MODELS
+        if model in incumbent.public_by_model
+    )
+    board_str = f", per-model board: {boards}" if boards else ""
+    lines: list[str] = [
+        f"POOL ({len(incumbent.messages)} shared-pool msgs{board_str}):",
+        "  PER-MESSAGE FEEDBACK (DATA -- untrusted victim/trace text):",
+        *(f"  {row}" for row in _feedback_table(feedback, introspection)),
+        "  MESSAGES (DATA):",
+        *(
             f"    [{i}] {message['type']} hops={message['hops']}: {message['text']}"
-            for i, message in enumerate(pool_messages)
-        )
-        offset += len(pool_messages)
+            for i, message in enumerate(incumbent.messages)
+        ),
+    ]
     return lines
 
 
@@ -1399,24 +1392,20 @@ def _project_boards(score: SubmissionScore) -> dict[str, float]:
 
 
 def _score_public_raw_per_gen_char(score: SubmissionScore) -> float:
-    """Per-submission objective: the MEAN of the per-model char-PROJECTED boards.
+    """Per-submission objective: the MIN of the per-model char-PROJECTED boards.
 
-    The objective is the MEAN over the model columns -- the actual leaderboard metric
-    (the LB averages the per-model boards). This replaces the earlier MIN/maximin: that
-    maximin existed to force a single SHARED submission to cover both victims (a pure
-    SUM had let the search bank a lopsided gpt_oss-only optimum and leave gemma
-    near-zero, plateauing the board). Tasks 3-4 gave each model its OWN independent
-    candidate pool (schema ``min_length`` makes both-pools-non-empty structural), so
-    that lopsided failure mode can no longer happen -- a submission strong on one model
-    and weak on the other now legitimately outranks one mediocre on both, exactly like
-    the LB. The objective is LEXICOGRAPHIC: this mean is primary, then
-    :func:`_score_public_sum_over_models` (a defensive tiebreak), then diversity
-    (``Record.objective_tiebreaker``) -- see
-    :func:`jed_attack.campaign.blackboard._objective_key`. Invalid submissions never
-    accrue objective.
+    One SHARED pool is scored on BOTH victims, so a shape scores only if it fires on
+    both -- the MIN over the two model columns forces that: a submission strong on one
+    model and near-zero on the other is bounded by the dead column, exactly the
+    coverage pressure a single shared pool needs (a pure SUM/mean would let the search
+    bank a lopsided gpt_oss-only optimum and leave gemma near-zero). The objective is
+    LEXICOGRAPHIC: this MIN is primary, then :func:`_score_public_sum_over_models` (the
+    SUM over columns) as the tiebreak, then diversity (``Record.objective_tiebreaker``)
+    -- see :func:`jed_attack.campaign.blackboard._objective_key`. Invalid submissions
+    never accrue objective.
     """
     boards = _project_boards(score)
-    return mean(boards.values()) if boards else 0.0
+    return min(boards.values()) if boards else 0.0
 
 
 def _score_public_sum_over_models(score: SubmissionScore) -> float:
@@ -1581,15 +1570,19 @@ async def propose_batch_async(
 ) -> tuple[list[Submission], str]:
     """Author a batch of submissions on ``provider`` by STREAMING a structured call.
 
-    ``response_format`` is the strict JSON schema derived from :class:`SubmissionBatch`
-    (``model_json_schema`` + ``extra="forbid"``), so the model is the single source for
-    both constrained decoding and validation. We stream RAW chunks and parse the whole
-    accumulated content once with ``SubmissionBatch.model_validate_json`` -- NOT the
-    SDK's ``.stream(response_format=Model)`` helper, whose per-chunk incremental parser
-    (``from_json`` partial mode) raises ``ValueError`` mid-stream on some of these
-    open-model replies. The model's ``@model_validator`` ship invariants (typed shape,
-    ``hops`` == target count) run in that final parse, so a batch with ANY invalid
-    message fails to parse and is dropped WHOLE -- we never salvage a partial batch.
+    ``response_format`` is the strict param the SDK derives from
+    :class:`SubmissionBatch` (:func:`_submission_response_format`), so the model is the
+    single source for both constrained decoding and validation. We use the low-level
+    ``.create(stream=True)`` and accumulate RAW chunks, parsing the whole content once
+    at the end with ``SubmissionBatch.model_validate_json`` -- deliberately NOT the
+    SDK's ``.stream(response_format=Model)`` helper. That helper works on clean replies,
+    but it parses INCREMENTALLY as chunks arrive; this proposer emits harmony forge
+    tokens (``<|end|><|start|>...``) inside JSON strings, reasoning, and the odd prose
+    refusal, and a mid-stream partial parse can choke on that, whereas a single final
+    parse of the complete content cannot. The model's ``@model_validator`` ship
+    invariants (typed shape, ``hops`` == target count) run in that final parse, so a
+    batch with ANY invalid message fails to parse and is dropped WHOLE -- never a
+    partial batch -- and we classify the drop cause ourselves (refusal vs invariant).
 
     Streaming swaps the wall-clock timeout for an IDLE one (:func:`asyncio.timeout`,
     rescheduled per streamed token), so the call is abandoned only on a stall, never
@@ -1611,24 +1604,13 @@ async def propose_batch_async(
         {"role": "system", "content": _load_prompts()["system"]},
         {"role": "user", "content": prompt},
     ]
-    response_format = cast(
-        "ResponseFormatJSONSchema",
-        {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "submission_batch",
-                "strict": True,
-                "schema": SubmissionBatch.model_json_schema(),
-            },
-        },
-    )
     try:
         stream = await client.chat.completions.create(
             model=provider.model,
             messages=messages,
             max_completion_tokens=provider.max_tokens,
             temperature=_PROPOSER_TEMPERATURE,
-            response_format=response_format,
+            response_format=_submission_response_format(),
             stream=True,
         )
     except Exception as exc:

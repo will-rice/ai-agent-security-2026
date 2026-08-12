@@ -27,13 +27,12 @@ from jed_attack.campaign.submission import MessageType
 _log = logging.getLogger(__name__)
 
 
-# Tag stamped on every record scored under the CURRENT optimizer objective (the MEAN
-# over models of each model's char-projected board -- the actual LB metric). Bump this
-# whenever the objective changes scale: champion selection prefers rows carrying the
-# current tag so a prior scheme's incomparable magnitudes cannot freeze the champion.
-# See _objective_key. NOTE: ROBUSTNESS_LAMBDA is currently UN-WIRED under the MEAN
-# objective -- _score_public_raw_per_gen_char never reads it, so a non-zero value only
-# changes the scheme tag/pool below, not the actual score.
+# Tag stamped on every record scored under the CURRENT optimizer objective (the MIN
+# over models of each model's char-projected board). Bump this whenever the objective
+# changes scale: champion selection prefers rows carrying the current tag so a prior
+# scheme's incomparable magnitudes cannot freeze the champion. See _objective_key. NOTE:
+# ROBUSTNESS_LAMBDA is currently UN-WIRED -- _score_public_raw_per_gen_char never reads
+# it, so a non-zero value only changes the scheme tag/pool below, not the actual score.
 def objective_scheme_name(
     robustness_lambda: float,
     portfolio_lambda: float = 0.0,
@@ -41,31 +40,26 @@ def objective_scheme_name(
 ) -> str:
     """Scheme tag for the current objective weights.
 
-    The objective is the MEAN over models of ``submission_score.project_public_board``'s
-    per-model board -- the actual leaderboard metric: the shipped board projected from
-    the deterministic char cost model (``raw_gen_chars + FIXED_CHARS[model]`` walked
-    round-robin to each model's ``config.FILL_BUDGET_CHARS``), NO replay. ``v18``
-    retires the ``v17`` MIN/maximin pool: that maximin forced the search to cover both
-    victims while a single shared submission could go lopsided, but Tasks 3-4 gave each
-    model its OWN independent pool (schema ``min_length`` makes both-pools-non-empty
-    structural), so a shared-submission lopsided optimum can no longer happen and the
-    MEAN -- what the LB actually scores -- is safe to use directly. Ranking is
-    LEXICOGRAPHIC (see :func:`_objective_key`): the mean is primary, then the SUM over
-    columns (``objective_sum``, total headroom -- now numerically redundant with the
-    mean primary since both derive from the same two-value sum, kept only so an
-    old-scheme row still orders sensibly), then diversity (``objective_tiebreaker`` =
-    distinct both-model shapes) -- none of these later keys is added into the mean
-    itself. The scheme still encodes the gate guardrail
-    (``config.GATE_GUARDRAIL_NAME``) so switching guardrails auto-starts a clean pool
-    instead of comparing incomparable magnitudes; a non-zero portfolio weight tags
-    diversity-on, its own pool. NOTE: ``robustness_lambda`` is currently UN-WIRED under
-    this MEAN objective (only affects the tag/pool below, never the score itself);
-    threaded through only so a future robustness-aware objective has its own pool
-    ready.
+    The objective is the MIN over models of ``submission_score.project_public_board``'s
+    per-model board: the shipped board projected from the deterministic char cost model
+    (``raw_gen_chars + FIXED_CHARS[model]`` walked round-robin to each model's
+    ``config.FILL_BUDGET_CHARS``), NO replay. ``v19`` restores the MIN over the SINGLE
+    shared pool: one pool is scored on BOTH victims and shipped as one flat list (the
+    grading env is opaque, so per-model pools cannot be routed), and the MIN forces
+    every shape to fire on both -- covering only one victim is bounded by the dead
+    column.
+    Ranking is LEXICOGRAPHIC (see :func:`_objective_key`): the MIN is primary, then the
+    SUM over columns (``objective_sum``, total headroom) as the tiebreak, then diversity
+    (``objective_tiebreaker`` = distinct both-model shapes). The scheme encodes the gate
+    guardrail (``config.GATE_GUARDRAIL_NAME``) so switching guardrails auto-starts a
+    clean pool; a non-zero portfolio weight tags diversity-on, its own pool. NOTE:
+    ``robustness_lambda`` is currently UN-WIRED (only affects the tag/pool below, never
+    the score itself); threaded through only so a future robustness-aware objective has
+    its own pool ready.
     """
-    base = f"{gate}_mean_v18"
+    base = f"{gate}_min_v19"
     if robustness_lambda != 0.0:
-        base = f"robust{robustness_lambda:g}_{gate}_mean_v18"
+        base = f"robust{robustness_lambda:g}_{gate}_min_v19"
     if portfolio_lambda != 0.0:
         base = f"portfolio{portfolio_lambda:g}_{base}"
     return base
@@ -80,14 +74,13 @@ OBJECTIVE_NAME = objective_scheme_name(
 class Record:
     """One scored submission on the blackboard.
 
-    Carries both per-model pools (``gpt_oss``/``gemma_4``, matching ``config.MODELS``);
-    each is the list of authored message dicts for that victim's column. The champion
-    reship fills each pool into its own candidate list and ships a ``{model: [...]}``
-    map (see :func:`_champion_map`).
+    Carries one shared pool of authored message dicts (``messages``), scored on BOTH
+    victims. The champion reship fills that pool into a single flat candidate list (see
+    :func:`_champion_candidates`) -- the opaque grading env serves the same
+    list to every victim.
     """
 
-    gpt_oss: list[dict]
-    gemma_4: list[dict]
+    messages: list[dict]
     public: float
     feedback: list[dict]
     reasoning: str
@@ -111,26 +104,6 @@ class Record:
     # so the robustness objective and the incumbent block can see per-victim spread.
     public_by_model: dict[str, float] = field(default_factory=dict)
 
-    @property
-    def messages(self) -> list[dict]:
-        """Both pools concatenated in ``config.MODELS`` order -- the flat message view.
-
-        The record stores one pool per model; consumers that only need the authored
-        shapes (diversity count, judge-study candidate source, incumbent prompt block)
-        read this flat concatenation.
-        """
-        return [
-            message for model in config.MODELS for message in self.pool_messages(model)
-        ]
-
-    def pool_messages(self, model: str) -> list[dict]:
-        """Return the stored message dicts authored for ``model``."""
-        if model not in config.MODELS:
-            raise ValueError(
-                f"unknown model {model!r}; expected one of {config.MODELS}"
-            )
-        return getattr(self, model)
-
     def to_json(self) -> dict[str, Any]:
         """Return a JSON-serializable dict for this record."""
         return asdict(self)
@@ -139,20 +112,16 @@ class Record:
     def from_json(cls, data: dict[str, Any]) -> "Record":
         """Build a Record from a parsed JSON dict (tolerant of older/missing fields).
 
-        Legacy single-list rows (pre per-model pools, a flat ``messages`` field) load
-        their whole list into the ``gpt_oss`` pool so a persisted champion still reships
-        without wiping the warm-started board; the ``gemma_4`` pool falls back at grade
-        time (assemble serves every pool when a model's pool is empty).
+        Legacy two-pool rows (``gpt_oss``/``gemma_4`` fields) concatenate both
+        pools into the single shared ``messages`` list so a persisted champion
+        still reships.
         """
         if "gpt_oss" in data or "gemma_4" in data:
-            gpt_oss = list(data.get("gpt_oss", []))
-            gemma_4 = list(data.get("gemma_4", []))
+            messages = list(data.get("gpt_oss", [])) + list(data.get("gemma_4", []))
         else:
-            gpt_oss = list(data.get("messages", []))
-            gemma_4 = []
+            messages = list(data.get("messages", []))
         return cls(
-            gpt_oss=gpt_oss,
-            gemma_4=gemma_4,
+            messages=messages,
             public=float(data["public"]),
             feedback=list(data["feedback"]),
             reasoning=str(data.get("reasoning", "")),
@@ -183,26 +152,20 @@ class Record:
         )
 
 
-def _champion_map(record: "Record") -> dict[str, str]:
-    """Per-model filled candidate-list JSON for a champion record's two pools.
+def _champion_candidates(record: "Record") -> str:
+    """Filled flat candidate-list JSON for a champion record's shared pool.
 
-    Fills each pool's shapes into its own candidate list via the shared :mod:`fill`
+    Fills the pool's shapes into one candidate list via the shared :mod:`fill`
     round-robin -- the same one the scorer projects -- so what ships matches what was
     scored. Fills directly (no ``Submission`` re-validation) so a persisted record
-    always ships. The result is the ``{model: candidates_json}`` map
-    :func:`assemble.build` embeds and serves per victim model.
+    always ships. The result is the single ``candidates_json`` array
+    :func:`assemble.build` embeds and serves to every victim.
     """
-    out: dict[str, str] = {}
-    for model in config.MODELS:
-        templates = [
-            fill.templatize(str(m["text"])) or str(m["text"])
-            for m in record.pool_messages(model)
-        ]
-        chains = fill.ordered_chains(templates, config.SHIP_CANDIDATE_CAP)
-        out[model] = json.dumps(
-            [list(chain) for chain in chains], separators=(",", ":")
-        )
-    return out
+    templates = [
+        fill.templatize(str(m["text"])) or str(m["text"]) for m in record.messages
+    ]
+    chains = fill.ordered_chains(templates, config.SHIP_CANDIDATE_CAP)
+    return json.dumps([list(chain) for chain in chains], separators=(",", ":"))
 
 
 def _severity_sum(entry: dict) -> float:
@@ -453,7 +416,7 @@ class Blackboard:
                 handle.write(json.dumps(record.to_json(), sort_keys=True) + "\n")
                 handle.flush()
             if reship and self.best_objective() is record and record is not prior_best:
-                assemble.build(_champion_map(record), out_dir)
+                assemble.build(_champion_candidates(record), out_dir)
                 return True
             return False
 
@@ -468,13 +431,13 @@ class Blackboard:
         """
         best = self.best_objective()
         if best is not None:
-            assemble.build(_champion_map(best), out_dir)
+            assemble.build(_champion_candidates(best), out_dir)
 
     def reship_champions(self, public_out_dir: Path, robust_out_dir: Path) -> None:
         """Rewrite exact-public and robust champion artifacts independently."""
         public = self.best_public()
         robust = self.best_robust()
         if public is not None:
-            assemble.build(_champion_map(public), public_out_dir)
+            assemble.build(_champion_candidates(public), public_out_dir)
         if robust is not None:
-            assemble.build(_champion_map(robust), robust_out_dir)
+            assemble.build(_champion_candidates(robust), robust_out_dir)
