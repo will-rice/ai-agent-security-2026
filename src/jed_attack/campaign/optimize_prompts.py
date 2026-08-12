@@ -206,7 +206,9 @@ def _shape_elites(
     shape is Pareto-dominated on that victim's column (``gen_chars_by_model`` itself is
     never ``inf`` -- it accrues real chars even on a non-firing replay, so firing is
     decided by severity, not by the char count). The cost bucket keys on the raw
-    generated-char max over models (the design's "bucket on max over models").
+    generated-char max over models (the design's "bucket on max over models"). The same
+    gate-guardrail severity read for the firing decision is stored verbatim as the
+    elite's per-model ``severity`` -- a non-firing model is 0.0 on both axes.
 
     Diagnoses are per-parent-shown (authored before the submissions, one per sampled
     archive parent), so they carry no structural link to an authored CHILD shape. They
@@ -233,13 +235,13 @@ def _shape_elites(
                 model: message_score.gen_chars_by_model.get(model, 0.0)
                 for model in config.MODELS
             }
-            fires = {
+            gate_severity = {
                 model: message_score.severity_by_model.get(
                     config.GATE_GUARDRAIL_NAME, {}
                 ).get(model, 0.0)
-                > 0.0
                 for model in config.MODELS
             }
+            fires = {model: gate_severity[model] > 0.0 for model in config.MODELS}
             throughputs = {
                 model: throughput(
                     gen_chars[model] if fires[model] else float("inf"), model
@@ -252,6 +254,7 @@ def _shape_elites(
                     text=message.text,
                     mtype=message.type.value,
                     throughput=throughputs,
+                    severity=gate_severity,
                     diagnosis=diagnosis,
                     family=shape_family(message.text, message.type),
                     bucket=gen_char_bucket(max(gen_chars.values(), default=0.0)),
