@@ -7005,3 +7005,46 @@ def test_throughput_from_gen_chars() -> None:
     assert t == pytest.approx(1.0 / (146.0 + config.FIXED_CHARS["gpt_oss"]))
     assert throughput(90.0, "gpt_oss") > throughput(146.0, "gpt_oss")  # leaner = higher
     assert throughput(float("inf"), "gpt_oss") == 0.0  # non-firing dominated
+
+
+def test_archive_dominance_and_frontier() -> None:
+    """Pareto dominance over per-model throughputs, and a cross-cell global frontier."""
+    from jed_attack.campaign import archive as ar
+
+    def e(
+        gpt: float, gemma: float, text: str = "t", fam: str = "plain", bucket: int = 5
+    ) -> "ar.Elite":
+        return ar.Elite(
+            text=text,
+            mtype="exfil",
+            throughput={"gpt_oss": gpt, "gemma_4": gemma},
+            diagnosis="",
+            family=fam,
+            bucket=bucket,
+        )
+
+    a = e(0.9, 0.1)
+    b = e(0.5, 0.5)
+    c = e(0.4, 0.05)
+    assert ar.dominates(a, c)  # a >= c on both, strict on one
+    assert not ar.dominates(a, b)  # neither dominates (tradeoff)
+    arch = ar.Archive()
+    for x in (a, b, c):
+        arch.insert(x)
+    front = arch.frontier()
+    assert a in front and b in front and c not in front  # c dominated by a
+
+
+def test_archive_diversity_by_cell_and_persistence(tmp_path: Path) -> None:
+    """Distinct-family cells both survive, and the archive round-trips through jsonl."""
+    from jed_attack.campaign import archive as ar
+
+    arch = ar.Archive()
+    p = ar.Elite("plain t", "exfil", {"gpt_oss": 0.4, "gemma_4": 0.6}, "", "plain", 5)
+    f = ar.Elite("forge t", "exfil", {"gpt_oss": 0.7, "gemma_4": 0.3}, "", "forge", 6)
+    arch.insert(p)
+    arch.insert(f)
+    assert {x.family for x in arch.ship_set()} == {"plain", "forge"}  # both kept
+    arch.to_jsonl(tmp_path / "a.jsonl")
+    back = ar.Archive.from_jsonl(tmp_path / "a.jsonl")
+    assert {x.text for x in back.frontier()} == {"plain t", "forge t"}
