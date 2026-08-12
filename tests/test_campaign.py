@@ -6994,3 +6994,14 @@ def test_shape_family_and_bucket() -> None:
     }
     assert gen_char_bucket(146.0) == gen_char_bucket(150.0)  # same 25-char bin
     assert gen_char_bucket(146.0) != gen_char_bucket(180.0)
+
+
+def test_throughput_from_gen_chars() -> None:
+    """Per-model throughput: 1/(gen_chars + FIXED_CHARS), 0 if non-firing."""
+    from jed_attack.campaign import config
+    from jed_attack.campaign.submission_score import throughput
+
+    t = throughput(146.0, "gpt_oss")
+    assert t == pytest.approx(1.0 / (146.0 + config.FIXED_CHARS["gpt_oss"]))
+    assert throughput(90.0, "gpt_oss") > throughput(146.0, "gpt_oss")  # leaner = higher
+    assert throughput(float("inf"), "gpt_oss") == 0.0  # non-firing dominated

@@ -388,6 +388,17 @@ def _firing_templates(
     return out
 
 
+def throughput(gen_chars: float, model: str) -> float:
+    """Per-model leanness: 1 / (gen_chars + FIXED_CHARS[model]), 0 if non-firing.
+
+    Higher throughput = fewer generated chars = more candidates fit the budget.
+    A shape that does not fire has infinite cost -> 0 throughput -> dominated.
+    """
+    if gen_chars == float("inf"):
+        return 0.0
+    return 1.0 / (gen_chars + config.FIXED_CHARS[model])
+
+
 def project_public_board(
     score: "SubmissionScore",
     budget_chars: Mapping[str, float],
