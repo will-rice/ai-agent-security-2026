@@ -6912,6 +6912,19 @@ def test_gate_guardrail_is_optimal_allows_marker_exfil_and_deputy() -> None:
     assert "allow" in str(deputy.action).lower()
 
 
+def test_cost_model_tracks_lb_backout() -> None:
+    """FIXED_CHARS/budget recalibrated so ~958 candidates fit at the incumbent gen."""
+    from jed_attack.campaign import config as c
+
+    gen = 146.0  # measured incumbent gpt_oss generation
+    fitted = c.FILL_BUDGET_CHARS["gpt_oss"] / (gen + c.FIXED_CHARS["gpt_oss"])
+    # LB back-out credited 958.5 candidates; the proxy must land within ~15%.
+    assert 815 <= fitted <= 1100
+    # per-candidate latency implied by fixed floor is the real ~9.4s regime,
+    # not 11.9s
+    assert c.T4_FIXED_S["gpt_oss"] < 3.9
+
+
 def test_schema_is_source_of_truth_and_template_defers() -> None:
     """Rules live in the schema; the thin template defers, no rule prose duplicated.
 

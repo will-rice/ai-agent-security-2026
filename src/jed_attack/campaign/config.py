@@ -243,17 +243,15 @@ if PORTFOLIO_LAMBDA < 0.0:
 # keeps as many distinct fast shapes as it can (free: public-neutral, private hedge).
 DIVERSITY_SHAPE_CAP = MAX_SHIP_MESSAGES
 
-# T4 per-candidate replay cost, measured on real T4 2026-08-11 (calib kernel, paired
-# with LOCAL raw_gen_chars -- byte-identical greedy): latency = T4_FIXED_S +
-# T4_RATE_S_PER_CHAR * raw_gen_chars (R^2 = 0.90 gpt_oss, 0.73 gemma_4). See memory
-# t4-cost-model-per-model. gemma is ~2x slower PER CHAR (but writes fewer chars, so ~20%
-# slower per candidate); the old single 0.0525 fit gpt_oss, under-weighted gemma.
+# Recalibrated 2026-08-12 from the LB back-out (958.5 candidates -> 86.265 public =>
+# ~9.39 s/candidate at ~146/124 gen chars; ARTIFACT_SCORE_BUDGET_S = 9000). The prior
+# 3.9/3.4 s intercept double-counted env-reset overhead and made the projection ~2/3 of
+# the real board. Solve T4_FIXED_S from: 9.39 = T4_FIXED_S + RATE*gen.
 T4_RATE_S_PER_CHAR: dict[str, float] = {"gpt_oss": 0.0546, "gemma_4": 0.1052}
-T4_FIXED_S: dict[str, float] = {"gpt_oss": 3.9, "gemma_4": 3.4}
-# Replay wall-clock the shipped fill is trimmed to -- BELOW the 9000s HARD replay
-# deadline (overrun => INVALID_SUBMISSION; see gateway-replay-hard-fail) with a margin.
-# Provisional until an LB back-out on a rerun-surviving submission (Decision C).
-REPLAY_MARGIN_S = 7500.0
+T4_FIXED_S: dict[str, float] = {"gpt_oss": 1.4, "gemma_4": 1.5}
+REPLAY_MARGIN_S = (
+    ARTIFACT_SCORE_BUDGET_S  # 9000; the shipped latency-precise trim owns safety
+)
 # Cost stays in DETERMINISTIC chars (raw_gen_chars, no wall-clock noise); seconds enter
 # ONLY here, to derive the per-model char constants the objective walks. FIXED_CHARS =
 # per-candidate fixed cost in chars (replaces the global 55*turns; at 110 chars it
