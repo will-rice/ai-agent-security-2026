@@ -51,11 +51,16 @@ sleep 1
 # (~80% refusals), deepseek-v4-flash (~50% malformed batches), and kimi-k2.7 (the agentic
 # lane authored batches as text, not tool calls). The pin intersects with live models, so
 # an unavailable model is simply skipped.
+#
+# codex-gpt55 is a separate lane (its own key): gpt-5.5 via the codex ChatGPT-account
+# Responses backend, authed by the OAuth token in ~/.codex/auth.json (no env key). It
+# spends the PERSONAL ChatGPT Pro quota per generation and the token expires (~days, then
+# needs `codex login`), so it is one deliberate extra author, not the whole roster.
 tmux new-session -d -s "$SESSION" -c "$REPO" \
   "exec bash -lc 'mkdir -p run/logs; \
     export JED_CAMPAIGN_ROOT=\"$REPO/run\" JED_WANDB=1 \
       JED_ARTIFACT_SCORE=0 \
-      JED_TEAM_PROPOSERS=\"cheapest-mimo,cheapest-minimax\" \
+      JED_TEAM_PROPOSERS=\"cheapest-mimo,cheapest-minimax,codex-gpt55\" \
       CUDA_DEVICE_ORDER=PCI_BUS_ID \
       DYLAN_JUDGE_URL=http://192.168.1.220:8100 \
       LD_LIBRARY_PATH=\"/usr/local/cuda-12.8/lib64:\${LD_LIBRARY_PATH:-}\"; \
