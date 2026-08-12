@@ -881,14 +881,18 @@ async def _run_team(board: blackboard.Blackboard, run: _WandbRun | None) -> None
         _log.info("team cancelled; shutting down cleanly")
 
 
-# The SubmissionBatch JSON Schema, handed to the proposer verbatim (compact) as a
-# readable spec of the shape it must author. The same model also drives constrained
-# decoding: propose_batch_async passes SubmissionBatch as response_format, so the SDK
-# builds the strict schema from it and parses the reply back through the model's
-# validators. Prompt text and enforcement therefore come from ONE source (the model).
-_SUBMISSION_SCHEMA_JSON = json.dumps(
-    SubmissionBatch.model_json_schema(), separators=(",", ":")
-)
+def _submission_schema_json() -> str:
+    """The live SubmissionBatch JSON Schema (compact), built FRESH each call.
+
+    Built from the model at prompt-assembly time -- not a cached module constant -- so
+    the schema the proposer SEES in the prompt is always exactly the one that drives
+    constrained decoding and validation; the two cannot drift. propose_batch_async
+    passes SubmissionBatch as response_format (the SDK builds the strict schema from
+    it and parses the reply back through the model's validators), so prompt text and
+    enforcement come from ONE live source (the model), and a schema edit needs no
+    separate prompt update.
+    """
+    return json.dumps(SubmissionBatch.model_json_schema(), separators=(",", ":"))
 
 
 def submission_prompt(
@@ -925,10 +929,6 @@ def submission_prompt(
         The full proposer prompt string.
     """
     template = _load_prompts()["template"]
-    time_budget = (
-        "~9000 T4-s per model (both models). Replay cost tracks generated characters "
-        "and agent turns, so minimize BOTH to fit more candidates."
-    )
     incumbent_block = (
         _render_incumbent(incumbent, feedback, introspection)
         if incumbent_batch is None
@@ -937,8 +937,7 @@ def submission_prompt(
     # Static tokens first, then the DATA blocks last so their content is never rescanned
     # for tokens (an incumbent message could, in principle, contain a `{{...}}`).
     return (
-        template.replace("{{TIME_BUDGET}}", f"Budget: {time_budget}")
-        .replace("{{SCHEMA}}", _SUBMISSION_SCHEMA_JSON)
+        template.replace("{{SCHEMA}}", _submission_schema_json())
         .replace("{{INCUMBENT}}", incumbent_block)
         .replace("{{TEAM}}", _render_team(top_messages, reasoning))
     )
