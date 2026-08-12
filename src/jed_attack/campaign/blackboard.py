@@ -14,9 +14,10 @@ import json
 import logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from statistics import mean
 from typing import Any
 
-from jed_attack.campaign import assemble, config, fill
+from jed_attack.campaign import archive, assemble, config, fill
 from jed_attack.campaign.judge_policy import (
     CandidateObjective,
     JudgeAssessment,
@@ -27,12 +28,13 @@ from jed_attack.campaign.submission import MessageType
 _log = logging.getLogger(__name__)
 
 
-# Tag stamped on every record scored under the CURRENT optimizer objective (the MIN
-# over models of each model's char-projected board). Bump this whenever the objective
-# changes scale: champion selection prefers rows carrying the current tag so a prior
-# scheme's incomparable magnitudes cannot freeze the champion. See _objective_key. NOTE:
-# ROBUSTNESS_LAMBDA is currently UN-WIRED -- _score_public_raw_per_gen_char never reads
-# it, so a non-zero value only changes the scheme tag/pool below, not the actual score.
+# Tag stamped on every record scored under the CURRENT optimizer objective. Bump this
+# whenever the shipping/objective scheme changes: champion selection prefers rows
+# carrying the current tag so a prior scheme's incomparable magnitudes cannot freeze
+# the logged champion (see _objective_key). ``v20`` marks the switch from a single
+# MIN-scalar champion to MAP-Elites + Pareto shipping -- the frontier ships, the MIN
+# objective is logging-only. NOTE: ROBUSTNESS_LAMBDA is currently UN-WIRED -- the score
+# never reads it, so a non-zero value only changes the tag/pool below, not the score.
 def objective_scheme_name(
     robustness_lambda: float,
     portfolio_lambda: float = 0.0,
@@ -40,26 +42,20 @@ def objective_scheme_name(
 ) -> str:
     """Scheme tag for the current objective weights.
 
-    The objective is the MIN over models of ``submission_score.project_public_board``'s
-    per-model board: the shipped board projected from the deterministic char cost model
-    (``raw_gen_chars + FIXED_CHARS[model]`` walked round-robin to each model's
-    ``config.FILL_BUDGET_CHARS``), NO replay. ``v19`` restores the MIN over the SINGLE
-    shared pool: one pool is scored on BOTH victims and shipped as one flat list (the
-    grading env is opaque, so per-model pools cannot be routed), and the MIN forces
-    every shape to fire on both -- covering only one victim is bounded by the dead
-    column.
-    Ranking is LEXICOGRAPHIC (see :func:`_objective_key`): the MIN is primary, then the
-    SUM over columns (``objective_sum``, total headroom) as the tiebreak, then diversity
-    (``objective_tiebreaker`` = distinct both-model shapes). The scheme encodes the gate
-    guardrail (``config.GATE_GUARDRAIL_NAME``) so switching guardrails auto-starts a
-    clean pool; a non-zero portfolio weight tags diversity-on, its own pool. NOTE:
-    ``robustness_lambda`` is currently UN-WIRED (only affects the tag/pool below, never
-    the score itself); threaded through only so a future robustness-aware objective has
-    its own pool ready.
+    ``v20`` marks the MAP-Elites + Pareto shipping scheme: the shipped pool is the
+    archive's Pareto frontier over the two raw per-model throughput columns (see
+    :mod:`jed_attack.campaign.archive`), NOT a single MIN-scalar champion. The MIN
+    objective helpers (:func:`_objective_key`, :meth:`Blackboard.best_objective`) are
+    RETAINED for logging/telemetry only -- they no longer decide what ships. The scheme
+    encodes the gate guardrail (``config.GATE_GUARDRAIL_NAME``) so switching guardrails
+    auto-starts a clean pool; a non-zero portfolio weight tags diversity-on, its own
+    pool. NOTE: ``robustness_lambda`` is currently UN-WIRED (only affects the tag/pool
+    below, never the score itself); threaded through only so a future robustness-aware
+    objective has its own pool ready.
     """
-    base = f"{gate}_min_v19"
+    base = f"{gate}_pareto_v20"
     if robustness_lambda != 0.0:
-        base = f"robust{robustness_lambda:g}_{gate}_min_v19"
+        base = f"robust{robustness_lambda:g}_{gate}_pareto_v20"
     if portfolio_lambda != 0.0:
         base = f"portfolio{portfolio_lambda:g}_{base}"
     return base
@@ -168,6 +164,28 @@ def _champion_candidates(record: "Record") -> str:
     return json.dumps([list(chain) for chain in chains], separators=(",", ":"))
 
 
+def _archive_path(board_path: Path) -> Path:
+    """The archive JSONL persisted alongside the blackboard JSONL.
+
+    Mirrors the ``blackboard.jsonl`` idiom: the Pareto archive lives in a sibling file
+    (``<stem>.archive.jsonl``) so a warm start reloads both from the same directory.
+    """
+    return board_path.with_name(board_path.stem + ".archive.jsonl")
+
+
+def _frontier_candidates(arch: archive.Archive) -> str:
+    """Filled flat candidate-list JSON for the archive's Pareto ship-set.
+
+    Fills each frontier shape into the round-robin candidate list via the shared
+    :mod:`fill` -- the same one the scorer projects and :func:`_champion_candidates`
+    uses -- so the WHOLE Pareto frontier ships through the flat single-pool
+    :func:`assemble.build` exactly as it was scored.
+    """
+    templates = [fill.templatize(elite.text) or elite.text for elite in arch.ship_set()]
+    chains = fill.ordered_chains(templates, config.SHIP_CANDIDATE_CAP)
+    return json.dumps([list(chain) for chain in chains], separators=(",", ":"))
+
+
 def _severity_sum(entry: dict) -> float:
     """Total severity of one feedback entry across guardrails."""
     return float(sum(entry.get("severity", {}).values()))
@@ -238,9 +256,20 @@ def _objective_key(
 class Blackboard:
     """In-memory team memory backed by an append-only JSONL file."""
 
-    def __init__(self, path: Path, records: list[Record]) -> None:
+    def __init__(
+        self,
+        path: Path,
+        records: list[Record],
+        initial_archive: archive.Archive | None = None,
+    ) -> None:
         self._path = path
         self._records = records
+        # The MAP-Elites + Pareto archive of scored shapes: what actually ships
+        # (:meth:`reship_frontier`). Direct constructions (tests, cold start) get a
+        # fresh empty archive; :meth:`load` warm-starts it from the sibling JSONL.
+        self.archive = (
+            initial_archive if initial_archive is not None else archive.Archive()
+        )
         self._lock = asyncio.Lock()
 
     @classmethod
@@ -278,7 +307,7 @@ class Blackboard:
                 path,
                 malformed_lines[:5],
             )
-        return cls(path, records)
+        return cls(path, records, archive.Archive.from_jsonl(_archive_path(path)))
 
     def best_public(self) -> Record | None:
         """The highest-``public`` record, or ``None`` if empty."""
@@ -432,6 +461,39 @@ class Blackboard:
         best = self.best_objective()
         if best is not None:
             assemble.build(_champion_candidates(best), out_dir)
+
+    async def reship_frontier(self, out_dir: Path) -> None:
+        """Ship the archive's Pareto frontier and persist the archive alongside.
+
+        Fills every frontier shape into the flat single-pool candidate list and rewrites
+        ``attack.py`` via :func:`assemble.build` -- the WHOLE frontier ships, not a
+        single MIN champion. Persists the archive to its sibling JSONL under the same
+        lock so the shipped artifact and the on-disk archive never disagree.
+
+        Args:
+            out_dir: Where :func:`assemble.build` writes ``attack.py``.
+        """
+        async with self._lock:
+            assemble.build(_frontier_candidates(self.archive), out_dir)
+            self.archive.to_jsonl(_archive_path(self._path))
+
+    def champion_by_mean_throughput(self) -> archive.Elite | None:
+        """Frontier point maximizing ``mean(throughput over config.MODELS)`` (logging).
+
+        The whole frontier ships; this is only the single representative surfaced in
+        logs/telemetry (the mean-throughput leader), never a selection gate.
+
+        Returns:
+            The mean-throughput-leading frontier elite, or ``None`` if the archive is
+            empty.
+        """
+        frontier = self.archive.frontier()
+        if not frontier:
+            return None
+        return max(
+            frontier,
+            key=lambda elite: mean(elite.throughput[m] for m in config.MODELS),
+        )
 
     def reship_champions(self, public_out_dir: Path, robust_out_dir: Path) -> None:
         """Rewrite exact-public and robust champion artifacts independently."""
