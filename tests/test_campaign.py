@@ -4712,8 +4712,8 @@ def test_blackboard_ships_pareto_frontier(tmp_path: Path) -> None:
     assert "_CANDIDATES = json.loads" in src and "SECRET_MARKER" in src
     # the whole frontier ships as URL-stamped candidates, not one raw message.
     assert src.count("http.post") > 5
-    # the champion is logging-only; the mean-throughput leader is the inserted elite.
-    champ = board.champion_by_mean_throughput()
+    # the champion is logging-only; the board-density leader is the inserted elite.
+    champ = board.champion_by_board_density()
     assert champ is not None and "SECRET_MARKER" in champ.text
 
 
@@ -7909,6 +7909,32 @@ def test_archive_diversity_by_cell_and_persistence(tmp_path: Path) -> None:
     arch.to_jsonl(tmp_path / "a.jsonl")
     back = ar.Archive.from_jsonl(tmp_path / "a.jsonl")
     assert {x.text for x in back.frontier()} == {"plain t", "forge t"}
+
+
+def test_from_jsonl_discards_stale_schema_archive(tmp_path: Path) -> None:
+    """A pre-severity-axis (throughput-only) jsonl line discards the WHOLE archive.
+
+    A zero-severity stand-in for a missing ``severity`` key would win the throughput
+    axis and never be Pareto-dominated, silently polluting the frontier forever (the
+    hazard the old ``setdefault``-to-zero tolerance created). Instead the whole file
+    is treated as stale-schema: any line missing ``severity`` discards the entire
+    archive, returning empty so the caller cleanly re-seeds 4-D elites.
+    """
+    from jed_attack.campaign import archive as ar
+
+    stale = {
+        "text": "stale t",
+        "mtype": "exfil",
+        "throughput": {"gpt_oss": 0.9, "gemma_4": 0.9},  # would win throughput outright
+        "diagnosis": "",
+        "family": "plain",
+        "bucket": 5,
+    }  # no "severity" key -- the pre-4-D throughput-only schema
+    path = tmp_path / "stale.jsonl"
+    path.write_text(json.dumps(stale), encoding="utf-8")
+
+    back = ar.Archive.from_jsonl(path)
+    assert back.frontier() == []
 
 
 def test_elite_4d_dominance_uses_throughput_and_severity() -> None:

@@ -14,7 +14,6 @@ import json
 import logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from statistics import mean
 from typing import Any
 
 from jed_attack.campaign import archive, assemble, config, fill
@@ -477,23 +476,22 @@ class Blackboard:
             assemble.build(_frontier_candidates(self.archive), out_dir)
             self.archive.to_jsonl(_archive_path(self._path))
 
-    def champion_by_mean_throughput(self) -> archive.Elite | None:
-        """Frontier point maximizing ``mean(throughput over config.MODELS)`` (logging).
+    def champion_by_board_density(self) -> archive.Elite | None:
+        """Frontier point maximizing :func:`archive.elite_board_density` (logging).
 
         The whole frontier ships; this is only the single representative surfaced in
-        logs/telemetry (the mean-throughput leader), never a selection gate.
+        logs/telemetry -- the same ranking :meth:`archive.Archive.ship_set` uses to
+        order the shipped frontier, so the reported champion matches what actually
+        ships first, never a selection gate.
 
         Returns:
-            The mean-throughput-leading frontier elite, or ``None`` if the archive is
+            The board-density-leading frontier elite, or ``None`` if the archive is
             empty.
         """
         frontier = self.archive.frontier()
         if not frontier:
             return None
-        return max(
-            frontier,
-            key=lambda elite: mean(elite.throughput[m] for m in config.MODELS),
-        )
+        return max(frontier, key=archive.elite_board_density)
 
     def reship_champions(self, public_out_dir: Path, robust_out_dir: Path) -> None:
         """Rewrite exact-public and robust champion artifacts independently."""

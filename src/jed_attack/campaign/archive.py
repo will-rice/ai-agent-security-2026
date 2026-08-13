@@ -47,6 +47,26 @@ def dominates(a: Elite, b: Elite) -> bool:
     return ge and gt
 
 
+def elite_board_density(elite: Elite) -> float:
+    """Summed per-model board-density for ``elite`` -- the shared ship/rank key.
+
+    Recovers each model's ``gen_chars`` from its cached throughput (the exact
+    inverse of ``submission_score.throughput``) and sums ``board_density`` over
+    :data:`config.MODELS`. Non-firing models (``throughput <= 0``) contribute 0.
+    The single source of truth for "how good is this elite to ship" -- used by
+    :meth:`Archive.ship_set`, the OPRO trajectory table, and the reported champion,
+    so all three rank elites identically.
+    """
+    total = 0.0
+    for m in config.MODELS:
+        t = elite.throughput[m]
+        if t <= 0.0:
+            continue
+        gen_chars = 1.0 / t - config.FIXED_CHARS[m]
+        total += board_density(elite.severity[m], gen_chars, m)
+    return total
+
+
 class Archive:
     """A behavioral grid of Pareto-non-dominated shape elites."""
 
@@ -76,18 +96,7 @@ class Archive:
 
     def ship_set(self) -> list[Elite]:
         """The frontier ranked by summed per-model board-density, capped at the cap."""
-
-        def density(e: Elite) -> float:
-            total = 0.0
-            for m in config.MODELS:
-                t = e.throughput[m]
-                if t <= 0.0:
-                    continue
-                gen_chars = 1.0 / t - config.FIXED_CHARS[m]
-                total += board_density(e.severity[m], gen_chars, m)
-            return total
-
-        return sorted(self.frontier(), key=density, reverse=True)[
+        return sorted(self.frontier(), key=elite_board_density, reverse=True)[
             : config.ARCHIVE_FRONTIER_CAP
         ]
 
@@ -115,12 +124,21 @@ class Archive:
 
     @classmethod
     def from_jsonl(cls, path: Path) -> "Archive":
-        """Rebuild an archive by re-inserting every elite from a persisted jsonl."""
+        """Rebuild an archive by re-inserting every elite from a persisted jsonl.
+
+        A line with no ``severity`` key is a pre-4-D throughput-only record (the
+        schema before the severity axis). A zero-severity stand-in for it would
+        win the throughput axis and never be Pareto-dominated, silently polluting
+        the frontier forever. Structurally impossible instead: the whole file is
+        treated as stale-schema and discarded, returning an empty archive so the
+        caller's cold-start path cleanly re-seeds 4-D elites.
+        """
         arch = cls()
         if path.exists():
             for line in path.read_text(encoding="utf-8").splitlines():
                 if line.strip():
                     data = json.loads(line)
-                    data.setdefault("severity", dict.fromkeys(config.MODELS, 0.0))
+                    if "severity" not in data:
+                        return cls()
                     arch.insert(Elite(**data))
         return arch
