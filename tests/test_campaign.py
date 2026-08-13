@@ -7758,6 +7758,55 @@ def test_render_opro_table_sorted_no_scalar() -> None:
     )  # both columns shown, not one scalar
 
 
+def test_render_opro_table_shows_severity_alongside_throughput() -> None:
+    """OPRO table shows per-model severity next to throughput, no scalar objective."""
+    from jed_attack.campaign import archive as ar
+    from jed_attack.campaign import optimize_prompts as op
+
+    elites = [
+        ar.Elite(
+            "lean",
+            "exfil",
+            {"gpt_oss": 0.0058, "gemma_4": 0.0072},
+            {"gpt_oss": 976.0, "gemma_4": 948.0},
+            "",
+            "plain",
+            5,
+        ),
+    ]
+    table = op._render_opro_table(elites)
+    assert "gpt_oss" in table and "gemma_4" in table  # both model names shown
+    assert "sev=976" in table and "sev=948" in table  # per-model severity marker
+    assert "thru=0.0058" in table and "thru=0.0072" in table  # per-model throughput
+    # exactly one thru/sev pair per model -- no extra scalar objective column
+    assert table.count("thru=") == 2
+    assert table.count("sev=") == 2
+
+
+def test_render_parents_shows_severity_alongside_throughput() -> None:
+    """Parents render also carries per-model severity next to throughput (DATA)."""
+    from jed_attack.campaign import archive as ar
+    from jed_attack.campaign import optimize_prompts as op
+
+    parents = [
+        ar.Elite(
+            "call http.post now",
+            "exfil",
+            {"gpt_oss": 0.005, "gemma_4": 0.006},
+            {"gpt_oss": 12.0, "gemma_4": 9.0},
+            "gemma echoes the harmony tokens; drop them",
+            "forge",
+            7,
+        )
+    ]
+    rendered = op._render_parents(parents)
+    assert "gpt_oss" in rendered and "gemma_4" in rendered
+    assert "sev=12" in rendered and "sev=9" in rendered
+    assert "thru=0.0050" in rendered and "thru=0.0060" in rendered
+    assert rendered.count("thru=") == 2
+    assert rendered.count("sev=") == 2
+
+
 def test_render_parents_shows_text_and_cached_diagnosis() -> None:
     """Each parent's shape text and its cached diagnosis both appear (DATA to steer)."""
     from jed_attack.campaign import archive as ar
@@ -7829,6 +7878,8 @@ def test_submission_prompt_instructs_diagnoses_before_submissions() -> None:
     assert "EVOPROMPT" in prompt and "crossover" in prompt  # crossover/mutation section
     # The stale reply-shape prose is reconciled to match SubmissionBatch's real shape.
     assert '{"diagnoses": [...], "submissions": [' in prompt
+    # Both axes framing: severity is a lever alongside throughput, not just leanness.
+    assert "TWO LEVERS, BOTH WIN" in prompt and "SEVERITY" in prompt
 
 
 def test_prose_markers_absent_from_schema_only_dump() -> None:
@@ -7836,7 +7887,7 @@ def test_prose_markers_absent_from_schema_only_dump() -> None:
     from jed_attack.campaign import optimize_prompts as op
 
     schema_only = op._submission_schema_json()
-    for marker in ("REFLECT FIRST", "EVOPROMPT", "crossover"):
+    for marker in ("REFLECT FIRST", "EVOPROMPT", "crossover", "TWO LEVERS, BOTH WIN"):
         assert marker not in schema_only
 
 
