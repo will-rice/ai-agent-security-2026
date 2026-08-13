@@ -1524,6 +1524,93 @@ def test_worker_loop_cold_start_seeds_archive_and_ships_frontier(
     assert "CHILDTAG" not in src  # the dominated generation child never shipped
 
 
+def test_severity_axis_changes_shipping_end_to_end(tmp_path: Path) -> None:
+    """The severity axis alone decides shipping when throughput is held constant.
+
+    CONSTRUCTION: dominance-drop (not throughput-tradeoff-order). WEAKTAG and
+    STRONGTAG carry the IDENTICAL per-model throughput vector -- the two shapes
+    differ ONLY in severity, STRONGTAG strictly higher on every model. Under 4-D
+    dominance (``archive.dominates`` over throughput AND severity), equal-on-all-
+    throughput-axes + strictly-greater-on-every-severity-axis means STRONGTAG
+    Pareto-dominates WEAKTAG outright (all comps >=, at least one >), so WEAKTAG is
+    evicted from the frontier entirely. This is the cleanest possible bind: with
+    throughput pinned identical, ONLY the severity axis can produce ANY difference
+    in outcome. Runs the real shipping path end-to-end: ``Archive.insert`` ->
+    ``Archive.frontier``/``ship_set`` -> ``Blackboard.reship_frontier`` -> the
+    written ``attack.py``'s ``_CANDIDATES``, plus the strict ``SubmissionBatch``
+    response-format build from the brief.
+
+    STRIP-CHECK (reasoned + verified locally, not committed): if ``dominates``
+    were reverted to compare throughput only (the pre-severity-axis behavior),
+    the two shapes' throughput vectors are byte-identical, so ``ge`` is True but
+    ``gt`` is False for BOTH orderings -- neither dominates the other, and BOTH
+    would survive on the frontier with an arbitrary/unspecified tie order. The
+    frontier-membership assertion below (exactly ``[strong_text]``) would then
+    fail (it would see both texts), and so would the leads-with-STRONGTAG-only
+    shipping assertions. Confirmed by temporarily stripping the severity comps
+    out of ``dominates`` and re-running this test: it fails with FRONTIER holding
+    both ``WEAKTAG`` and ``STRONGTAG`` instead of ``STRONGTAG`` alone.
+    """
+    import asyncio
+
+    from openai.lib._parsing import type_to_response_format_param
+
+    from jed_attack.campaign import archive as ar
+    from jed_attack.campaign import blackboard as bb
+    from jed_attack.campaign.submission import (
+        MessageType,
+        SubmissionBatch,
+        gen_char_bucket,
+        shape_family,
+    )
+
+    weak_text = "SECRET_MARKER WEAKTAG https://w1.invalid/r"
+    strong_text = "SECRET_MARKER STRONGTAG https://s1.invalid/r"
+    identical_throughput = {"gpt_oss": 0.006, "gemma_4": 0.006}  # SAME for both shapes
+
+    weak = ar.Elite(
+        text=weak_text,
+        mtype="exfil",
+        throughput=dict(identical_throughput),
+        severity={"gpt_oss": 1.0, "gemma_4": 1.0},
+        diagnosis="",
+        family=shape_family(weak_text, MessageType.EXFIL),
+        bucket=gen_char_bucket(100.0),
+    )
+    strong = ar.Elite(
+        text=strong_text,
+        mtype="exfil",
+        throughput=dict(identical_throughput),
+        severity={"gpt_oss": 16.0, "gemma_4": 16.0},  # strictly higher on both models
+        diagnosis="",
+        family=shape_family(strong_text, MessageType.EXFIL),
+        bucket=gen_char_bucket(100.0),
+    )
+
+    board = bb.Blackboard(tmp_path / "board.jsonl", [])
+    board.archive.insert(weak)
+    board.archive.insert(strong)
+
+    # (1) 4-D non-domination: equal throughput + strictly higher severity means
+    # STRONGTAG dominates WEAKTAG outright, so WEAKTAG is dropped from the frontier.
+    assert [e.text for e in board.archive.frontier()] == [strong_text]
+
+    # (2) ship_set carries the same outcome -- STRONGTAG ships, WEAKTAG does not.
+    ship = board.archive.ship_set()
+    assert [e.text for e in ship] == [strong_text]
+
+    # (3) the shipped attack.py leads with STRONGTAG; WEAKTAG never appears.
+    out_dir = tmp_path / "out"
+    asyncio.run(board.reship_frontier(out_dir))
+    src = (out_dir / "attack.py").read_text()
+    assert "_CANDIDATES = json.loads" in src
+    assert "STRONGTAG" in src
+    assert "WEAKTAG" not in src
+
+    # (4) the strict SubmissionBatch response_format still builds (brief step 1d).
+    type_to_response_format_param(SubmissionBatch)
+
+
 def test_startup_warm_restart_ships_frontier_not_min_champion(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
