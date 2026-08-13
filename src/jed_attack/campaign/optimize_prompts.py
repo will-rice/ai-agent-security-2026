@@ -552,48 +552,20 @@ async def worker_loop(
             )
             _log_wandb(  # one shared run; tag by lane so models are comparable
                 run,
-                {
-                    "batch_n": len(local_batch),
-                    # Board metrics below are the char-PROJECTED objective (fill walked
-                    # to the T4 budget), COUNT-INDEPENDENT: any shape count fills to the
-                    # same SHIP_CANDIDATE_CAP, so more templates never inflate them. The
-                    # dropped `*_public` metrics were the raw board on the AUTHORED
-                    # templates (= 0.09 * n_shapes) and rose purely with shape count.
-                    "batch_mean_objective": batch_objective[0],
-                    # `best_objective` IS mean(gpt_oss_column, gemma_4_column) -- the LB
-                    # metric -- so the maximin-vs-mean comparison metric this used to
-                    # pair with (`best_objective_mean`) is gone: the two are now
-                    # identical by construction. The per-model columns that COMPOSE
-                    # this mean are logged below as `{m}_objective` (exact for THIS
-                    # generation's kept best submission, not a Record-derived
-                    # approximation).
-                    "best_objective": objective_best.objective,
-                    "best_objective_name": objective_best.objective_name,
-                    "n_shapes": float(best_score.total_hops),
-                    "best_gen_chars_bottleneck": _gen_chars_cost(best_score),
-                    "refine_rounds": refine_rounds,
-                    "refine_objective_gain": batch_objective[0] - round0_objective[0],
-                    "judge_mode": config.JUDGE_MODE,
-                    "judge_available_rate": _judge_available_rate(local_assessments),
-                    "shadow_winner": shadow_decision.winner,
-                    "shadow_reason": shadow_decision.reason,
-                    "shadow_prefers_refined": float(shadow_decision.winner == "b"),
-                    **_batch_score_metrics(local_scores),
-                    **_judge_summary_metrics(local_assessments),
-                    "batch_dropped": 0.0,  # per-model drop gauge (1.0 on drop path)
-                    "model": provider.model,
-                    "worker": worker_id,
-                    **{
-                        # Per-model char-projected board (the per-column LB proxy),
-                        # count-independent -- replaces the count-biased `{m}_public`.
-                        f"{m}_objective": _project_boards(best_score).get(m, 0.0)
-                        for m in config.MODELS
-                    },
-                    **{
-                        f"replay_s_{m}": best_score.replay_seconds.get(m, 0.0)
-                        for m in config.MODELS
-                    },
-                },
+                _generation_wandb_metrics(
+                    batch_n=len(local_batch),
+                    batch_objective=batch_objective,
+                    round0_objective=round0_objective,
+                    objective_best=objective_best,
+                    best_score=best_score,
+                    refine_rounds=refine_rounds,
+                    local_scores=local_scores,
+                    local_assessments=local_assessments,
+                    shadow_decision=shadow_decision,
+                    board=board,
+                    model=provider.model,
+                    worker_id=worker_id,
+                ),
             )
             await _log_artifact_score_if_needed(
                 artifact_reshipped, out_dir, run, model, worker_id
@@ -1570,7 +1542,7 @@ def _batch_score_metrics(scores: list[SubmissionScore]) -> dict[str, float]:
         # SDK-component telemetry (template-level proxy for score_raw = severity +
         # NOVELTY_PER_CELL*unique_cells): mean per-submission severity sum and unique
         # score cells (the score-driving, domain-based cell hashes) for this model.
-        metrics[f"batch_severity_{model}"] = _mean_or_zero(
+        metrics[f"batch_severity_raw_{model}"] = _mean_or_zero(
             [
                 sum(
                     m.severity_by_model.get(config.GATE_GUARDRAIL_NAME, {}).get(
@@ -1626,6 +1598,101 @@ def _batch_score_metrics(scores: list[SubmissionScore]) -> dict[str, float]:
         )
     metrics |= private_proxy.batch_metrics(scores)
     return metrics
+
+
+def _generation_wandb_metrics(
+    *,
+    batch_n: int,
+    batch_objective: tuple[float, float],
+    round0_objective: tuple[float, float],
+    objective_best: blackboard.Record,
+    best_score: SubmissionScore,
+    refine_rounds: int,
+    local_scores: list[SubmissionScore],
+    local_assessments: list[JudgeAssessment | None],
+    shadow_decision: Comparison,
+    board: blackboard.Blackboard,
+    model: str,
+    worker_id: int,
+) -> dict[str, Any]:
+    """Build one generation's W&B metrics dict. Pure -- no wandb/network calls.
+
+    ``best_board_min_models`` (``objective_best.objective``) is the MIN over the
+    per-model char-projected boards (:func:`_score_public_raw_per_gen_char`'s
+    definition, the champion-selection metric) -- NOT their mean. ``board_mean_models``
+    is that mean, i.e. the true LB-display metric: the two coincide only when both
+    columns are equal. The per-model columns composing both are logged as `board_{m}`
+    (exact for THIS generation's kept best submission, not a Record-derived
+    approximation).
+
+    Args:
+        batch_n: Number of submissions in the kept (post-refine) batch.
+        batch_objective: ``(mean, sum)`` char-projected board over the kept batch, from
+            :func:`_batch_refine_objective`.
+        round0_objective: Same tuple for the pre-refine (round 0) batch.
+        objective_best: The blackboard's current MIN-champion record.
+        best_score: The kept batch's best-by-MIN-objective :class:`SubmissionScore`.
+        refine_rounds: Refine rounds actually run this generation.
+        local_scores: The kept batch's scores (for :func:`_batch_score_metrics`).
+        local_assessments: The kept batch's judge assessments, one per submission.
+        shadow_decision: The refine loop's shadow-judge comparison outcome.
+        board: The shared team blackboard (its ``archive`` sources the frontier gauges).
+        model: The lane's model id.
+        worker_id: The lane's worker id.
+
+    Returns:
+        The per-generation metrics dict, ready for ``run.log``.
+    """
+    boards = _project_boards(best_score)
+    frontier = board.archive.frontier()
+    return {
+        "batch_n": batch_n,
+        # Board metrics below are the char-PROJECTED objective (fill walked to the T4
+        # budget), COUNT-INDEPENDENT: any shape count fills to the same
+        # SHIP_CANDIDATE_CAP, so more templates never inflate them. The dropped
+        # `*_public` metrics were the raw board on the AUTHORED templates
+        # (= 0.09 * n_shapes) and rose purely with shape count.
+        "batch_mean_board_min_models": batch_objective[0],
+        "best_board_min_models": objective_best.objective,
+        "best_objective_name": objective_best.objective_name,
+        # The mean of the per-model boards -- the true LB-display metric, distinct from
+        # `best_board_min_models` (the MIN) whenever the two columns diverge.
+        "board_mean_models": mean(boards.values()) if boards else 0.0,
+        "champion_n_shapes": float(best_score.total_hops),
+        "champion_bottleneck_gen_chars": _gen_chars_cost(best_score),
+        "refine_rounds": refine_rounds,
+        "refine_board_gain": batch_objective[0] - round0_objective[0],
+        "judge_mode": config.JUDGE_MODE,
+        "judge_available_rate": _judge_available_rate(local_assessments),
+        "shadow_winner": shadow_decision.winner,
+        "shadow_reason": shadow_decision.reason,
+        "shadow_prefers_refined": float(shadow_decision.winner == "b"),
+        **_batch_score_metrics(local_scores),
+        **_judge_summary_metrics(local_assessments),
+        "batch_dropped": 0.0,  # per-model drop gauge (1.0 on drop path)
+        "model": model,
+        "worker": worker_id,
+        # Frontier gauges: size/behavioral-diversity of the archive's globally
+        # non-dominated shape set (the authoritative shipped pool).
+        "frontier_size": float(len(frontier)),
+        "frontier_families": float(len({elite.family for elite in frontier})),
+        "frontier_distinct_throughput": float(
+            len({tuple(sorted(elite.throughput.items())) for elite in frontier})
+        ),
+        "frontier_distinct_severity": float(
+            len({tuple(sorted(elite.severity.items())) for elite in frontier})
+        ),
+        **{
+            # Per-model char-projected board (the per-column LB proxy),
+            # count-independent -- replaces the count-biased `{m}_public`.
+            f"board_{m}": boards.get(m, 0.0)
+            for m in config.MODELS
+        },
+        **{
+            f"replay_seconds_{m}": best_score.replay_seconds.get(m, 0.0)
+            for m in config.MODELS
+        },
+    }
 
 
 def _gen_chars_cost(score: SubmissionScore) -> float:

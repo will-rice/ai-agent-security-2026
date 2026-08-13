@@ -4,6 +4,7 @@ import json
 import threading
 from collections.abc import Callable
 from pathlib import Path
+from statistics import mean
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal, cast
 from urllib.parse import urlsplit
@@ -3068,28 +3069,30 @@ def test_worker_loop_logs_objective_metrics_separately(
     assert len(run.logs) == 1
     metrics = run.logs[0]
     # All board metrics are the count-independent char-projected objective, not the
-    # count-scaled authored public. batch_mean_objective = the batch objective (1 kept
-    # submission -> its own projected board).
-    assert metrics["batch_mean_objective"] == pytest.approx(
+    # count-scaled authored public. batch_mean_board_min_models = the batch objective (1
+    # kept submission -> its own projected board).
+    assert metrics["batch_mean_board_min_models"] == pytest.approx(
         op._score_public_raw_per_gen_char(fast_score)
     )
     # objective = the projected filled+trimmed board of the kept (fast) submission.
     assert metrics["batch_objective_raw_per_gen_char"] == pytest.approx(
         op._score_public_raw_per_gen_char(fast_score)
     )
-    assert metrics["best_objective"] == pytest.approx(
+    assert metrics["best_board_min_models"] == pytest.approx(
         op._score_public_raw_per_gen_char(fast_score)
     )
-    # best_objective is now min(gpt_oss_column, gemma_4_column); the columns that
-    # compose it are logged as `{m}_objective` for this generation's kept submission.
+    # best_board_min_models is min(gpt_oss_column, gemma_4_column); the columns that
+    # compose it are logged as `board_{m}` for this generation's kept submission, and
+    # their mean (the LB-display metric) is logged separately as `board_mean_models`.
     projected = op._project_boards(fast_score)
     for m in config.MODELS:
-        assert metrics[f"{m}_objective"] == pytest.approx(projected[m])
-    assert metrics["best_objective"] == pytest.approx(min(projected.values()))
-    # best_objective IS the min now, so a second duplicate key would be redundant.
+        assert metrics[f"board_{m}"] == pytest.approx(projected[m])
+    assert metrics["best_board_min_models"] == pytest.approx(min(projected.values()))
+    assert metrics["board_mean_models"] == pytest.approx(mean(projected.values()))
+    # best_objective_mean would be redundant now that board_mean_models exists.
     assert "best_objective_mean" not in metrics
     # gain = refined (fast) objective - round0 (slow) objective.
-    assert metrics["refine_objective_gain"] == pytest.approx(
+    assert metrics["refine_board_gain"] == pytest.approx(
         op._score_public_raw_per_gen_char(fast_score)
         - op._score_public_raw_per_gen_char(slow_score)
     )
@@ -3099,6 +3102,145 @@ def test_worker_loop_logs_objective_metrics_separately(
     assert "best_objective_public" not in metrics
     assert "refine_public_gain" not in metrics
     assert "refine_gain" not in metrics
+    # Old misleading names are gone.
+    for key in (
+        "best_objective",
+        "batch_mean_objective",
+        "gpt_oss_objective",
+        "gemma_4_objective",
+        "best_gen_chars_bottleneck",
+        "n_shapes",
+        "refine_objective_gain",
+        "replay_s_gpt_oss",
+        "replay_s_gemma_4",
+    ):
+        assert key not in metrics, key
+    # Frontier gauges ride every generation's metrics too (values covered precisely by
+    # test_generation_wandb_metrics_uses_clear_names_and_frontier_gauges).
+    assert "frontier_size" in metrics
+    assert "frontier_families" in metrics
+    assert "frontier_distinct_throughput" in metrics
+    assert "frontier_distinct_severity" in metrics
+
+
+def test_generation_wandb_metrics_uses_clear_names_and_frontier_gauges(
+    tmp_path: Path,
+) -> None:
+    """The renamed keys, board_mean_models, and frontier gauges all land correctly.
+
+    Pure -- no wandb/network involved.
+    """
+    from jed_attack.campaign import archive as ar
+    from jed_attack.campaign import blackboard as bb
+    from jed_attack.campaign import optimize_prompts as op
+    from jed_attack.campaign.judge_policy import Comparison
+
+    board = bb.Blackboard.load(tmp_path / "bb.jsonl")
+    board.archive.insert(
+        ar.Elite(
+            "plain t",
+            "exfil",
+            {"gpt_oss": 0.4, "gemma_4": 0.6},
+            {"gpt_oss": 5.0, "gemma_4": 5.0},
+            "",
+            "plain",
+            5,
+        )
+    )
+    board.archive.insert(
+        ar.Elite(
+            "forge t",
+            "exfil",
+            {"gpt_oss": 0.6, "gemma_4": 0.2},
+            {"gpt_oss": 3.0, "gemma_4": 9.0},
+            "",
+            "forge",
+            3,
+        )
+    )
+    # Non-dominated pair -> both survive on the frontier, in distinct families with
+    # distinct throughput/severity vectors.
+    assert len(board.archive.frontier()) == 2
+
+    fast_score = _mk_score(9.0)
+    fast_score.gen_chars = {"gpt_oss": 5.0, "gemma_4": 5.0}
+    fast_score.public_by_model = {"gpt_oss": 9.0, "gemma_4": 9.0}
+    fast_score.replay_seconds = {"gpt_oss": 1.0, "gemma_4": 2.0}
+
+    objective_best = bb.Record(
+        messages=[],
+        public=0.5,
+        feedback=[],
+        reasoning="",
+        model="fixture-model",
+        worker=0,
+        ts=0.0,
+        objective=0.5,
+        objective_name=bb.OBJECTIVE_NAME,
+    )
+    shadow_decision = Comparison(winner="b", reason="fixture")
+
+    metrics = op._generation_wandb_metrics(
+        batch_n=1,
+        batch_objective=(0.6, 1.2),
+        round0_objective=(0.4, 0.8),
+        objective_best=objective_best,
+        best_score=fast_score,
+        refine_rounds=1,
+        local_scores=[fast_score],
+        local_assessments=[None],
+        shadow_decision=shadow_decision,
+        board=board,
+        model="fixture-model",
+        worker_id=0,
+    )
+
+    # New names present.
+    for key in (
+        "board_gpt_oss",
+        "board_gemma_4",
+        "best_board_min_models",
+        "batch_mean_board_min_models",
+        "champion_bottleneck_gen_chars",
+        "champion_n_shapes",
+        "refine_board_gain",
+        "replay_seconds_gpt_oss",
+        "replay_seconds_gemma_4",
+        "board_mean_models",
+        "frontier_size",
+        "frontier_families",
+        "frontier_distinct_throughput",
+        "frontier_distinct_severity",
+    ):
+        assert key in metrics, key
+
+    # Old names absent.
+    for key in (
+        "gpt_oss_objective",
+        "gemma_4_objective",
+        "best_objective",
+        "batch_mean_objective",
+        "best_gen_chars_bottleneck",
+        "n_shapes",
+        "refine_objective_gain",
+        "replay_s_gpt_oss",
+        "replay_s_gemma_4",
+    ):
+        assert key not in metrics, key
+
+    projected = op._project_boards(fast_score)
+    assert metrics["board_gpt_oss"] == pytest.approx(projected["gpt_oss"])
+    assert metrics["board_gemma_4"] == pytest.approx(projected["gemma_4"])
+    assert metrics["board_mean_models"] == pytest.approx(
+        mean([metrics["board_gpt_oss"], metrics["board_gemma_4"]])
+    )
+    assert metrics["best_board_min_models"] == pytest.approx(0.5)
+    assert metrics["frontier_size"] == 2.0
+    assert metrics["frontier_families"] == 2.0
+    assert metrics["frontier_distinct_throughput"] == 2.0
+    assert metrics["frontier_distinct_severity"] == 2.0
+    assert metrics["replay_seconds_gpt_oss"] == pytest.approx(1.0)
+    assert metrics["replay_seconds_gemma_4"] == pytest.approx(2.0)
 
 
 def test_worker_loop_logs_artifact_score_after_reship(
@@ -7887,7 +8029,13 @@ def test_prose_markers_absent_from_schema_only_dump() -> None:
     from jed_attack.campaign import optimize_prompts as op
 
     schema_only = op._submission_schema_json()
-    for marker in ("REFLECT FIRST", "EVOPROMPT", "crossover", "TWO LEVERS, BOTH WIN"):
+    for marker in (
+        "REFLECT FIRST",
+        "EVOPROMPT",
+        "crossover",
+        "TWO LEVERS, BOTH WIN",
+        "SEVERITY",
+    ):
         assert marker not in schema_only
 
 
