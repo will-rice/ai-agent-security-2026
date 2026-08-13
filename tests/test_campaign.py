@@ -4511,7 +4511,8 @@ def test_assembled_attack_trim_is_latency_precise(
     slowest0 = cast("float", namespace["_SLOWEST0"])
     frac = cast("float", namespace["_REPLAY_SAFE_FRAC"])
     # The margin fraction is now decoupled from REPLAY_MARGIN_S (a variance buffer).
-    assert frac == pytest.approx(0.90)
+    # 0.98 == an absolute 180s buffer at the fixed 9000s grading budget.
+    assert frac == pytest.approx(0.98)
 
     class FireEnv:
         seed = 123
@@ -4545,7 +4546,7 @@ def test_assembled_attack_trim_is_latency_precise(
     )
     # Kept while (running latency + slowest0) <= budget_s * frac, then one boundary
     # candidate: keeps until wall == limit - slowest0 (=65), so 66 are returned.
-    expected = int(budget_s * frac - slowest0) + 1  # 90 - 25 + 1 = 66
+    expected = int(budget_s * frac - slowest0) + 1  # 98 - 25 + 1 = 74
     assert len(kept) == expected
     assert len(kept) < len(candidates)  # genuinely trimmed below the shipped list
 

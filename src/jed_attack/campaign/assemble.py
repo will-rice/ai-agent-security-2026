@@ -57,8 +57,11 @@ _SLOWEST0 = 25.0
 # latencies under time_budget_s * _REPLAY_SAFE_FRAC, so the fraction is the buffer for
 # the gateway replaying slower than we probed (T4 run-to-run variance), NOT a blunt
 # candidate-count cut. Climb toward 1.0 to pack more; back off if a rerun
-# goes INVALID.
-_REPLAY_SAFE_FRAC = 0.90
+# goes INVALID. Tuned to 0.98 from 0.90: at the fixed 9000s budget, frac F equals an
+# absolute margin of 9000*(1-F)s, so 0.98 == the aggressive public meta's 180s buffer
+# (adaptive kernel MARGIN_S=180), while 0.90 idled ~900s (~65 candidates). Our own sweep
+# proved 0.97 (270s) T4-VALID; 0.98 is a notch tighter -- drop to 0.97 on an INVALID.
+_REPLAY_SAFE_FRAC = 0.98
 
 
 def _fired(trace: Mapping[str, Any]) -> bool:
