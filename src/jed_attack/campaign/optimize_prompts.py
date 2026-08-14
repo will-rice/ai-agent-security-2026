@@ -1042,10 +1042,22 @@ async def optimize_team(
         raise SystemExit(
             "no usable proposer lanes; set CHEAPEST_API_KEY and/or ZAI_API_KEY"
         )
-    cycles = list(lanes.values())
+    # JED_PROPOSER_REPLICAS>1 fans a lane's key into N concurrent same-key workers that
+    # author + score in parallel against the shared blackboard. The cheapest lane stays
+    # single (its per-key cap 429s parallel requests -- confirmed); other keys
+    # (codex/z.ai) tolerate concurrency, so N replicas = N-way parallel authoring on one
+    # key. Watch the log for 429s and back off JED_PROPOSER_REPLICAS if a key caps low.
+    replicas = max(1, int(os.getenv("JED_PROPOSER_REPLICAS", "1")))
+    cycles = [
+        cycle
+        for key_env, cycle in lanes.items()
+        for _ in range(1 if key_env == providers.CHEAPEST_KEY_ENV else replicas)
+    ]
     _log.info(
-        "team: %d lanes -> %s",
+        "team: %d workers over %d keys (replicas=%d) -> %s",
         len(cycles),
+        len(lanes),
+        replicas,
         [[p.model for p in cycle] for cycle in cycles],
     )
     await asyncio.gather(

@@ -63,6 +63,7 @@ tmux new-session -d -s "$SESSION" -c "$REPO" \
     export JED_CAMPAIGN_ROOT=\"$REPO/run\" JED_WANDB=1 \
       JED_ARTIFACT_SCORE=0 \
       JED_TEAM_PROPOSERS=\"codex-gpt55\" \
+      JED_PROPOSER_REPLICAS=1 \
       JED_JUDGE_MODE=off \
       CUDA_DEVICE_ORDER=PCI_BUS_ID \
       LD_LIBRARY_PATH=\"/usr/local/cuda-12.8/lib64:\${LD_LIBRARY_PATH:-}\"; \
