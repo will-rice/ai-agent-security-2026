@@ -156,10 +156,15 @@ def _champion_candidates(record: "Record") -> str:
     always ships. The result is the single ``candidates_json`` array
     :func:`assemble.build` embeds and serves to every victim.
     """
-    templates = [
-        fill.templatize(str(m["text"])) or str(m["text"]) for m in record.messages
+    specs = [
+        (
+            str(m["text"]),
+            str(m.get("type", "exfil")),
+            str(m.get("url_scheme", fill.DEFAULT_URL_SCHEME)),
+        )
+        for m in record.messages
     ]
-    chains = fill.ordered_chains(templates, config.SHIP_CANDIDATE_CAP)
+    chains = fill.ordered_chains(specs, config.SHIP_CANDIDATE_CAP)
     return json.dumps([list(chain) for chain in chains], separators=(",", ":"))
 
 
@@ -180,8 +185,8 @@ def _frontier_candidates(arch: archive.Archive) -> str:
     uses -- so the WHOLE Pareto frontier ships through the flat single-pool
     :func:`assemble.build` exactly as it was scored.
     """
-    templates = [fill.templatize(elite.text) or elite.text for elite in arch.ship_set()]
-    chains = fill.ordered_chains(templates, config.SHIP_CANDIDATE_CAP)
+    specs = [(e.text, e.mtype, e.url_scheme) for e in arch.ship_set()]
+    chains = fill.ordered_chains(specs, config.SHIP_CANDIDATE_CAP)
     return json.dumps([list(chain) for chain in chains], separators=(",", ":"))
 
 

@@ -65,7 +65,6 @@ class ArtifactMetricRecord:
 class CodeSurface:
     """The generated-artifact knobs currently visible in campaign source."""
 
-    replay_safe_frac: float | None
     template_names: tuple[str, ...]
     source_path: str
 
@@ -236,11 +235,8 @@ def _read_code_surface(
 ) -> CodeSurface:
     relative = "src/jed_attack/campaign/assemble.py"
     text = _read_text(root / relative, relative, inputs_read, warnings)
-    replay_match = re.search(r"_REPLAY_SAFE_FRAC\s*=\s*([0-9.]+)", text)
-    replay_safe_frac = float(replay_match.group(1)) if replay_match else None
     template_names = tuple(re.findall(r'\("([^"]+)",\s*"[^"]*"\)', text))
     return CodeSurface(
-        replay_safe_frac=replay_safe_frac,
         template_names=template_names,
         source_path=relative,
     )
@@ -392,45 +388,9 @@ def _generate_ideas(context: dict[str, Any]) -> list[Idea]:
 
 
 def _public_kernel_delta_ideas(context: dict[str, Any]) -> list[Idea]:
-    code = cast(CodeSurface, context["code_surface"])
     findings = cast(list[tuple[str, str]], context["kernel_findings"])
     ideas: list[Idea] = []
     for path, text in findings:
-        if "REPLAY_SAFE_FRAC=0.97" in text and code.replay_safe_frac != 0.97:
-            ideas.append(
-                Idea(
-                    id="replay-safe-frac-097",
-                    title="Test REPLAY_SAFE_FRAC=0.97 in generated artifact",
-                    hypothesis=(
-                        "Top public latency-split kernels use 0.97; the change may "
-                        "reduce timeout risk versus the current generated setting."
-                    ),
-                    source_evidence=(
-                        SourceEvidence(
-                            path,
-                            "Decoded public kernels report REPLAY_SAFE_FRAC=0.97.",
-                        ),
-                    ),
-                    likely_files=(
-                        "src/jed_attack/campaign/assemble.py",
-                        "tests/test_campaign.py",
-                    ),
-                    category="replay_sizing",
-                    priority="medium",
-                    priority_score=5.5,
-                    expected_upside=(
-                        "Improve calibrated LB estimate by avoiding replay "
-                        "timeout/overpacking."
-                    ),
-                    risk=(
-                        "Can underfill and lower public score if current 0.99 is safe."
-                    ),
-                    acceptance_gate=(
-                        "artifact_lb_est_public beats current build_next by >= 0.25 "
-                        "and campaign tests pass."
-                    ),
-                )
-            )
         if "measured latency split" in text.lower():
             ideas.append(
                 Idea(

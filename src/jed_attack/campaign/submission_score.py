@@ -37,7 +37,7 @@ from aicomp_sdk.core.env.sandbox import SandboxEnv
 from aicomp_sdk.core.predicates import eval_predicates
 from aicomp_sdk.evaluation.ops import resolve_fixtures_dir
 
-from jed_attack.campaign import config
+from jed_attack.campaign import config, fill
 from jed_attack.campaign.guardrails import GATE_GUARDRAILS
 from jed_attack.campaign.submission import Message, MessageType
 from jed_attack.campaign.victim_feedback import message_feedback
@@ -502,6 +502,11 @@ def score_submission(
     # gateway-INVALID submissions. See memory jed-t4-replay-time-budget.
     try:
         for message in messages:
+            # Replay the RENDERED text (host index 0) -- the concrete URL from the
+            # message's url_scheme -- so the measured gen is exactly what ships.
+            rendered = fill.render_message(
+                message.text, message.type.value, message.url_scheme, 0
+            )
             msg_trace: dict[str, dict[str, dict[str, Any]]] = {
                 guardrail: {} for guardrail in guardrails
             }
@@ -520,7 +525,7 @@ def score_submission(
             for guardrail_name, guardrail_factory in guardrails.items():
                 if executor is None:
                     replays = [
-                        (model, replay_trace(message.text, model, guardrail_factory))
+                        (model, replay_trace(rendered, model, guardrail_factory))
                         for model in models
                     ]
                 else:
@@ -528,7 +533,7 @@ def score_submission(
                         (
                             model,
                             executor.submit(
-                                replay_trace, message.text, model, guardrail_factory
+                                replay_trace, rendered, model, guardrail_factory
                             ),
                         )
                         for model in models
@@ -558,7 +563,7 @@ def score_submission(
                 for guardrail_name in guardrails
             }
             msg_score = MessageScore(
-                message=message.text,
+                message=rendered,
                 type=message.type,
                 severity=message_severity,
                 severity_by_model={

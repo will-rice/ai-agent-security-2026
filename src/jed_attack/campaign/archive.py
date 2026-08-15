@@ -27,6 +27,8 @@ class Elite:
         diagnosis: Free-text scorer/judge diagnosis for this shape.
         family: The MAP-Elites structural family (behavioral descriptor axis 1).
         bucket: The gen_char_bucket cost bin (behavioral descriptor axis 2).
+        url_scheme: EXFIL URL template ('{h}' host slot) the shape's shipped candidates
+            post to; default reproduces the historical ``http://<host>.co``.
     """
 
     text: str
@@ -36,6 +38,7 @@ class Elite:
     diagnosis: str
     family: str
     bucket: int
+    url_scheme: str = "http://{h}.co"
 
 
 def dominates(a: Elite, b: Elite) -> bool:

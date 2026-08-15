@@ -258,6 +258,7 @@ def _shape_elites(
                     diagnosis=diagnosis,
                     family=shape_family(message.text, message.type),
                     bucket=gen_char_bucket(max(gen_chars.values(), default=0.0)),
+                    url_scheme=message.url_scheme,
                 )
             )
             shape_index += 1

@@ -58,13 +58,10 @@ _HARD_N_CAP = __HARD_N_CAP__
 # per-candidate replay time for the shipped bundle size K (from the free calib kernel),
 # NOT a single-post estimate. We do NOT probe in generation: candidates are validated
 # firing at dump time; local replay is byte-identical to the T4. run() returns
-# budget_s * _REPLAY_SAFE_FRAC / _EST_LATENCY_S; the gateway replay is a HARD FAIL on
+# budget_s / _EST_LATENCY_S; the gateway replay is a HARD FAIL on
 # overrun -> INVALID_SUBMISSION (no partial credit), so this MUST be measured, not
 # guessed. Calibrate against the free scoring kernel; lower to pack more once T4-VALID.
 _EST_LATENCY_S = __EST_LATENCY_S__
-# Variance buffer on _EST_LATENCY_S (T4 run-to-run jitter). At the fixed 9000s budget,
-# frac F == an absolute margin of 9000*(1-F)s, so 0.98 == a 180s buffer.
-_REPLAY_SAFE_FRAC = 0.98
 
 
 class AttackAlgorithm(AttackAlgorithmBase):
@@ -91,7 +88,7 @@ class AttackAlgorithm(AttackAlgorithmBase):
         budget_s = float(getattr(config, "time_budget_s", 0.0) or 0.0)
         candidates = _CANDIDATES[:_HARD_N_CAP]
         if budget_s:
-            n = int(budget_s * _REPLAY_SAFE_FRAC / _EST_LATENCY_S)
+            n = int(budget_s / _EST_LATENCY_S)
             n = max(1, min(len(candidates), n))
         else:
             n = len(candidates)
@@ -139,7 +136,6 @@ from aicomp_sdk.core.env.api import AttackEnvProtocol
 
 _CANDIDATES = json.loads(r"""__CANDIDATES_JSON__""")
 _HARD_N_CAP = __HARD_N_CAP__
-_REPLAY_SAFE_FRAC = 0.95
 # Real forge replay seconds (champion 79 = 879 cands @ 9000s: gemma ~10.2s; gpt is
 # faster on forge -- calib ratio gpt/gemma ~0.76 -> ~8s. Conservative + margin.)
 _GEMMA_FORGE_S = 10.6
@@ -189,7 +185,7 @@ class AttackAlgorithm(AttackAlgorithmBase):
         except Exception:
             rate = _GEMMA_FORGE_S  # any probe failure -> safe default
         candidates = _CANDIDATES[:_HARD_N_CAP]
-        n = int(budget_s * _REPLAY_SAFE_FRAC / rate) if budget_s else len(candidates)
+        n = int(budget_s / rate) if budget_s else len(candidates)
         n = max(1, min(len(candidates), n))
         return [AttackCandidate.from_messages(list(c)) for c in candidates[:n]]
 '''

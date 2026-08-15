@@ -15,6 +15,10 @@ from jed_attack.campaign.targets import _EMAIL_RE, _URL_RE
 
 MARKER = "SECRET_MARKER"
 _ALPHA = "abcdefghijklmnopqrstuvwxyz"
+# Default URL scheme -- reproduces the historical ``http://<host>.co`` when a message,
+# elite, or persisted record does not author its own scheme, so every existing ``{u}``
+# caller renders byte-identically.
+DEFAULT_URL_SCHEME = "http://{h}.co"
 
 
 def _alpha_word(index: int, width: int) -> str:
@@ -26,14 +30,30 @@ def _alpha_word(index: int, width: int) -> str:
     return "".join(reversed(chars))
 
 
-def host(index: int) -> str:
-    """A unique lowercase host for a candidate index (2 letters, then 3)."""
-    return _alpha_word(index, 2) if index < 26 * 26 else _alpha_word(index - 26 * 26, 3)
+def host(index: int, min_len: int = 2) -> str:
+    """A unique lowercase host for a candidate index, at least ``min_len`` chars.
+
+    Grows the length only when the current length's ``26**length`` space is exhausted,
+    so hosts stay as short as the scheme's floor while remaining unique across the whole
+    pool. ``host(index)`` (default ``min_len=2``) equals the historical 2-then-3 letter
+    host for every index used here.
+    """
+    length = max(1, int(min_len))
+    offset = int(index)
+    while offset >= 26**length:
+        offset -= 26**length
+        length += 1
+    return _alpha_word(offset, length)
+
+
+def render_url(url_scheme: str, index: int) -> str:
+    """Render a ``{h}``-slotted URL scheme into candidate ``index``'s concrete URL."""
+    return url_scheme.format(h=host(index))
 
 
 def url(index: int) -> str:
-    """The unique clean exfil URL for a candidate index."""
-    return f"http://{host(index)}.co"
+    """The unique clean exfil URL for a candidate index (default http scheme)."""
+    return render_url(DEFAULT_URL_SCHEME, index)
 
 
 def addr(index: int) -> str:
@@ -41,11 +61,25 @@ def addr(index: int) -> str:
     return f"user@{host(index)}.invalid"
 
 
-def render(template: str, index: int) -> str:
-    """Fill a ``{u}``/``{m}``/``{a}`` template into candidate ``index``'s message."""
-    return template.format(
-        m=MARKER, u=url(index), url=url(index), a=addr(index)
-    ).strip()
+def exfil_template(text: str) -> str:
+    """Protect a raw exfil body for ``str.format``: escape literal braces, keep ``{u}``.
+
+    Exfil text is authored with a live ``{u}`` placeholder (the URL slot) but is not run
+    through :func:`templatize` (there is no concrete URL to extract). This escapes any
+    stray literal brace so a model-authored body cannot crash ``render``'s
+    ``str.format``, while leaving ``{u}`` as the one live field.
+    """
+    return text.replace("{", "{{").replace("}", "}}").replace("{{u}}", "{u}")
+
+
+def render(template: str, index: int, url_scheme: str = DEFAULT_URL_SCHEME) -> str:
+    """Fill a protected ``{u}``/``{m}``/``{a}``/``{h}`` template for candidate index.
+
+    ``{u}`` fills from ``url_scheme`` (default reproduces ``http://<host>.co``), so
+    every caller that does not author a scheme renders exactly as before.
+    """
+    u = render_url(url_scheme, index)
+    return template.format(m=MARKER, u=u, url=u, a=addr(index), h=host(index)).strip()
 
 
 def templatize(text: str) -> str | None:
@@ -74,13 +108,34 @@ def templatize(text: str) -> str | None:
     return templated if replaced else None
 
 
-def ordered_chains(templates: Sequence[str], cap: int) -> list[tuple[str, ...]]:
-    """Round-robin ``templates`` into ``cap`` one-message candidate chains.
+def message_pair(text: str, mtype: str, url_scheme: str) -> tuple[str, str]:
+    """Protected fill template + scheme for one message, type/backward-compat aware.
 
-    Position p uses template ``p % k`` and host index ``p``, so hosts are unique and the
+    Exfil text carrying a live ``{u}`` is new-style: the scheme provides the URL. Exfil
+    text with a concrete URL (persisted pre-schema records) and every deputy message go
+    through :func:`templatize` at the default scheme, preserving today's behavior.
+    """
+    if mtype == "exfil" and "{u}" in text:
+        return exfil_template(text), url_scheme
+    return (templatize(text) or text), DEFAULT_URL_SCHEME
+
+
+def render_message(text: str, mtype: str, url_scheme: str, index: int) -> str:
+    """Render one message to candidate ``index``'s concrete string."""
+    tmpl, scheme = message_pair(text, mtype, url_scheme)
+    return render(tmpl, index, scheme)
+
+
+def ordered_chains(
+    specs: Sequence[tuple[str, str, str]], cap: int
+) -> list[tuple[str, ...]]:
+    """Round-robin ``(text, mtype, url_scheme)`` specs into ``cap`` one-message chains.
+
+    Position p uses spec ``p % k`` at host index ``p``, so hosts are unique and the
     shapes are evenly spread -- the ordered sequence both the scorer and the shipped
     artifact walk and trim to their own budget.
     """
-    if not templates:
+    if not specs:
         return []
-    return [(render(templates[p % len(templates)], p),) for p in range(max(0, cap))]
+    k = len(specs)
+    return [(render_message(*specs[p % k], index=p),) for p in range(max(0, cap))]
