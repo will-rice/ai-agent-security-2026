@@ -23,7 +23,7 @@ import build_kernel
 NVIDIA_KAGGLE_SCRIPTS = Path("/home/will/.agents/skills/nvidia-kaggle-skill/scripts")
 ENV_FILE = build_kernel.REPO_ROOT / ".env"  # supplies KAGGLE_API_TOKEN
 SUBMISSION_FILE = "submission.csv"  # the output the competition rerun scores
-MESSAGE = "per-model: one forge+plain probe, ratio-classify, forge sized per model (gpt 8.6s gemma 10.6s)"
+MESSAGE = "short-url full 1000: s:// domains (gemma gen 119/gpt 141, all fire-16-both), returns all 1000 - ceiling test (scores ~90 if 1000 fits, INVALID if overrun)"
 POLL_INTERVAL_S = 30
 POLL_TIMEOUT_S = 6 * 60 * 60  # 6h covers the push run plus the rerun eval
 # ------------------------------------------------------

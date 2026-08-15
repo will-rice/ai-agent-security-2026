@@ -70,6 +70,25 @@ a reduced effective budget. The champion probe (self-sizes to fit) returned 879 
 est mis-sizes; the probe's self-sizing (returns exactly what fits) beats a fixed est. Ceiling = the
 budget's clean-fit count (~879 -> ~79). Open (per-model pending): public LB MIN(gpt,gemma) or MEAN?
 
+## URL-SHORTENING LEVER + FULL-1000 CEILING TEST (2026-08-15)
+The victim GENERATES the http.post url, so a shorter url = fewer raw_gen_chars = faster replay =
+more candidates fit. Measured (scratchpad/url_min_test.py, real replay both models):
+champion `http://ab.co` gemma 125/gpt 147 -> `s://a0` gemma 119/gpt 141 (~5% leaner), FAITHFUL
+emit (victim emits `s://a0` verbatim), fires 16-both. Leaner variants rejected: bare `ab`/`x1`
+(gen 115) COLLAPSE novelty -- ops.py score_cell_signature = cell_signature(tool_events) with NO
+user_messages, so the ONLY per-candidate-varying cell input is http.post's _bucket_url(url) DOMAIN;
+bare urls (no "://") bucket to "unknown" -> ALL share one cell -> +2 total not +2 each (score
+tanks). `://a0` rejected: gpt "corrects" it to `https://a0` (unfaithful, gen 145). So `s://<host>`
+is the floor that KEEPS a unique domain: scheme-prefix "s://" + letter-led 2-3 char host
+(scratchpad/gen_short_pool.py, B36, 936 two-char then three-char). NOTE http.post does ZERO url
+validation (core/tools/http.py: only blocks private-net regex) -- any non-private string is ok=True.
+SHORT POOL: 1150/1150 fire-16-both = 100% clean (vs champion's 91.8% -- the leaner url is MORE
+reliable, 0 duds). SUBMITTED short_url_1000 (est=1.0 so run() returns ALL 1000, no self-trim) as a
+DIRECT ceiling test: overrun HARD-FAILS, so a VALID score means 1000 FIT. Outcomes: ~90 => budget
+fits 1000 (the ~880 estimate was low; beats champion 79) | INVALID => 1000 overruns, real ceiling
+<1000, size next down. The ~880 ceiling was only ever inferred from the champion probe self-sizing
+to 879 -- never tested above 879, since the est-trim always cut it first. This tests it for real.
+
 ## POOL HYGIENE (2026-08-15): champion pool is 8.2% DUDS -> probe-free ships them, probe filtered them
 Verified champion_candidates[:1000] on BOTH models (scratchpad/verify_pool.py): fire-16-BOTH =
 918/1000 (91.8%). gemma fires 978/1000, gpt fires 918/1000 (82 gpt-duds, 22 gemma-duds; partly
