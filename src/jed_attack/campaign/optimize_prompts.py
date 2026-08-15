@@ -259,6 +259,10 @@ def _shape_elites(
                     family=shape_family(message.text, message.type),
                     bucket=gen_char_bucket(max(gen_chars.values(), default=0.0)),
                     url_scheme=message.url_scheme,
+                    turns={
+                        model: message_score.turns_by_model.get(model, 0.0)
+                        for model in config.MODELS
+                    },
                 )
             )
             shape_index += 1

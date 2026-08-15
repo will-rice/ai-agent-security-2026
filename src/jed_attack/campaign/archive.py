@@ -8,7 +8,7 @@ Selection is Pareto over the raw per-model throughput/severity, never a scalar.
 """
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from jed_attack.campaign import config
@@ -29,6 +29,10 @@ class Elite:
         bucket: The gen_char_bucket cost bin (behavioral descriptor axis 2).
         url_scheme: EXFIL URL template ('{h}' host slot) the shape's shipped candidates
             post to; default reproduces the historical ``http://<host>.co``.
+        turns: Per-model agent turn count for this shape's replay, ``{model: turns}``.
+            Diagnostic only (NOT in the objective): persisted so we can measure whether
+            firing turns are a constant 2 or vary (and thus whether turns belongs in the
+            cost model). Empty for elites persisted before this field existed.
     """
 
     text: str
@@ -39,6 +43,7 @@ class Elite:
     family: str
     bucket: int
     url_scheme: str = "http://{h}.co"
+    turns: dict[str, float] = field(default_factory=dict)
 
 
 def dominates(a: Elite, b: Elite) -> bool:

@@ -8261,6 +8261,35 @@ def test_elite_url_scheme_defaults_and_roundtrips() -> None:
     assert e2.url_scheme == "s://{h}"
 
 
+def test_elite_turns_defaults_empty_and_roundtrips() -> None:
+    """Elite.turns defaults to {} (backward compat) and round-trips through asdict."""
+    from dataclasses import asdict
+
+    from jed_attack.campaign import archive
+
+    e = archive.Elite(
+        text="t",
+        mtype="exfil",
+        throughput={},
+        severity={},
+        diagnosis="",
+        family="forge",
+        bucket=1,
+    )
+    assert e.turns == {}  # persisted-before-this-field elites default to empty
+    e2 = archive.Elite(
+        text="t",
+        mtype="exfil",
+        throughput={},
+        severity={},
+        diagnosis="",
+        family="forge",
+        bucket=1,
+        turns={"gemma_4": 2.0, "gpt_oss": 2.0},
+    )
+    assert archive.Elite(**asdict(e2)).turns == {"gemma_4": 2.0, "gpt_oss": 2.0}
+
+
 def test_champion_ships_record_url_scheme() -> None:
     """_champion_candidates renders a persisted record's authored url_scheme."""
     from jed_attack.campaign.blackboard import Record, _champion_candidates
