@@ -8290,6 +8290,45 @@ def test_elite_turns_defaults_empty_and_roundtrips() -> None:
     assert archive.Elite(**asdict(e2)).turns == {"gemma_4": 2.0, "gpt_oss": 2.0}
 
 
+def test_elite_input_chars_defaults_and_tiebreaks_shipset() -> None:
+    """input_chars defaults to 0, round-trips; shorter input wins a density tie."""
+    from dataclasses import asdict
+
+    from jed_attack.campaign import archive, config
+
+    def mk(text: str, thr: float, sev: float) -> archive.Elite:
+        return archive.Elite(
+            text=text,
+            mtype="exfil",
+            throughput=dict.fromkeys(config.MODELS, thr),
+            severity=dict.fromkeys(config.MODELS, sev),
+            diagnosis="",
+            family="forge",
+            bucket=1,
+            input_chars=len(text),
+        )
+
+    e = archive.Elite(
+        text="t",
+        mtype="exfil",
+        throughput={},
+        severity={},
+        diagnosis="",
+        family="forge",
+        bucket=1,
+    )
+    assert e.input_chars == 0
+    assert archive.Elite(**asdict(mk("abc", 1.0, 5.0))).input_chars == 3
+    # equal density (same throughput+severity), shorter input ranks first in ship_set
+    ar = archive.Archive()
+    long_shape = mk("x" * 200, 1.0, 5.0)
+    short_shape = mk("x" * 20, 1.0, 5.0)
+    ar.insert(long_shape)
+    ar.insert(short_shape)
+    ships = ar.ship_set()
+    assert ships and ships[0].input_chars == 20  # shorter input preferred on the tie
+
+
 def test_champion_ships_record_url_scheme() -> None:
     """_champion_candidates renders a persisted record's authored url_scheme."""
     from jed_attack.campaign.blackboard import Record, _champion_candidates

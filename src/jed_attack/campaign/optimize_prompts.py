@@ -263,6 +263,7 @@ def _shape_elites(
                         model: message_score.turns_by_model.get(model, 0.0)
                         for model in config.MODELS
                     },
+                    input_chars=len(message.text),
                 )
             )
             shape_index += 1

@@ -33,6 +33,10 @@ class Elite:
             Diagnostic only (NOT in the objective): persisted so we can measure whether
             firing turns are a constant 2 or vary (and thus whether turns belongs in the
             cost model). Empty for elites persisted before this field existed.
+        input_chars: The shape's input message length. A hedge on the real grader's
+            prefill cost (local replay is input-length-insensitive, but the grader's
+            model server may charge for it). A ship-set tiebreaker, not a board-density
+            term. 0 for elites persisted before this field existed.
     """
 
     text: str
@@ -44,6 +48,7 @@ class Elite:
     bucket: int
     url_scheme: str = "http://{h}.co"
     turns: dict[str, float] = field(default_factory=dict)
+    input_chars: int = 0
 
 
 def dominates(a: Elite, b: Elite) -> bool:
@@ -103,10 +108,17 @@ class Archive:
         return [x for x in allx if not any(dominates(y, x) for y in allx if y is not x)]
 
     def ship_set(self) -> list[Elite]:
-        """The frontier ranked by summed per-model board-density, capped at the cap."""
-        return sorted(self.frontier(), key=elite_board_density, reverse=True)[
-            : config.ARCHIVE_FRONTIER_CAP
-        ]
+        """The frontier ranked by board-density, ties broken toward shorter input.
+
+        Primary key is summed per-model board-density; the secondary key prefers a
+        shorter input message (``-input_chars``) -- a free hedge on the grader's prefill
+        cost that never overrides a denser shape.
+        """
+        return sorted(
+            self.frontier(),
+            key=lambda e: (elite_board_density(e), -e.input_chars),
+            reverse=True,
+        )[: config.ARCHIVE_FRONTIER_CAP]
 
     def parents(self, k: int) -> list[Elite]:
         """Sample k parents biased to the frontier + under-filled cells.
