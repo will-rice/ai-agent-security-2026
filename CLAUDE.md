@@ -70,6 +70,26 @@ a reduced effective budget. The champion probe (self-sizes to fit) returned 879 
 est mis-sizes; the probe's self-sizing (returns exactly what fits) beats a fixed est. Ceiling = the
 budget's clean-fit count (~879 -> ~79). Open (per-model pending): public LB MIN(gpt,gemma) or MEAN?
 
+## SUBMISSION DATA REFUTES THE ~880 CEILING (2026-08-15) -- MORE RETURNED = HIGHER SCORE
+COMPLETED public scores by returned count (real Kaggle evals, all VALID/COMPLETE):
+  per-model (~700 sized) 66.945 | 879 -> 72.150 | 1000(est8.82) -> 76.095 | 1300(est6.78) -> 83.805
+MONOTONIC in returned count. The 1300 cut = 83.805 is our BEST EVER (beats the 79-81 champion).
+=> the "~880 gemma-bound ceiling" (inferred only from the champion probe self-sizing to 879, NEVER
+tested above 879 because the est-trim always cut it first) is REFUTED. Returning MORE candidates
+scores MORE, and does NOT INVALID.
+MECHANISM (graceful, not hard-fail): 1300 scored 931 cells (83.805/0.09) but the champion pool is
+~92% fire-16-both -> 1300*0.92=1196 expected if all replayed. Only 931 -> the grader replayed ~1010
+before the deadline and scored what COMPLETED (graceful timeout). So my earlier "overrun ->
+INVALID_SUBMISSION hard fail" reading (jed_attack_gateway _run_until_deadline) does NOT govern the
+real scored path -- the competition eval scores completed findings on timeout (matches the calib
+that scored 40.32 despite timed_out=True). [Flip-flopped on this twice; the SUBMISSION DATA is
+authoritative over the code-read.] So oversizing is SAFE (scores what fits), and the real ceiling is
+the BUDGET-COMPLETABLE count (~1010 at the champion-url replay rate), NOT 880.
+DIRECTION: leaner + MORE. Faster per-candidate replay (short urls, see URL-SHORTENING LEVER) lets the
+grader COMPLETE more candidates in the same budget -> raises the ceiling itself -> toward the 137 top.
+Short-url 1000 submitted (pending) calibrates the leaner rate; short-url 2100 pool prepping to fill
+the budget. NEXT: submit a budget-FILLING short-url cut (return ~1800-2000) -> expect > 84.
+
 ## URL-SHORTENING LEVER + FULL-1000 CEILING TEST (2026-08-15)
 The victim GENERATES the http.post url, so a shorter url = fewer raw_gen_chars = faster replay =
 more candidates fit. Measured (scratchpad/url_min_test.py, real replay both models):
