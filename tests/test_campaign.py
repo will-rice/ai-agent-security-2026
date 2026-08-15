@@ -4324,15 +4324,16 @@ def test_assemble_build_embeds_json_and_stays_isolated(tmp_path: Path) -> None:
     assert all(r == "aicomp_sdk" or r in sys.stdlib_module_names for r in roots)
 
 
-def test_assembled_attack_returns_prevalidated_candidates_trimmed_to_budget(
+def test_assembled_attack_returns_all_prevalidated_candidates_ignoring_budget(
     tmp_path: Path,
 ) -> None:
-    """No probe: return the pre-validated candidates, trimmed to the replay budget.
+    """No probe, no self-sizing: return every pre-validated candidate, in list order.
 
     The skeleton never runs the victim -- the pool is validated firing at dump time and
-    the gateway replays each candidate once, so a generation probe would only duplicate
-    that inference. With no budget it returns every embedded candidate in list order; a
-    binding budget trims to ``int(budget_s * frac / est_latency)``, always >= 1.
+    the gateway scores what completes before its replay deadline (partial credit), so a
+    latency-based trim could only cap us below the completable ceiling. ``run`` ignores
+    the budget entirely and returns the whole embedded list (up to the SDK replay cap),
+    whether or not ``time_budget_s`` is set.
     """
     from aicomp_sdk.attacks.contracts import AttackRunConfig
     from aicomp_sdk.core.env.api import AttackEnvProtocol
@@ -4353,13 +4354,13 @@ def test_assembled_attack_returns_prevalidated_candidates_trimmed_to_budget(
     )
     assert [c.user_messages[0] for c in kept] == ["c 0", "c 1", "c 2", "c 3", "c 4"]
 
-    # A binding budget trims the returned set below the full shipped list, never empty.
+    # A reported budget is IGNORED -- the full list still comes back, never trimmed.
     attack_cls = build_and_load([[f"c {i}"] for i in range(100)])
-    trimmed = attack_cls().run(
+    kept = attack_cls().run(
         cast("AttackEnvProtocol", object()),
         AttackRunConfig(time_budget_s=100.0, max_tool_hops=1),
     )
-    assert 1 <= len(trimmed) < 100
+    assert len(kept) == 100
 
 
 def test_assembled_attack_ships_flat_list_without_touching_opaque_env(
@@ -4397,32 +4398,38 @@ def test_assembled_attack_ships_flat_list_without_touching_opaque_env(
     assert [c.user_messages[0] for c in kept] == ["c 0", "c 1", "c 2", "c 3"]
 
 
-def test_assembled_attack_trim_uses_fixed_latency(tmp_path: Path) -> None:
-    """The trim returns ``int(budget_s / est_latency)`` -- no measurement.
+def test_assembled_attack_caps_at_sdk_replay_findings_and_carries_no_latency(
+    tmp_path: Path,
+) -> None:
+    """The only bound is the SDK's ``MAX_REPLAY_FINDINGS``; no latency constant.
 
-    Probe-free: the returned count is a pure function of the reported budget and the
-    embedded worst-case per-candidate latency, so it is deterministic and never runs the
-    victim. This is what makes removing the redundant generation-phase inference safe.
+    Probe-free and self-sizing-free: the returned count is a pure function of the
+    embedded list and the SDK's own replay cap, independent of the reported budget, and
+    the skeleton carries no ``_EST_LATENCY_S`` (a replay timeout now scores partial
+    rather than voiding, so there is nothing to size against).
     """
     from aicomp_sdk.attacks.contracts import AttackRunConfig
     from aicomp_sdk.core.env.api import AttackEnvProtocol
+    from aicomp_sdk.evaluation.ops import MAX_REPLAY_FINDINGS
 
     from jed_attack.campaign import assemble
 
-    candidates = [[f"c {i}"] for i in range(2000)]
+    n_over_cap = MAX_REPLAY_FINDINGS + 500
+    candidates = [[f"c {i}"] for i in range(n_over_cap)]
     path = assemble.build(json.dumps(candidates), tmp_path / "build")
-    namespace: dict[str, object] = {}
-    exec(compile(path.read_text(), "attack.py", "exec"), namespace)  # noqa: S102
-    est = cast("float", namespace["_EST_LATENCY_S"])
+    src = path.read_text()
+    assert "_EST_LATENCY_S" not in src  # no timing constant survives
+    assert "time_budget_s" not in src  # run() never reads the budget
 
-    budget_s = 9000.0
+    namespace: dict[str, object] = {}
+    exec(compile(src, "attack.py", "exec"), namespace)  # noqa: S102
     attack_cls = cast("type[AttackAlgorithmBase]", namespace["AttackAlgorithm"])
     kept = attack_cls().run(
         cast("AttackEnvProtocol", object()),
-        AttackRunConfig(time_budget_s=budget_s, max_tool_hops=1),
+        AttackRunConfig(time_budget_s=9000.0, max_tool_hops=1),
     )
-    assert len(kept) == int(budget_s / est)
-    assert len(kept) < len(candidates)  # genuinely trimmed below the shipped list
+    # Capped at the SDK's MAX_REPLAY_FINDINGS regardless of the (large) reported budget.
+    assert len(kept) == MAX_REPLAY_FINDINGS
 
 
 def test_blackboard_load_raises_when_all_rows_malformed(tmp_path: Path) -> None:

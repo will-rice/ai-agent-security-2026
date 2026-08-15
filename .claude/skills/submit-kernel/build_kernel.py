@@ -23,11 +23,11 @@ from pathlib import Path
 # --- Fixed submission config (constants, not flags, so they can't be misset) ---
 KAGGLE_USER = "willrice"
 COMPETITION = "ai-agent-security-multi-step-tool-attacks"
-TITLE = "JED short url 1800"  # the kernel slug is DERIVED from this (see _slugify)
+TITLE = "JED short url 1524"  # the kernel slug is DERIVED from this (see _slugify)
 MACHINE_SHAPE = "NvidiaTeslaT4"  # this competition rejects P100 (400 FAILED_PRECONDITION)
 ENABLE_GPU = True
 ENABLE_INTERNET = False  # rerun env is offline; attack imports only aicomp_sdk + stdlib
-ATTACK_PY = "run/submission_cuts/short_url_1800/attack.py"  # the artifact to embed (repo-relative; a cut path also works)
+ATTACK_PY = "run/submission_cuts/short_url_1524/attack.py"  # the artifact to embed (repo-relative; a cut path also works)
 OUT_ROOT = "run/submission_kernel"  # kernel folders are written under here, one per slug
 # -------------------------------------------------------------------------------
 

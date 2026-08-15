@@ -57,6 +57,7 @@ exclude = [".venv"]
 convention = "google"
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.ty.src]

@@ -53,7 +53,7 @@ Constants worth knowing (in `build_kernel.py` unless noted):
 - Kernel cell 5 pattern: `if os.getenv('KAGGLE_IS_COMPETITION_RERUN'): JEDAttackInferenceServer().serve()` else write a zero-row `submission.csv`. On a normal push the notebook is fast (writes `attack.py` + placeholder); the **real ~5h eval runs only on Kaggle's competition rerun** after submit.
 - Metadata: `competition_sources:[ai-agent-security-multi-step-tool-attacks]`, no model/dataset sources (the competition provides the models), `enable_gpu:true`, `machine_shape:NvidiaTeslaT4` (P100 is rejected at submit with `400 FAILED_PRECONDITION`), `enable_internet:false`.
 - The metadata `id` slug MUST equal the slugified title, or Kaggle pushes under the title-derived slug and the status poll can't find the kernel. `build_kernel.py` derives the slug from `--title` to guarantee this.
-- `attack.py` self-sizes at grade time (`_HARD_N_CAP=2000`, `_REPLAY_SAFE_FRAC=0.97`). Cuts live in `run/submission_cuts/`; `build_kernel.py` embeds the `ATTACK_PY` constant (default `run/build_next/attack.py`).
+- `attack.py` does NO grade-time self-sizing: it returns the whole embedded pool up to the SDK's `MAX_REPLAY_FINDINGS` (2000) and the gateway scores what completes before its replay deadline (partial credit since 2026-08-05, so oversizing is safe). The shipped count is just the pool size (≤2000). Cuts live in `run/submission_cuts/`; `build_kernel.py` embeds the `ATTACK_PY` constant (default `run/build_next/attack.py`).
 
 ## Common mistakes
 - Skipping the quota check and burning the last slot on a bad build.
