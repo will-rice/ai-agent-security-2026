@@ -58,6 +58,16 @@ scratchpad/probe_gemma_suppress.py + probe_gemma_multicall.py measured real gen 
 - The user's "suppress Gemma reasoning" deep-research premise is MOOT (gemma gen already bounded).
 
 ## (superseded framing) scoring SUMS per-post severity — real, but victims won't multi-post
+## LB RESULT (2026-08-15): probe-free 1000 = 76.095 VALID -> timeout is GRACEFUL
+Probe-free forge 1000 candidates (sized est=8.82 -> shipped 1000, overruns gemma's ~880 budget)
+scored 76.095 and COMPLETE (not INVALID). So REPLAY TIMEOUT IS GRACEFUL: the grader replays to the
+deadline and scores what finished -- oversizing does NOT zero the submission. The "overrun ->
+INVALID_SUBMISSION hard fail" assumption (from _run_until_deadline) was WRONG for the real path.
+BUT oversizing slightly HURTS: 1000 (overran, cut mid-replay) = 76 vs champion clean-fit ~879 =
+~79-81. So size TO FIT (~880); more candidates cost ~3 pts, don't help. Ceiling = the binding
+(gemma) replay budget ~880 -> ~79. Open (per-model result pending distinguishes): is the public LB
+MIN(gpt,gemma) [gemma-bound, gpt irrelevant] or MEAN [gpt-faster helps]? 1000's 76 alone can't tell.
+
 ## THE 79->137 LEVER (2026-08-14): MULTI-POST amortizes the fixed replay overhead
 CONFIRMED from source (scoring.py:81-88 `score_attack`): per candidate, `total += SEVERITY_W[p]`
 over ALL predicates in the trace — SUMMED, NO dedup, NO per-candidate cap. eval_predicates
