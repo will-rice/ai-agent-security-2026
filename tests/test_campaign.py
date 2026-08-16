@@ -1285,6 +1285,9 @@ def test_worker_loop_frontier_artifact_survives_a_later_min_best(
                     trace={},
                     feedback="",
                     gen_chars_by_model={"gpt_oss": gc, "gemma_4": gc},
+                    # Token cost drives the objective; proportional to gc so A stays
+                    # leaner than B (the lean-vs-severe tradeoff the test needs).
+                    gen_tokens_by_model={"gpt_oss": gc / 4.0, "gemma_4": gc / 4.0},
                 )
             ],
             gen_chars={"gpt_oss": gc, "gemma_4": gc},
@@ -1415,6 +1418,9 @@ def test_worker_loop_cold_start_seeds_archive_and_ships_frontier(
             trace={},
             feedback="",
             gen_chars_by_model={"gpt_oss": gc, "gemma_4": gc},
+            # Token cost drives the Pareto objective; keep it proportional to gc so the
+            # lean-vs-fat domination the test asserts holds under the token model.
+            gen_tokens_by_model={"gpt_oss": gc / 4.0, "gemma_4": gc / 4.0},
         )
 
     # Seed submission (S1, S2): S1 fires on both victims, S2 fires on neither.
@@ -1435,6 +1441,7 @@ def test_worker_loop_cold_start_seeds_archive_and_ships_frontier(
     g_score.total_hops = 1
     g_score.public_by_model = {"gpt_oss": 2.0, "gemma_4": 2.0}
     g_score.per_message[0].gen_chars_by_model = {"gpt_oss": 5000.0, "gemma_4": 5000.0}
+    g_score.per_message[0].gen_tokens_by_model = {"gpt_oss": 1250.0, "gemma_4": 1250.0}
     g_score.per_message[0].turns_by_model = {"gpt_oss": 1.0, "gemma_4": 1.0}
     g_score.per_message[0].severity_by_model = {
         "optimal": {"gpt_oss": 4.0, "gemma_4": 4.0}
@@ -7766,13 +7773,13 @@ def test_shape_family_and_bucket() -> None:
 
 
 def test_throughput_from_gen_chars() -> None:
-    """Per-model throughput: 1/(gen_chars + FIXED_CHARS), 0 if non-firing."""
+    """Per-model throughput: 1/(gen_tokens + FIXED_TOKENS), 0 if non-firing."""
     from jed_attack.campaign import config
     from jed_attack.campaign.submission_score import throughput
 
-    t = throughput(146.0, "gpt_oss")
-    assert t == pytest.approx(1.0 / (146.0 + config.FIXED_CHARS["gpt_oss"]))
-    assert throughput(90.0, "gpt_oss") > throughput(146.0, "gpt_oss")  # leaner = higher
+    t = throughput(30.0, "gpt_oss")
+    assert t == pytest.approx(1.0 / (30.0 + config.FIXED_TOKENS["gpt_oss"]))
+    assert throughput(20.0, "gpt_oss") > throughput(30.0, "gpt_oss")  # leaner = higher
     assert throughput(float("inf"), "gpt_oss") == 0.0  # non-firing dominated
 
 
@@ -8092,16 +8099,16 @@ def test_board_density_rewards_severity_and_leanness() -> None:
     from jed_attack.campaign import config
     from jed_attack.campaign.submission_score import board_density
 
-    lean_hi = board_density(16.0, 150.0, "gpt_oss")
-    lean_lo = board_density(1.0, 150.0, "gpt_oss")
-    fat_hi = board_density(16.0, 500.0, "gpt_oss")
+    lean_hi = board_density(16.0, 30.0, "gpt_oss")
+    lean_lo = board_density(1.0, 30.0, "gpt_oss")
+    fat_hi = board_density(16.0, 120.0, "gpt_oss")
     assert lean_hi > lean_lo  # higher severity -> higher density
-    assert lean_hi > fat_hi  # leaner -> higher density
-    assert board_density(0.0, 150.0, "gpt_oss") == 0.0  # non-firing -> 0
+    assert lean_hi > fat_hi  # leaner (fewer tokens) -> higher density
+    assert board_density(0.0, 30.0, "gpt_oss") == 0.0  # non-firing -> 0
     exp = (
         (16.0 + config.NOVELTY_PER_CELL)
         / 200.0
-        / (150.0 + config.FIXED_CHARS["gpt_oss"])
+        / (30.0 + config.FIXED_TOKENS["gpt_oss"])
     )
     assert lean_hi == exp
 

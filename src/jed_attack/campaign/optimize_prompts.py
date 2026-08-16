@@ -235,6 +235,10 @@ def _shape_elites(
                 model: message_score.gen_chars_by_model.get(model, 0.0)
                 for model in config.MODELS
             }
+            gen_tokens = {
+                model: message_score.gen_tokens_by_model.get(model, 0.0)
+                for model in config.MODELS
+            }
             gate_severity = {
                 model: message_score.severity_by_model.get(
                     config.GATE_GUARDRAIL_NAME, {}
@@ -242,9 +246,11 @@ def _shape_elites(
                 for model in config.MODELS
             }
             fires = {model: gate_severity[model] > 0.0 for model in config.MODELS}
+            # Throughput is TOKEN-based (replay time = one forward pass per token); the
+            # gen_char bucket stays char-based -- only a MAP-Elites diversity axis.
             throughputs = {
                 model: throughput(
-                    gen_chars[model] if fires[model] else float("inf"), model
+                    gen_tokens[model] if fires[model] else float("inf"), model
                 )
                 for model in config.MODELS
             }

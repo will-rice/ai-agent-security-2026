@@ -63,8 +63,8 @@ def dominates(a: Elite, b: Elite) -> bool:
 def elite_board_density(elite: Elite) -> float:
     """Summed per-model board-density for ``elite`` -- the shared ship/rank key.
 
-    Recovers each model's ``gen_chars`` from its cached throughput (the exact
-    inverse of ``submission_score.throughput``) and sums ``board_density`` over
+    Recovers each model's ``gen_tokens`` from its cached (token-based) throughput (the
+    exact inverse of ``submission_score.throughput``) and sums ``board_density`` over
     :data:`config.MODELS`. Non-firing models (``throughput <= 0``) contribute 0.
     The single source of truth for "how good is this elite to ship" -- used by
     :meth:`Archive.ship_set`, the OPRO trajectory table, and the reported champion,
@@ -75,8 +75,8 @@ def elite_board_density(elite: Elite) -> float:
         t = elite.throughput[m]
         if t <= 0.0:
             continue
-        gen_chars = 1.0 / t - config.FIXED_CHARS[m]
-        total += board_density(elite.severity[m], gen_chars, m)
+        gen_tokens = 1.0 / t - config.FIXED_TOKENS[m]
+        total += board_density(elite.severity[m], gen_tokens, m)
     return total
 
 

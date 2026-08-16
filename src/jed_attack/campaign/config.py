@@ -264,6 +264,25 @@ FILL_BUDGET_CHARS: dict[str, float] = {
     model: REPLAY_MARGIN_S / T4_RATE_S_PER_CHAR[model] for model in MODELS
 }
 
+# TOKEN cost model (2026-08-16): replay time is one forward pass PER GENERATED TOKEN, so
+# tokens -- not chars -- are the true cost. The harmony/gemma markers (`<|channel|>`,
+# `<|tool_call>`, `<|"|>`) are ONE token but many chars, so char/token differs by format
+# (measured on the shipped forge shape: gemma 119c/31t=3.84, gpt 141c/30t=4.70) and a
+# char objective mis-ranks shapes. Derive the per-token seconds from the calibrated
+# per-char rate x chars/token (no new T4 fit needed): RATE_S_PER_TOKEN = RATE_S_PER_CHAR
+# x CHARS_PER_TOKEN. FIXED_TOKENS = T4_FIXED_S / RATE_S_PER_TOKEN (the per-candidate
+# fixed floor in tokens); cost = raw_gen_tokens + FIXED_TOKENS.
+CHARS_PER_TOKEN: dict[str, float] = {"gpt_oss": 4.70, "gemma_4": 3.84}
+T4_RATE_S_PER_TOKEN: dict[str, float] = {
+    model: T4_RATE_S_PER_CHAR[model] * CHARS_PER_TOKEN[model] for model in MODELS
+}
+FIXED_TOKENS: dict[str, float] = {
+    model: T4_FIXED_S[model] / T4_RATE_S_PER_TOKEN[model] for model in MODELS
+}
+FILL_BUDGET_TOKENS: dict[str, float] = {
+    model: REPLAY_MARGIN_S / T4_RATE_S_PER_TOKEN[model] for model in MODELS
+}
+
 # The single gate guardrail the optimizer scores + reads its objective from. "rules"
 # (aicomp_sdk guardrail_rules) is the data-inspecting private proxy: EXFIL scores 0
 # (denied), CONFUSED_DEPUTY survives. Public ("optimal") is abandoned; scoring one
