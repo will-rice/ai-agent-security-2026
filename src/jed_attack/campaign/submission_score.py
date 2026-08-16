@@ -239,12 +239,6 @@ class SubmissionScore:
             DETERMINISTIC replay-cost proxy (no wall-clock noise). Fewer chars means
             faster replay and more candidates fit the fixed budget, so the optimizer's
             objective divides by this to reward lean, high-throughput submissions.
-        gen_tokens: total assistant TOKENS the victim GENERATED per model -- the
-            per-forward-pass replay-cost proxy the token objective (``throughput``/
-            ``board_density``) minimizes. Populated by :func:`score_pools` (summed off
-            each pool's own ``per_message`` rows); :func:`score_submission` leaves it at
-            the empty-dict default, since its own token cost lives per-message on
-            ``MessageScore.gen_tokens_by_model``.
     """
 
     public: float
@@ -253,7 +247,6 @@ class SubmissionScore:
     public_by_model: dict[str, float] = field(default_factory=dict)
     replay_seconds: dict[str, float] = field(default_factory=dict)
     gen_chars: dict[str, float] = field(default_factory=dict)
-    gen_tokens: dict[str, float] = field(default_factory=dict)
     valid: bool = True
     invalid_reason: str | None = None
     fires: bool = False
@@ -707,9 +700,9 @@ def score_pools(
     Every concatenated ``MessageScore`` already carries its own model's
     ``gen_tokens_by_model`` (and ``gen_chars_by_model``) from its single-model
     :func:`score_submission` call -- the other model's key is simply absent, matching
-    ``severity_by_model``'s per-pool shape. The merged ``gen_tokens`` total (mirroring
-    ``gen_chars``) is summed off those per-message rows so the token objective survives
-    the per-pool merge exactly like the char one.
+    ``severity_by_model``'s per-pool shape. This is what the token objective
+    (``throughput``/``board_density``) consumes; no extra merge step is needed since
+    each pool's own single-model replay already produces it.
 
     Args:
         submission: The two-pool authored submission.
@@ -767,13 +760,6 @@ def score_pools(
         },
         gen_chars={
             model: per_model[model].gen_chars.get(model, 0.0) for model in models
-        },
-        gen_tokens={
-            model: sum(
-                message.gen_tokens_by_model.get(model, 0.0)
-                for message in per_model[model].per_message
-            )
-            for model in models
         },
         valid=all(per_model[model].valid for model in models),
         invalid_reason=invalid_reason,
