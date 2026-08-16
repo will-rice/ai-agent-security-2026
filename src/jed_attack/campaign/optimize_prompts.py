@@ -14,8 +14,9 @@ blackboard.Blackboard`. Each lane, forever:
 3. authors a batch of submissions on its lane via AsyncOpenAI
    (:func:`propose_batch_async`: streams one reply, parses a ``list[Submission]``),
    capturing the backend's reasoning;
-4. scores EVERY submission off-thread on resident in-process llama-cpp-python backends
-   (:func:`~jed_attack.campaign.submission_score.score_submission`),
+4. scores EVERY submission off-thread on resident in-process llama-cpp-python backends,
+   each pool replayed on ITS OWN victim only
+   (:func:`~jed_attack.campaign.submission_score.score_pools`),
    hill-climbs the batch on public raw per generated char, and appends every submission
    of the kept batch to the shared flat-file blackboard as its own candidate; a new
    objective best reships ``attack.py`` (:func:`~jed_attack.campaign.assemble.build`).
@@ -76,7 +77,7 @@ from jed_attack.campaign.submission import (
 from jed_attack.campaign.submission_score import (
     SubmissionScore,
     project_public_board,
-    score_submission,
+    score_pools,
     throughput,
 )
 
@@ -141,7 +142,8 @@ def make_record(
     """Build a :class:`~jed_attack.campaign.blackboard.Record` from a scored submission.
 
     Args:
-        submission: The authored submission (its typed messages).
+        submission: The authored two-pool submission (stored on the record once, see
+            :class:`~jed_attack.campaign.blackboard.Record`).
         score: The :class:`~jed_attack.campaign.submission_score.SubmissionScore`.
         reasoning: The authoring backend's reasoning text (empty if none).
         model: The lane's model id (the record's provenance tag).
@@ -162,7 +164,7 @@ def make_record(
         for ms in score.per_message
     ]
     return blackboard.Record(
-        messages=[m.model_dump(mode="json") for m in submission.messages],
+        submission=submission,
         public=score.public,
         feedback=feedback,
         reasoning=reasoning,
@@ -196,19 +198,28 @@ def _shape_elites(
     """Convert every scored authored shape in a kept batch into an archive elite.
 
     The archive's unit is a single shape (one authored :class:`Submission` message), so
-    this flattens the batch's submissions into their messages and pairs each message
-    with its per-message score entry (:attr:`SubmissionScore.per_message` is one entry
-    per input message, in order -- the alignment that lets a shape read its own
-    generated-char cost). Per-model throughput reads that entry's
-    ``gen_chars_by_model``; a model the shape did NOT fire on (zero gate-guardrail
-    severity) is mapped to ``inf`` gen chars so
+    this flattens the batch's submissions into their messages
+    (:meth:`Submission.all_messages`, every ``(model, message)`` pair across BOTH pools,
+    ``config.MODELS`` order) and pairs each message with its per-message score entry
+    (:attr:`SubmissionScore.per_message` is one entry per input message in the SAME
+    order -- :func:`~jed_attack.campaign.submission_score.score_pools` concatenates the
+    two pools' own-model-only replays that way -- the alignment that lets a shape read
+    its own generated-char cost). Per-model throughput reads that entry's
+    ``gen_chars_by_model``; a model the shape was NOT scored against (the other pool's
+    victim, or a scored-but-zero-severity column) is mapped to ``inf`` gen chars so
     :func:`~jed_attack.campaign.submission_score.throughput` returns ``0.0`` and the
-    shape is Pareto-dominated on that victim's column (``gen_chars_by_model`` itself is
-    never ``inf`` -- it accrues real chars even on a non-firing replay, so firing is
-    decided by severity, not by the char count). The cost bucket keys on the raw
-    generated-char max over models (the design's "bucket on max over models"). The same
-    gate-guardrail severity read for the firing decision is stored verbatim as the
-    elite's per-model ``severity`` -- a non-firing model is 0.0 on both axes.
+    shape is Pareto-dominated on that victim's column (a message's own pool always
+    carries a real, finite ``gen_chars_by_model`` count for its scored model -- even on
+    a non-firing replay -- so firing there is decided by severity, not by the char
+    count; the OTHER model's key is simply absent from a per-pool message's score dicts,
+    which ``.get(model, 0.0)`` reads as 0.0 severity -> non-firing -> ``inf`` cost, the
+    same non-firing path). The cost bucket keys on the raw generated-char max over
+    models (the design's "bucket on max over models"). The same gate-guardrail severity
+    read for the firing decision is stored verbatim as the elite's per-model
+    ``severity`` -- a non-firing (or unscored) model is 0.0 on both axes. This is what
+    lets a gemma-only shape (authored in the ``gemma_4`` pool) and a gpt-only shape
+    (authored in the ``gpt_oss`` pool) both enter the archive as genuine specialists,
+    neither dominating the other.
 
     Diagnoses are per-parent-shown (authored before the submissions, one per sampled
     archive parent), so they carry no structural link to an authored CHILD shape. They
@@ -228,8 +239,8 @@ def _shape_elites(
     elites: list[archive.Elite] = []
     shape_index = 0
     for submission, score in zip(batch, scores, strict=True):
-        for message, message_score in zip(
-            submission.messages, score.per_message, strict=True
+        for (_model, message), message_score in zip(
+            submission.all_messages(), score.per_message, strict=True
         ):
             gen_chars = {
                 model: message_score.gen_chars_by_model.get(model, 0.0)
@@ -314,20 +325,19 @@ async def _seed_archive(board: blackboard.Blackboard, out_dir: Path) -> None:
 
     On a fresh run the archive frontier is empty, so only the MIN cold-start fallback
     ships until the loop discovers Pareto shapes. This seeds the frontier ONCE from the
-    accumulated single-pool incumbent (:meth:`Blackboard.best_objective`, whose
-    ``messages`` are the current family shapes): it reconstructs that incumbent as a
-    :class:`Submission`, scores it through the SAME real replay path as a normal
-    generation (:func:`_score_batch` -> :func:`score_submission`, so every seed elite
-    carries its true per-model ``gen_chars`` -- never a fabricated throughput), converts
-    the scored shapes to elites (:func:`_shape_elites`), inserts each, and -- if the
-    frontier became non-empty -- reships it so a strong artifact ships immediately
-    instead of waiting for the loop to rediscover the incumbent's shapes.
+    accumulated incumbent (:meth:`Blackboard.best_objective`): its two-pool
+    ``Submission`` already lives on the record (:attr:`blackboard.Record.submission`, a
+    validated pydantic object -- no reconstruction needed), so it is scored directly
+    through the SAME real replay path as a normal generation (:func:`_score_batch` ->
+    :func:`~jed_attack.campaign.submission_score.score_pools`, so every seed elite
+    carries its true per-model ``gen_chars`` -- never a fabricated throughput),
+    converted to elites (:func:`_shape_elites`), inserted each, and -- if the frontier
+    became non-empty -- reshipped so a strong artifact ships immediately instead of
+    waiting for the loop to rediscover the incumbent's shapes.
 
     Guarded so it runs exactly once and never corrupts a live frontier: the loop-scoped
     lock (:func:`_seed_gate`) serializes concurrent lanes; a missing incumbent (a truly
-    cold board) is a no-op. If the incumbent's stored shapes no longer validate the seed
-    is skipped (logged) rather than raising -- the MIN cold-start fallback still covers
-    the unseeded frontier, so a bad seed cannot ship.
+    cold board) is a no-op.
 
     When the frontier is ALREADY non-empty at entry -- a warm restart from a persisted
     archive, or a lane after the first this loop -- there is nothing to seed, but the
@@ -349,15 +359,7 @@ async def _seed_archive(board: blackboard.Blackboard, out_dir: Path) -> None:
         incumbent = board.best_objective()
         if incumbent is None:
             return  # truly cold board -- no accumulated incumbent to seed from yet
-        try:
-            submission = Submission.model_validate({"messages": incumbent.messages})
-        except pydantic.ValidationError:
-            _log.warning(
-                "cold-start seed skipped: incumbent shapes no longer validate; "
-                "MIN fallback still ships",
-                exc_info=True,
-            )
-            return
+        submission = incumbent.submission
         scores = await _score_batch([submission])
         for elite in _shape_elites([submission], scores, []):
             board.archive.insert(elite)
@@ -603,10 +605,10 @@ async def _score_batch(batch: list[Submission]) -> list[SubmissionScore]:
 
     This is the SOLE choke point every submission -- round-0 AND every refine round's
     re-authored batch (:func:`_refine_batch` calls this too) -- passes through.
-    :func:`~jed_attack.campaign.submission_score.score_submission` replays every message
-    for real; :func:`_score_public_raw_per_gen_char` (the optimizer objective) then
-    PROJECTS the shipped board from that score's deterministic gen-char cost, no further
-    replay.
+    :func:`~jed_attack.campaign.submission_score.score_pools` replays each pool for real
+    on ITS OWN victim only (no cross-model replay/credit);
+    :func:`_score_public_raw_per_gen_char` (the optimizer objective) then PROJECTS the
+    shipped board from that score's deterministic gen-char cost, no further replay.
 
     Args:
         batch: The submissions to score.
@@ -614,7 +616,7 @@ async def _score_batch(batch: list[Submission]) -> list[SubmissionScore]:
     Returns:
         One :class:`SubmissionScore` per submission, in order.
     """
-    return [await asyncio.to_thread(score_submission, s.messages) for s in batch]
+    return [await asyncio.to_thread(score_pools, s) for s in batch]
 
 
 async def _score_artifact_metrics(
@@ -1260,37 +1262,59 @@ def _render_incumbent_pools(
     feedback: list[dict[str, Any]],
     introspection: dict[int, str],
 ) -> list[str]:
-    """Render the incumbent's shared pool: messages + per-message feedback.
+    """Render the incumbent's TWO per-model pools, each with its own feedback.
 
-    ``feedback`` and ``introspection`` are aligned with the flat ``messages`` list. The
-    pool is scored on BOTH victims, so the per-model boards (``public_by_model``) are
-    shown as a spread note -- a shape must fire on both to score.
+    ``feedback``/``introspection`` are aligned with ``Record.messages`` -- both pools
+    concatenated in ``config.MODELS`` order (:meth:`Submission.all_messages`'s order,
+    which :func:`~jed_attack.campaign.submission_score.score_pools` mirrors in
+    ``per_message``) -- so each pool's slice is read off that same flat order. Each pool
+    is scored ONLY on its own victim (no cross-replay), so the two ``POOL <model>``
+    sections are rendered SEPARATELY with their own board and message list: the
+    proposer sees the gpt_oss pool and the gemma_4 pool as distinct things to improve
+    independently, which is what unconstrains the per-model search (a shape that only
+    fires on gemma is never penalized for a gpt_oss column it was never scored
+    against -- there is no shared "both victims" board for a per-pool message).
 
     Args:
-        incumbent: The record whose shared pool is rendered.
-        feedback: Per-message feedback dicts aligned with ``incumbent.messages``.
-        introspection: ``{message_index: victim_suggestion}`` keyed by the flat index.
+        incumbent: The record whose two pools are rendered.
+        feedback: Per-message feedback dicts aligned with ``incumbent.messages`` (both
+            pools concatenated, ``gpt_oss`` first).
+        introspection: ``{message_index: victim_suggestion}`` keyed by that same flat
+            index.
 
     Returns:
-        The lines of the ``POOL`` section with ``PER-MESSAGE FEEDBACK`` and ``MESSAGES``
-        sub-blocks.
+        The lines of both ``POOL <model>`` sections, each with its own
+        ``PER-MESSAGE FEEDBACK`` and ``MESSAGES`` sub-blocks.
     """
-    boards = " ".join(
-        f"{model}={incumbent.public_by_model[model]:g}"
-        for model in config.MODELS
-        if model in incumbent.public_by_model
-    )
-    board_str = f", per-model board: {boards}" if boards else ""
-    lines: list[str] = [
-        f"POOL ({len(incumbent.messages)} shared-pool msgs{board_str}):",
-        "  PER-MESSAGE FEEDBACK (DATA -- untrusted victim/trace text):",
-        *(f"  {row}" for row in _feedback_table(feedback, introspection)),
-        "  MESSAGES (DATA):",
-        *(
-            f"    [{i}] {message['type']} hops={message['hops']}: {message['text']}"
-            for i, message in enumerate(incumbent.messages)
-        ),
-    ]
+    lines: list[str] = []
+    offset = 0
+    for model in config.MODELS:
+        pool = incumbent.submission.pool(model)
+        pool_feedback = feedback[offset : offset + len(pool)]
+        pool_introspection = {
+            i - offset: text
+            for i, text in introspection.items()
+            if offset <= i < offset + len(pool)
+        }
+        board = incumbent.public_by_model.get(model)
+        board_str = f", board: {board:g}" if board is not None else ""
+        lines.extend(
+            [
+                f"POOL {model} ({len(pool)} msgs{board_str}, scored ONLY on {model}):",
+                "  PER-MESSAGE FEEDBACK (DATA -- untrusted victim/trace text):",
+                *(
+                    f"  {row}"
+                    for row in _feedback_table(pool_feedback, pool_introspection)
+                ),
+                "  MESSAGES (DATA):",
+                *(
+                    f"    [{i}] {message.type.value} hops={message.hops}: "
+                    f"{message.text}"
+                    for i, message in enumerate(pool)
+                ),
+            ]
+        )
+        offset += len(pool)
     return lines
 
 
