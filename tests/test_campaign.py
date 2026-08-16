@@ -1390,7 +1390,7 @@ def test_ship_min_fallback_suppressed_when_frontier_nonempty(tmp_path: Path) -> 
     """The MIN-champion cold-start fallback gate binds on the archive frontier alone.
 
     ``_ship_min_fallback`` decides whether ``board.append`` is allowed to write
-    ``attack.py`` from the raw MIN-objective record: True (ships) only while the
+    ``attack.py`` from the raw objective record: True (ships) only while the
     archive frontier is empty (cold start); False (suppressed) once the frontier is
     non-empty, so a later MIN-best can never clobber the frontier's shipped artifact.
     This binds the invariant directly, independent of ``frontier_changed`` masking it
@@ -1423,7 +1423,7 @@ def test_ship_min_fallback_suppressed_when_frontier_nonempty(tmp_path: Path) -> 
 def test_worker_loop_frontier_artifact_survives_a_later_min_best(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A later MIN-objective shape joining the frontier ADDS to it, doesn't clobber it.
+    """A later objective shape joining the frontier ADDS to it, doesn't clobber it.
 
     Generation 0 authors a lean EXFIL shape (A) that fires on both victims and enters
     the archive frontier -> ``attack.py`` is the frontier pool (carries SECRET_MARKER).
@@ -1437,8 +1437,8 @@ def test_worker_loop_frontier_artifact_survives_a_later_min_best(
     severity can never be fully dominated by a merely-leaner one -- the scenario this
     test used to guard against is structurally unreachable now. This holds for
     SINGLE-message submissions like A and B here, where one elite's per-model
-    severity IS the submission's MIN-objective input; a multi-message submission's
-    MIN-objective aggregates several distinct elites, so no single elite's dominance
+    severity IS the submission's objective input; a multi-message submission's
+    objective aggregates several distinct elites, so no single elite's dominance
     bounds it and a MIN-dominated shape could still ship there -- the archive is not
     universally immune.)
 
@@ -2499,15 +2499,15 @@ def test_projected_board_walks_round_robin_to_char_budget(
     )
 
 
-def test_objective_is_min_over_model_columns(
+def test_objective_is_mean_over_model_columns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The objective is the MIN over model columns -- one shared pool scored on both.
+    """The objective is the MEAN over model columns -- the two-pool LB metric.
 
-    Two synthetic shapes cover different victims (one fires only gpt_oss, one only
-    gemma_4); the MIN is bounded by the weaker column, forcing every shape to fire on
-    BOTH victims (a shared pool can otherwise go lopsided). A submission that leaves a
-    victim's column dead scores ZERO objective.
+    The public LB is the mean of the two model columns and each pool is scored
+    independently on its own victim, so the objective is the mean: it rewards pushing
+    EITHER column higher. A submission that leaves one victim's column dead is NOT
+    zeroed (as the old MIN did) -- it just scores half.
     """
     from jed_attack.campaign import config
     from jed_attack.campaign import optimize_prompts as op
@@ -2547,12 +2547,12 @@ def test_objective_is_min_over_model_columns(
     assert board["gpt_oss"] == pytest.approx(0.09)  # (16 + NOVELTY_PER_CELL) / 200
     assert board["gemma_4"] == pytest.approx(0.03)  # (4 + NOVELTY_PER_CELL) / 200
 
-    # Both columns covered -> MIN is bounded by the weaker column.
+    # Both columns covered -> MEAN over the two.
     objective = op._score_public_raw_per_gen_char(score)
-    assert objective == pytest.approx(min(board["gpt_oss"], board["gemma_4"]))
-    assert objective == pytest.approx(0.03)
+    assert objective == pytest.approx((board["gpt_oss"] + board["gemma_4"]) / 2)
+    assert objective == pytest.approx(0.06)
 
-    # Gemma's column dead (only the gpt_oss shape ships) -> MIN zeroes the objective.
+    # Gemma's column dead (only the gpt_oss shape ships) -> MEAN halves, not zeroes.
     gpt_only_score = SubmissionScore(
         public=0.0, total_hops=1, valid=True, fires=True, per_message=[gpt_oss_only]
     )
@@ -2561,19 +2561,20 @@ def test_objective_is_min_over_model_columns(
     )
     assert dead["gpt_oss"] == pytest.approx(0.09)
     assert dead["gemma_4"] == 0.0
-    assert op._score_public_raw_per_gen_char(gpt_only_score) == 0.0
+    assert op._score_public_raw_per_gen_char(gpt_only_score) == pytest.approx(0.045)
 
 
-def test_objective_min_ties_lopsided_then_sum_breaks(
+def test_objective_mean_rewards_the_stronger_column(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """MIN ties a lopsided record with a mediocre-on-both one; the SUM tiebreak splits.
+    """MEAN distinguishes a lopsided-strong record from a mediocre-on-both one.
 
-    A record strong on gpt / weak on gemma (16, 4) and one mediocre on both (4, 4) have
-    the SAME weakest column (0.03), so the MIN primary TIES them -- coverage
-    pressure
-    that forces every shape to fire on both. The lexicographic SUM tiebreak
-    (:func:`_score_public_sum_over_models`) then separates them (0.12 > 0.06).
+    A record strong on gpt / weak on gemma (16, 4) BEATS one mediocre on both (4, 4)
+    under the MEAN objective (0.06 > 0.03) -- unlike the old MIN, which TIED them at the
+    weakest column (0.03). This is the whole reason for the switch: with two
+    independently-authored pools, the search should reward pushing EITHER column higher,
+    not bind to the weaker one. The SUM tiebreak
+    (:func:`_score_public_sum_over_models`) agrees (0.12 > 0.06).
     """
     from jed_attack.campaign import config
     from jed_attack.campaign import optimize_prompts as op
@@ -2612,10 +2613,12 @@ def test_objective_min_ties_lopsided_then_sum_breaks(
     lopsided_objective = op._score_public_raw_per_gen_char(lopsided)
     mediocre_objective = op._score_public_raw_per_gen_char(mediocre_both)
 
-    # MIN primary TIES them at 0.03 (the shared weakest column) ...
-    assert lopsided_objective == pytest.approx(0.03)
+    # MEAN rewards the stronger column: lopsided (0.06) BEATS mediocre (0.03),
+    # where the old MIN would have tied them at the weakest column (0.03).
+    assert lopsided_objective == pytest.approx(0.06)
     assert mediocre_objective == pytest.approx(0.03)
-    # ... and the SUM-over-columns tiebreak then separates them.
+    assert lopsided_objective > mediocre_objective
+    # The SUM-over-columns tiebreak agrees (a fixed multiple of the mean).
     assert op._score_public_sum_over_models(lopsided) == pytest.approx(0.12)
     assert op._score_public_sum_over_models(mediocre_both) == pytest.approx(0.06)
 
@@ -2653,8 +2656,8 @@ def test_score_public_raw_per_gen_char_zero_for_invalid_ignores_firing_shape() -
     assert op._score_public_raw_per_gen_char(score) == 0.0
 
 
-def test_objective_is_char_projection_min() -> None:
-    """The optimizer objective is the MIN of the char-projected board over models."""
+def test_objective_is_char_projection_mean() -> None:
+    """The optimizer objective is the MEAN of the char-projected board over models."""
     from jed_attack.campaign import config
     from jed_attack.campaign import optimize_prompts as op
     from jed_attack.campaign.submission import MessageType
@@ -2677,13 +2680,12 @@ def test_objective_is_char_projection_min() -> None:
     score = SubmissionScore(
         public=0.0, per_message=[ms], total_hops=1, valid=True, fires=True
     )
-    expected = min(
-        op.project_public_board(
-            score, config.FILL_BUDGET_CHARS, config.SHIP_CANDIDATE_CAP
-        ).values()
+    boards = op.project_public_board(
+        score, config.FILL_BUDGET_CHARS, config.SHIP_CANDIDATE_CAP
     )
+    expected = sum(boards.values()) / len(boards)
     assert op._score_public_raw_per_gen_char(score) == pytest.approx(expected)
-    # A both-model deputy shape keeps both columns alive, so the MIN is positive.
+    # A both-model deputy shape keeps both columns alive, so the mean is positive.
     assert expected > 0.0
 
 
@@ -3502,25 +3504,25 @@ def test_worker_loop_logs_objective_metrics_separately(
     assert len(run.logs) == 1
     metrics = run.logs[0]
     # All board metrics are the count-independent char-projected objective, not the
-    # count-scaled authored public. batch_mean_board_min_models = the batch objective (1
-    # kept submission -> its own projected board).
-    assert metrics["batch_mean_board_min_models"] == pytest.approx(
+    # count-scaled authored public. batch_mean_board_mean_models = the batch objective
+    # (1 kept submission -> its own projected board).
+    assert metrics["batch_mean_board_mean_models"] == pytest.approx(
         op._score_public_raw_per_gen_char(fast_score)
     )
     # objective = the projected filled+trimmed board of the kept (fast) submission.
     assert metrics["batch_objective_raw_per_gen_char"] == pytest.approx(
         op._score_public_raw_per_gen_char(fast_score)
     )
-    assert metrics["best_board_min_models"] == pytest.approx(
+    assert metrics["best_board_mean_models"] == pytest.approx(
         op._score_public_raw_per_gen_char(fast_score)
     )
-    # best_board_min_models is min(gpt_oss_column, gemma_4_column); the columns that
-    # compose it are logged as `board_{m}` for this generation's kept submission, and
-    # their mean (the LB-display metric) is logged separately as `board_mean_models`.
+    # best_board_mean_models is mean(gpt_oss_column, gemma_4_column) -- the LB-display
+    # metric; the columns that compose it are logged as `board_{m}` for this
+    # generation's kept submission, and their mean is also logged (board_mean_models).
     projected = op._project_boards(fast_score)
     for m in config.MODELS:
         assert metrics[f"board_{m}"] == pytest.approx(projected[m])
-    assert metrics["best_board_min_models"] == pytest.approx(min(projected.values()))
+    assert metrics["best_board_mean_models"] == pytest.approx(mean(projected.values()))
     assert metrics["board_mean_models"] == pytest.approx(mean(projected.values()))
     # best_objective_mean would be redundant now that board_mean_models exists.
     assert "best_objective_mean" not in metrics
@@ -3640,8 +3642,8 @@ def test_generation_wandb_metrics_uses_clear_names_and_frontier_gauges(
     for key in (
         "board_gpt_oss",
         "board_gemma_4",
-        "best_board_min_models",
-        "batch_mean_board_min_models",
+        "best_board_mean_models",
+        "batch_mean_board_mean_models",
         "champion_bottleneck_gen_chars",
         "champion_n_shapes",
         "refine_board_gain",
@@ -3666,6 +3668,8 @@ def test_generation_wandb_metrics_uses_clear_names_and_frontier_gauges(
         "refine_objective_gain",
         "replay_s_gpt_oss",
         "replay_s_gemma_4",
+        "best_board_min_models",
+        "batch_mean_board_min_models",
     ):
         assert key not in metrics, key
 
@@ -3675,7 +3679,7 @@ def test_generation_wandb_metrics_uses_clear_names_and_frontier_gauges(
     assert metrics["board_mean_models"] == pytest.approx(
         mean([metrics["board_gpt_oss"], metrics["board_gemma_4"]])
     )
-    assert metrics["best_board_min_models"] == pytest.approx(0.5)
+    assert metrics["best_board_mean_models"] == pytest.approx(0.5)
     assert metrics["frontier_size"] == 2.0
     assert metrics["frontier_families"] == 2.0
     assert metrics["frontier_distinct_throughput"] == 2.0

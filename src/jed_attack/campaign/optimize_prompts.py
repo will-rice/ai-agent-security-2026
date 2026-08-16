@@ -292,7 +292,7 @@ def _ship_min_fallback(board: blackboard.Blackboard) -> bool:
     """MIN champion ships to ``attack.py`` only as a cold-start fallback.
 
     True while the archive's Pareto frontier is empty (nothing better to ship yet);
-    False once the frontier is non-empty, so a later MIN-objective record whose elite
+    False once the frontier is non-empty, so a later objective record whose elite
     does NOT itself change the frontier can never clobber the superior frontier
     artifact already shipped -- the frontier below always supersedes it.
     """
@@ -555,7 +555,7 @@ async def worker_loop(
             best_score = max(local_scores, key=_score_public_raw_per_gen_char)
             _log.info(
                 "worker %d (%s): batch_n=%d objective=%g "
-                "(%+g over %d refine rounds) best_board_min_models=%g",
+                "(%+g over %d refine rounds) best_board_mean_models=%g",
                 worker_id,
                 provider.model,
                 len(local_batch),
@@ -1649,21 +1649,21 @@ def _generation_wandb_metrics(
 ) -> dict[str, Any]:
     """Build one generation's W&B metrics dict. Pure -- no wandb/network calls.
 
-    ``best_board_min_models`` (``objective_best.objective``) is the MIN over the
+    ``best_board_mean_models`` (``objective_best.objective``) is the MEAN over the
     per-model char-projected boards (:func:`_score_public_raw_per_gen_char`'s
-    definition, the champion-selection metric) -- NOT their mean. ``board_mean_models``
-    is that mean, i.e. the true LB-display metric: the two coincide only when both
-    columns are equal. The per-model columns composing both are logged as `board_{m}`
-    (exact for THIS generation's kept best submission, not a Record-derived
-    approximation).
+    definition, the champion-selection metric AND the true LB-display metric) for the
+    blackboard CHAMPION; ``board_mean_models`` is the same mean for THIS generation's
+    kept best submission (a different source). The per-model columns composing both are
+    logged as `board_{m}` (exact for this generation's kept best submission, not a
+    Record-derived approximation).
 
     Args:
         batch_n: Number of submissions in the kept (post-refine) batch.
         batch_objective: ``(mean, sum)`` char-projected board over the kept batch, from
             :func:`_batch_refine_objective`.
         round0_objective: Same tuple for the pre-refine (round 0) batch.
-        objective_best: The blackboard's current MIN-champion record.
-        best_score: The kept batch's best-by-MIN-objective :class:`SubmissionScore`.
+        objective_best: The blackboard's current champion record (best mean objective).
+        best_score: The kept batch's best-by-mean-objective :class:`SubmissionScore`.
         refine_rounds: Refine rounds actually run this generation.
         local_scores: The kept batch's scores (for :func:`_batch_score_metrics`).
         local_assessments: The kept batch's judge assessments, one per submission.
@@ -1684,11 +1684,11 @@ def _generation_wandb_metrics(
         # SHIP_CANDIDATE_CAP, so more templates never inflate them. The dropped
         # `*_public` metrics were the raw board on the AUTHORED templates
         # (= 0.09 * n_shapes) and rose purely with shape count.
-        "batch_mean_board_min_models": batch_objective[0],
-        "best_board_min_models": objective_best.objective,
+        "batch_mean_board_mean_models": batch_objective[0],
+        "best_board_mean_models": objective_best.objective,
         "best_objective_name": objective_best.objective_name,
-        # The mean of the per-model boards -- the true LB-display metric, distinct from
-        # `best_board_min_models` (the MIN) whenever the two columns diverge.
+        # The mean of the per-model boards for THIS generation's kept best submission
+        # (the champion's mean is `best_board_mean_models`; sources differ).
         "board_mean_models": mean(boards.values()) if boards else 0.0,
         "champion_n_shapes": float(best_score.total_hops),
         "champion_bottleneck_gen_chars": _gen_chars_cost(best_score),
@@ -1787,20 +1787,24 @@ def _project_boards(score: SubmissionScore) -> dict[str, float]:
 
 
 def _score_public_raw_per_gen_char(score: SubmissionScore) -> float:
-    """Per-submission objective: the MIN of the per-model char-PROJECTED boards.
+    """Per-submission objective: the MEAN of the per-model char-PROJECTED boards.
 
-    One SHARED pool is scored on BOTH victims, so a shape scores only if it fires on
-    both -- the MIN over the two model columns forces that: a submission strong on one
-    model and near-zero on the other is bounded by the dead column, exactly the
-    coverage pressure a single shared pool needs (a pure SUM/mean would let the search
-    bank a lopsided gpt_oss-only optimum and leave gemma near-zero). The objective is
-    LEXICOGRAPHIC: this MIN is primary, then :func:`_score_public_sum_over_models` (the
-    SUM over columns) as the tiebreak, then diversity (``Record.objective_tiebreaker``)
-    -- see :func:`jed_attack.campaign.blackboard._objective_key`. Invalid submissions
-    never accrue objective.
+    The public LB is the MEAN of the two model columns, and under the two-pool model
+    each pool is authored and scored INDEPENDENTLY on its own victim, so the faithful
+    objective is the mean over columns -- it rewards pushing EITHER column higher, so
+    the search improves each pool on its own merit. The earlier MIN was a single
+    shared-pool artifact: it forced one shape to fire on both by binding to the weaker
+    column, but with two independently-authored pools (each ``Field(min_length>=1)``)
+    that coverage is structural, so MIN only under-credits the stronger column. The
+    objective is LEXICOGRAPHIC: this mean is primary, then
+    :func:`_score_public_sum_over_models` (the SUM over columns) as a defensive tiebreak
+    -- a deterministic multiple of the mean for a fixed model count -- then diversity
+    (``Record.objective_tiebreaker``); see
+    :func:`jed_attack.campaign.blackboard._objective_key`. Invalid submissions never
+    accrue objective.
     """
     boards = _project_boards(score)
-    return min(boards.values()) if boards else 0.0
+    return sum(boards.values()) / len(boards) if boards else 0.0
 
 
 def _score_public_sum_over_models(score: SubmissionScore) -> float:
