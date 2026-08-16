@@ -4,17 +4,18 @@ One async process owns it, so appends are serialized with an ``asyncio.Lock`` (n
 fcntl). Every scored submission is one JSONL line; the in-memory views (best submission,
 best individual messages per shape, recent cross-model reasoning) are rebuilt on load
 and updated on append. When an append sets a new optimizer-objective best, the
-shipped ``attack.py`` is rewritten immediately via :func:`assemble.build`, so the
-artifact never lags the campaign champion.
+shipped ``attack.py`` is rewritten immediately via the per-model router
+(:func:`assemble.build_permodel`), so the artifact never lags the campaign champion.
 """
 
 import asyncio
 import functools
 import json
 import logging
-from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from jed_attack.campaign import archive, assemble, config, fill
 from jed_attack.campaign.judge_policy import (
@@ -22,7 +23,7 @@ from jed_attack.campaign.judge_policy import (
     JudgeAssessment,
     compare_candidates,
 )
-from jed_attack.campaign.submission import MessageType
+from jed_attack.campaign.submission import MessageType, Submission
 
 _log = logging.getLogger(__name__)
 
@@ -65,22 +66,24 @@ OBJECTIVE_NAME = objective_scheme_name(
 )
 
 
-@dataclass(frozen=True)
-class Record:
+class Record(BaseModel):
     """One scored submission on the blackboard.
 
-    Carries one shared pool of authored message dicts (``messages``), scored on BOTH
-    victims. The champion reship fills that pool into a single flat candidate list (see
-    :func:`_champion_candidates`) -- the opaque grading env serves the same
-    list to every victim.
+    Carries the authored two-pool ``Submission`` -- the pools live in exactly one
+    place, ``record.submission.gpt_oss``/``gemma_4`` (matching ``config.MODELS``); a
+    ``Record`` never re-declares them. The champion reship fills each pool via
+    :meth:`Submission.candidate_chains` and ships a per-model map through the router
+    (see :func:`_champion_map`, :func:`assemble.build_permodel`).
     """
 
-    messages: list[dict]
+    model_config = ConfigDict(frozen=True)
+
+    submission: Submission
     public: float
     feedback: list[dict]
-    reasoning: str
-    model: str
-    worker: int
+    reasoning: str = ""
+    model: str = ""
+    worker: int = 0
     ts: float
     valid: bool = True
     invalid_reason: str | None = None
@@ -97,64 +100,96 @@ class Record:
     )
     # Per-model public board {model: board}; the mean of these is ``public``. Persisted
     # so the robustness objective and the incumbent block can see per-victim spread.
-    public_by_model: dict[str, float] = field(default_factory=dict)
+    public_by_model: dict[str, float] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _tolerate_legacy_rows(cls, data: object) -> object:
+        """Rewrite an older-shape row into the current schema before validation.
+
+        A pre-two-pool row has a flat ``messages`` field (list of message dicts) and no
+        ``submission`` -- load it into BOTH named pools so an old harvest board still
+        warm-starts. Both pools, not just ``gpt_oss``, because ``Submission`` requires
+        every pool non-empty (``Field(min_length=config.MIN_SHIP_MESSAGES)``, always
+        >=1 -- see ``config.MIN_SHIP_MESSAGES``'s "the mean objective needs both
+        per-model columns populated") -- a genuinely empty pool cannot validate at all.
+        This also reproduces the ORIGINAL pre-two-pool behavior byte-for-byte: that flat
+        pool was shipped identically to both victims (one shared list, "scored on BOTH
+        victims"), so duplicating it into both named pools is the faithful
+        reconstruction, not an arbitrary filler. A row persisted before ``fires``
+        existed infers it from per-message severity (see :func:`_feedback_fires`)
+        instead of silently defaulting to non-firing.
+        """
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        if "submission" not in data and "messages" in data:
+            legacy_messages = data.pop("messages")
+            data["submission"] = {
+                "gpt_oss": legacy_messages,
+                "gemma_4": list(legacy_messages),
+            }
+        if "fires" not in data:
+            data["fires"] = _feedback_fires(list(data.get("feedback", [])))
+        return data
+
+    @property
+    def messages(self) -> list[dict]:
+        """Both pools concatenated in ``config.MODELS`` order -- the flat message view.
+
+        The record stores its pools on ``submission``; consumers that only need the
+        authored shapes (diversity count, judge-study candidate source, incumbent
+        prompt block) read this flat concatenation.
+        """
+        return [m.model_dump(mode="json") for _, m in self.submission.all_messages()]
 
     def to_json(self) -> dict[str, Any]:
         """Return a JSON-serializable dict for this record."""
-        return asdict(self)
+        return self.model_dump(mode="json")
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> "Record":
-        """Build a Record from a parsed JSON dict (tolerant of older/missing fields).
+        """Build a Record from a parsed JSON dict (tolerant of the legacy flat shape).
 
-        Legacy two-pool rows (``gpt_oss``/``gemma_4`` fields) concatenate both
-        pools into the single shared ``messages`` list so a persisted champion
-        still reships.
+        See :meth:`_tolerate_legacy_rows` for the pre-validation rewrite.
         """
-        if "gpt_oss" in data or "gemma_4" in data:
-            messages = list(data.get("gpt_oss", [])) + list(data.get("gemma_4", []))
-        else:
-            messages = list(data.get("messages", []))
-        return cls(
-            messages=messages,
-            public=float(data["public"]),
-            feedback=list(data["feedback"]),
-            reasoning=str(data.get("reasoning", "")),
-            model=str(data.get("model", "")),
-            worker=int(data.get("worker", 0)),
-            ts=float(data["ts"]),
-            valid=bool(data.get("valid", True)),
-            invalid_reason=(
-                str(data["invalid_reason"])
-                if data.get("invalid_reason") is not None
-                else None
-            ),
-            fires=bool(data.get("fires", _feedback_fires(list(data["feedback"])))),
-            assessment=(
-                dict(data["assessment"])
-                if isinstance(data.get("assessment"), dict)
-                else None
-            ),
-            objective=float(data.get("objective", 0.0)),
-            objective_sum=float(data.get("objective_sum", 0.0)),
-            objective_tiebreaker=float(data.get("objective_tiebreaker", 0.0)),
-            objective_name=str(data.get("objective_name", "legacy_public")),
-            gen_chars=float(data.get("gen_chars", 0.0)),
-            public_by_model={
-                str(m): float(v)
-                for m, v in dict(data.get("public_by_model", {})).items()
-            },
-        )
+        return cls.model_validate(data)
 
 
 def _champion_candidates(record: "Record") -> str:
-    """Filled flat candidate-list JSON for a champion record's shared pool.
+    """Filled flat candidate-list JSON for a champion record's two pools, concatenated.
 
-    Fills the pool's shapes into one candidate list via the shared :mod:`fill`
-    round-robin -- the same one the scorer projects -- so what ships matches what was
-    scored. Fills directly (no ``Submission`` re-validation) so a persisted record
-    always ships. The result is the single ``candidates_json`` array
-    :func:`assemble.build` embeds and serves to every victim.
+    LEGACY single-pool ship helper: fills ``record.messages`` (both pools concatenated,
+    see :attr:`Record.messages`) into one candidate list via :func:`_pool_chains`, for
+    :func:`assemble.build`'s flat single-pool template. Blackboard's own ship methods
+    route per-model via :func:`_champion_map` + :func:`assemble.build_permodel`
+    instead; this stays for ``scripts/cut_submission.py`` and its own tests, which
+    still ship the flat cut.
+    """
+    return json.dumps(
+        _pool_chains(record.messages, config.SHIP_CANDIDATE_CAP), separators=(",", ":")
+    )
+
+
+def _fill_chains(specs: list[tuple[str, str, str]], cap: int) -> list[list[str]]:
+    """Fill ``(text, type, url_scheme)`` specs into typed candidate chains.
+
+    Thin wrapper around :func:`fill.ordered_chains` that returns plain ``list``s (not
+    tuples) -- the shape :func:`assemble.build_permodel` expects, since it now takes
+    typed python pools and serializes them internally (no JSON string in between).
+    """
+    return [list(chain) for chain in fill.ordered_chains(specs, cap)]
+
+
+def _pool_chains(messages: list[dict], cap: int) -> list[list[str]]:
+    """Filled candidate chains for a flat list of message dicts (the legacy ship path).
+
+    Builds the same ``(text, type, url_scheme)`` spec
+    :meth:`Submission.candidate_chains` builds from validated ``Message`` objects, but
+    from plain dicts (``Record.messages``, which never needs re-validation since it
+    already came from a ``Submission``), then fills via :func:`_fill_chains`. Used only
+    by :func:`_champion_candidates` (the flat legacy cut); the per-model ship path
+    (:func:`_champion_map`) calls :meth:`Submission.candidate_chains` directly instead.
     """
     specs = [
         (
@@ -162,10 +197,39 @@ def _champion_candidates(record: "Record") -> str:
             str(m.get("type", "exfil")),
             str(m.get("url_scheme", fill.DEFAULT_URL_SCHEME)),
         )
-        for m in record.messages
+        for m in messages
     ]
-    chains = fill.ordered_chains(specs, config.SHIP_CANDIDATE_CAP)
-    return json.dumps([list(chain) for chain in chains], separators=(",", ":"))
+    return _fill_chains(specs, cap)
+
+
+def _champion_map(record: "Record") -> dict[str, list[list[str]]]:
+    """Per-model filled candidate chains for a champion record's authored Submission.
+
+    Delegates straight to :meth:`Submission.candidate_chains` -- the record's pools
+    live in exactly one place (``record.submission``), so there is no separate
+    spec-building path to keep in sync with it. The result feeds straight into
+    :func:`assemble.build_permodel` (see :func:`_ship_pools`), which routes each pool
+    to its own victim at grade time.
+    """
+    return {
+        model: [
+            list(chain)
+            for chain in record.submission.candidate_chains(
+                model, config.SHIP_CANDIDATE_CAP
+            )
+        ]
+        for model in config.MODELS
+    }
+
+
+def _ship_pools(pools: dict[str, list[list[str]]], out_dir: Path) -> Path:
+    """Route the ``gpt_oss``/``gemma_4`` filled pools through the per-model router.
+
+    ``assemble.build_permodel``'s two positional pools are model-specific
+    (forge=``gpt_oss``, plain=``gemma_4``), not generic first/second -- this pins that
+    mapping in one place so every ship call site agrees.
+    """
+    return assemble.build_permodel(pools["gpt_oss"], pools["gemma_4"], out_dir)
 
 
 def _archive_path(board_path: Path) -> Path:
@@ -180,14 +244,39 @@ def _archive_path(board_path: Path) -> Path:
 def _frontier_candidates(arch: archive.Archive) -> str:
     """Filled flat candidate-list JSON for the archive's Pareto ship-set.
 
-    Fills each frontier shape into the round-robin candidate list via the shared
-    :mod:`fill` -- the same one the scorer projects and :func:`_champion_candidates`
-    uses -- so the WHOLE Pareto frontier ships through the flat single-pool
-    :func:`assemble.build` exactly as it was scored.
+    LEGACY single-pool ship helper (see :func:`_champion_candidates`): fills every
+    frontier shape into ONE round-robin candidate list for :func:`assemble.build`'s flat
+    template. :meth:`Blackboard.reship_frontier` routes per-model via
+    :func:`_frontier_map` + :func:`assemble.build_permodel` instead; this stays for its
+    own test coverage of the flat cut.
     """
     specs = [(e.text, e.mtype, e.url_scheme) for e in arch.ship_set()]
-    chains = fill.ordered_chains(specs, config.SHIP_CANDIDATE_CAP)
-    return json.dumps([list(chain) for chain in chains], separators=(",", ":"))
+    return json.dumps(
+        _fill_chains(specs, config.SHIP_CANDIDATE_CAP), separators=(",", ":")
+    )
+
+
+def _frontier_map(arch: archive.Archive) -> dict[str, list[list[str]]]:
+    """Per-model filled candidate chains for the archive's Pareto ship-set.
+
+    The archive is already per-model (``Elite.throughput``/``severity`` dicts keyed by
+    ``config.MODELS`` -- see the archive module docstring): an elite ships into a
+    model's pool only when it actually fires there (``throughput[model] > 0``), so a
+    gpt-only elite never wastes gemma's replay budget and vice versa. Feeds
+    :func:`assemble.build_permodel` via :func:`_ship_pools`.
+    """
+    ship_set = arch.ship_set()
+    return {
+        model: _fill_chains(
+            [
+                (e.text, e.mtype, e.url_scheme)
+                for e in ship_set
+                if e.throughput.get(model, 0.0) > 0.0
+            ],
+            config.SHIP_CANDIDATE_CAP,
+        )
+        for model in config.MODELS
+    }
 
 
 def _severity_sum(entry: dict) -> float:
@@ -434,10 +523,10 @@ class Blackboard:
             record: The scored record to append and persist.
             out_dir: Where a new-best reship writes ``attack.py``.
             reship: Whether a new optimizer-objective best reships ``attack.py`` via
-                :func:`assemble.build`. The default preserves the legacy
-                best-submission ship path; the curated-pool loop passes ``False`` so
-                append only records candidates and curation is the sole ship path (no
-                double ship).
+                the per-model router (:func:`assemble.build_permodel`). The default
+                preserves the legacy best-submission ship path; the curated-pool loop
+                passes ``False`` so append only records candidates and curation is the
+                sole ship path (no double ship).
 
         Returns:
             ``True`` when this append rewrote ``attack.py``; otherwise ``False``.
@@ -449,7 +538,7 @@ class Blackboard:
                 handle.write(json.dumps(record.to_json(), sort_keys=True) + "\n")
                 handle.flush()
             if reship and self.best_objective() is record and record is not prior_best:
-                assemble.build(_champion_candidates(record), out_dir)
+                _ship_pools(_champion_map(record), out_dir)
                 return True
             return False
 
@@ -460,25 +549,26 @@ class Blackboard:
         immediately, rather than lagging until a future generation beats it.
 
         Args:
-            out_dir: Where :func:`assemble.build` writes ``attack.py``.
+            out_dir: Where :func:`assemble.build_permodel` writes ``attack.py``.
         """
         best = self.best_objective()
         if best is not None:
-            assemble.build(_champion_candidates(best), out_dir)
+            _ship_pools(_champion_map(best), out_dir)
 
     async def reship_frontier(self, out_dir: Path) -> None:
         """Ship the archive's Pareto frontier and persist the archive alongside.
 
-        Fills every frontier shape into the flat single-pool candidate list and rewrites
-        ``attack.py`` via :func:`assemble.build` -- the WHOLE frontier ships, not a
-        single MIN champion. Persists the archive to its sibling JSONL under the same
-        lock so the shipped artifact and the on-disk archive never disagree.
+        Fills every frontier shape into its firing model's pool (see
+        :func:`_frontier_map`) and rewrites ``attack.py`` via the per-model router
+        (:func:`assemble.build_permodel`) -- the WHOLE frontier ships, not a single MIN
+        champion. Persists the archive to its sibling JSONL under the same lock so the
+        shipped artifact and the on-disk archive never disagree.
 
         Args:
-            out_dir: Where :func:`assemble.build` writes ``attack.py``.
+            out_dir: Where :func:`assemble.build_permodel` writes ``attack.py``.
         """
         async with self._lock:
-            assemble.build(_frontier_candidates(self.archive), out_dir)
+            _ship_pools(_frontier_map(self.archive), out_dir)
             self.archive.to_jsonl(_archive_path(self._path))
 
     def champion_by_board_density(self) -> archive.Elite | None:
@@ -503,6 +593,6 @@ class Blackboard:
         public = self.best_public()
         robust = self.best_robust()
         if public is not None:
-            assemble.build(_champion_candidates(public), public_out_dir)
+            _ship_pools(_champion_map(public), public_out_dir)
         if robust is not None:
-            assemble.build(_champion_candidates(robust), robust_out_dir)
+            _ship_pools(_champion_map(robust), robust_out_dir)

@@ -10,10 +10,9 @@ These validators make a malformed message impossible to *construct* — the sche
 runtime guard, enforces the shape.
 """
 
-import json
 import math
 import re
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator
 from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -212,24 +211,6 @@ class Submission(BaseModel):
         """
         specs = [(m.text, m.type.value, m.url_scheme) for m in self.pool(model)]
         return fill.ordered_chains(specs, cap)
-
-    def to_shipped_json(self, caps: Mapping[str, int]) -> dict[str, str]:
-        """Per-model filled candidate lists -- the exact lists the artifact ships.
-
-        Args:
-            caps: ``{model: candidate_count}`` -- each pool is filled to its own cap.
-
-        Returns:
-            ``{model: candidates_json}`` -- one JSON array string per ``config.MODELS``
-            member, the per-model candidate list embedded in the shipped artifact.
-        """
-        return {
-            model: json.dumps(
-                [list(chain) for chain in self.candidate_chains(model, caps[model])],
-                separators=(",", ":"),
-            )
-            for model in config.MODELS
-        }
 
 
 class SubmissionBatch(BaseModel):
