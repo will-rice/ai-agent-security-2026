@@ -227,8 +227,18 @@ def _ship_pools(pools: dict[str, list[list[str]]], out_dir: Path) -> Path:
 
     ``assemble.build_permodel``'s two positional pools are model-specific
     (forge=``gpt_oss``, plain=``gemma_4``), not generic first/second -- this pins that
-    mapping in one place so every ship call site agrees.
+    mapping in one place so every ship call site agrees. An empty pool is valid to
+    ``build_permodel`` (it just ships that victim nothing, scoring 0) -- this can
+    happen on the frontier path when every surviving elite fires on only one model
+    (the champion path always fills both pools, see ``Submission``'s per-pool
+    ``min_length``). Not an error, but silent, so it's logged.
     """
+    for model, chains in pools.items():
+        if not chains:
+            _log.warning(
+                "shipping %s with an EMPTY pool -- that model's column will score 0",
+                model,
+            )
     return assemble.build_permodel(pools["gpt_oss"], pools["gemma_4"], out_dir)
 
 
@@ -383,16 +393,12 @@ class Blackboard:
                     malformed_lines.append(line_no)
                     continue
         if malformed_lines:
-            total = len(records) + len(malformed_lines)
-            # A few stragglers (a crash mid-append) are fine to skip, but losing most
-            # or all rows means a systematic schema/parse regression — proceeding would
-            # silently ship a stale/empty attack.py, so fail loudly instead.
-            if not records or len(malformed_lines) > 0.5 * total:
-                raise RuntimeError(
-                    f"blackboard load dropped {len(malformed_lines)}/{total} rows as "
-                    f"malformed (first lines={malformed_lines[:5]}) from {path}; "
-                    "refusing to warm-start from a degraded board"
-                )
+            # A few stragglers (a crash mid-append) or a schema migration that
+            # legitimately invalidates most/all old rows are both just "drop and
+            # warm-start from whatever remains" -- an empty board is a cold start,
+            # which is fine. Warn (loudly, with the dropped-row count) instead of
+            # crashing the optimizer: refusing to warm-start would be strictly worse
+            # than shipping fewer candidates from a stale/near-empty board.
             _log.warning(
                 "skipped %d malformed blackboard row(s) while loading %s; "
                 "first lines=%s",

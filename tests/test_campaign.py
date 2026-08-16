@@ -1435,12 +1435,12 @@ def test_worker_loop_cold_start_seeds_archive_and_ships_frontier(
     s2_text = "SECRET_MARKER BETATAG url={u}"  # fires neither, dominated
     g_text = "SECRET_MARKER CHILDTAG url={u}"  # fat child -> dominated
 
+    incumbent_shapes = [
+        Message(type=MessageType.EXFIL, text=s1_text, hops=1),
+        Message(type=MessageType.EXFIL, text=s2_text, hops=1),
+    ]
     incumbent = bb.Record(
-        gpt_oss=[
-            {"type": "exfil", "text": s1_text, "hops": 1},
-            {"type": "exfil", "text": s2_text, "hops": 1},
-        ],
-        gemma_4=[],
+        submission=Submission(gpt_oss=incumbent_shapes, gemma_4=incumbent_shapes),
         public=3.0,
         feedback=[],
         reasoning="accumulated single-pool incumbent",
@@ -4693,10 +4693,14 @@ def test_kaggle_gemma_parser_matches_grader_routing() -> None:
     assert _parse_gemma4_arguments_kaggle(bare) == _parse_gemma4_arguments(bare)
 
 
-def test_blackboard_load_raises_when_all_rows_malformed(tmp_path: Path) -> None:
-    """Fail loudly on a fully-degraded board rather than warm-starting empty.
+def test_blackboard_load_warm_starts_empty_when_all_rows_malformed(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A fully-degraded board warm-starts empty (a cold start) instead of crashing.
 
-    Every row unparseable would otherwise silently ship a stale/empty attack.py.
+    A schema migration can legitimately invalidate most/all old rows; refusing to
+    warm-start would crash the optimizer for no benefit over an empty board -- the
+    dropped-row count is still logged loudly.
     """
     from jed_attack.campaign import blackboard as bb
 
@@ -4705,8 +4709,13 @@ def test_blackboard_load_raises_when_all_rows_malformed(tmp_path: Path) -> None:
         '{not json\n{"missing": "required keys"}\nbroken row\n', encoding="utf-8"
     )
 
-    with pytest.raises(RuntimeError, match="degraded board"):
-        bb.Blackboard.load(log)
+    board = bb.Blackboard.load(log)
+
+    assert board.best() is None
+    assert any(
+        "skipped 3 malformed blackboard row" in record.message
+        for record in caplog.records
+    )
 
 
 def test_blackboard_load_tolerates_a_few_malformed_rows(tmp_path: Path) -> None:
