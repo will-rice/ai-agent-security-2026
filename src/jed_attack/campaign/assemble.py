@@ -162,40 +162,32 @@ class AttackAlgorithm(AttackAlgorithmBase):
 '''
 
 
-def build_permodel(forge_json: str, plain_json: str, out_dir: Path) -> Path:
+def build_permodel(
+    forge_pool: list[list[str]], plain_pool: list[list[str]], out_dir: Path
+) -> Path:
     """Write the shipped per-model router ``attack.py``.
 
-    Embeds two pools -- ``forge_json`` (gpt: forge-shaped, suppresses reasoning) and
-    ``plain_json`` (gemma: plain-shaped, leaner input) -- behind a single start-of-run
+    Embeds two pools -- ``forge_pool`` (gpt: forge-shaped, suppresses reasoning) and
+    ``plain_pool`` (gemma: plain-shaped, leaner input) -- behind a single start-of-run
     forge/plain latency probe that classifies the victim and ships that model's pool at
     full count (capped at the SDK's ``MAX_REPLAY_FINDINGS``). No per-candidate probe and
     no self-sizing trim: the gateway scores what it completes before its replay deadline
     (partial credit), so oversizing is safe.
 
     Args:
-        forge_json: A JSON array of message chains for the forge-shaped pool (gpt). Must
-            be valid JSON; it is parsed and re-serialized (minified) before embedding,
-            so the caller need not pre-minify it.
-        plain_json: A JSON array of message chains for the plain-shaped pool (gemma).
-            Same validity/minification handling as ``forge_json``.
+        forge_pool: The forge-shaped pool (gpt) as filled message-chains -- e.g.
+            ``Submission.candidate_chains("gpt_oss", cap)``. Serialized internally.
+        plain_pool: The plain-shaped pool (gemma) as filled message-chains -- e.g.
+            ``Submission.candidate_chains("gemma_4", cap)``. Serialized internally.
         out_dir: Output directory (typically ``config.BUILD_NEXT_DIR``).
 
     Returns:
         The path to the written ``attack.py``.
-
-    Raises:
-        json.JSONDecodeError: If ``forge_json`` or ``plain_json`` is not valid JSON.
-        ValueError: If the minified JSON contains a ``\"\"\"`` sequence that would break
-            out of the embedded string literal.
     """
-    forge_min = json.dumps(json.loads(forge_json), separators=(",", ":"))
-    plain_min = json.dumps(json.loads(plain_json), separators=(",", ":"))
-    if '"""' in forge_min or '"""' in plain_min:
-        raise ValueError(
-            "forge_json/plain_json must not contain a triple-quote sequence"
-        )
-    src = _PERMODEL_TEMPLATE.replace("__FORGE_JSON__", forge_min).replace(
-        "__PLAIN_JSON__", plain_min
+    forge_json = json.dumps(forge_pool, separators=(",", ":"))
+    plain_json = json.dumps(plain_pool, separators=(",", ":"))
+    src = _PERMODEL_TEMPLATE.replace("__FORGE_JSON__", forge_json).replace(
+        "__PLAIN_JSON__", plain_json
     )
     out_dir.mkdir(parents=True, exist_ok=True)
     attack_path = out_dir / "attack.py"

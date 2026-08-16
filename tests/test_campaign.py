@@ -4513,10 +4513,10 @@ def test_assemble_build_permodel_embeds_both_pools_and_start_probe(
 
     from jed_attack.campaign import assemble
 
-    forge_json = json.dumps([["forge msg 0"], ["forge msg 1"]])
-    plain_json = json.dumps([["plain msg 0"], ["plain msg 1"]])
+    forge_pool = [["forge msg 0"], ["forge msg 1"]]
+    plain_pool = [["plain msg 0"], ["plain msg 1"]]
 
-    out = assemble.build_permodel(forge_json, plain_json, tmp_path / "permodel")
+    out = assemble.build_permodel(forge_pool, plain_pool, tmp_path / "permodel")
 
     py_compile.compile(str(out), doraise=True)
     src = out.read_text()
