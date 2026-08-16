@@ -173,16 +173,29 @@ def build_permodel(forge_json: str, plain_json: str, out_dir: Path) -> Path:
     (partial credit), so oversizing is safe.
 
     Args:
-        forge_json: A JSON array of message chains for the forge-shaped pool (gpt).
+        forge_json: A JSON array of message chains for the forge-shaped pool (gpt). Must
+            be valid JSON; it is parsed and re-serialized (minified) before embedding,
+            so the caller need not pre-minify it.
         plain_json: A JSON array of message chains for the plain-shaped pool (gemma).
+            Same validity/minification handling as ``forge_json``.
         out_dir: Output directory (typically ``config.BUILD_NEXT_DIR``).
 
     Returns:
         The path to the written ``attack.py``.
+
+    Raises:
+        json.JSONDecodeError: If ``forge_json`` or ``plain_json`` is not valid JSON.
+        ValueError: If the minified JSON contains a ``\"\"\"`` sequence that would break
+            out of the embedded string literal.
     """
-    assert '"""' not in forge_json and '"""' not in plain_json
-    src = _PERMODEL_TEMPLATE.replace("__FORGE_JSON__", forge_json).replace(
-        "__PLAIN_JSON__", plain_json
+    forge_min = json.dumps(json.loads(forge_json), separators=(",", ":"))
+    plain_min = json.dumps(json.loads(plain_json), separators=(",", ":"))
+    if '"""' in forge_min or '"""' in plain_min:
+        raise ValueError(
+            "forge_json/plain_json must not contain a triple-quote sequence"
+        )
+    src = _PERMODEL_TEMPLATE.replace("__FORGE_JSON__", forge_min).replace(
+        "__PLAIN_JSON__", plain_min
     )
     out_dir.mkdir(parents=True, exist_ok=True)
     attack_path = out_dir / "attack.py"
