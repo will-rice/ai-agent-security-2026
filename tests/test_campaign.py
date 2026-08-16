@@ -8824,57 +8824,6 @@ def test_elite_input_chars_defaults_and_tiebreaks_shipset() -> None:
     assert ships and ships[0].input_chars == 20  # shorter input preferred on the tie
 
 
-def test_champion_ships_record_url_scheme() -> None:
-    """_champion_candidates renders a persisted record's authored url_scheme."""
-    from jed_attack.campaign.blackboard import Record, _champion_candidates
-
-    class R:
-        """Minimal record stub carrying one authored-scheme message."""
-
-        messages = [
-            {"text": "url={u} SECRET_MARKER", "type": "exfil", "url_scheme": "s://{h}"}
-        ]
-
-    out = json.loads(_champion_candidates(cast(Record, R())))
-    assert out[0][0] == "url=s://aa SECRET_MARKER"
-
-
-def test_champion_backward_compat_concrete_url() -> None:
-    """A pre-schema record with a concrete URL (no url_scheme) ships templatized."""
-    from jed_attack.campaign.blackboard import Record, _champion_candidates
-
-    class R:
-        """Minimal record stub carrying a concrete-URL message and no url_scheme."""
-
-        messages = [{"text": "url=http://ab.co SECRET_MARKER", "type": "exfil"}]
-
-    out = json.loads(_champion_candidates(cast(Record, R())))
-    assert out[0][0] == "url=http://aa.co SECRET_MARKER"  # templatized, default scheme
-
-
-def test_frontier_ships_elite_url_scheme() -> None:
-    """_frontier_candidates renders each frontier Elite's authored url_scheme."""
-    from jed_attack.campaign import archive
-    from jed_attack.campaign.blackboard import _frontier_candidates
-    from jed_attack.campaign.config import MODELS
-
-    ar = archive.Archive()
-    ar.insert(
-        archive.Elite(
-            text="url={u} SECRET_MARKER",
-            mtype="exfil",
-            throughput=dict.fromkeys(MODELS, 1.0),
-            severity=dict.fromkeys(MODELS, 5.0),
-            diagnosis="",
-            family="plain",
-            bucket=1,
-            url_scheme="s://{h}",
-        )
-    )
-    out = json.loads(_frontier_candidates(ar))
-    assert out and out[0][0] == "url=s://aa SECRET_MARKER"
-
-
 def test_record_two_pool_round_trips_through_json() -> None:
     """A Record whose Submission has distinct pools survives to_json/from_json."""
     from jed_attack.campaign.blackboard import Record

@@ -19,7 +19,8 @@ blackboard.Blackboard`. Each lane, forever:
    (:func:`~jed_attack.campaign.submission_score.score_pools`),
    hill-climbs the batch on public raw per generated char, and appends every submission
    of the kept batch to the shared flat-file blackboard as its own candidate; a new
-   objective best reships ``attack.py`` (:func:`~jed_attack.campaign.assemble.build`).
+   objective best reships ``attack.py`` via the per-model router
+   (:func:`~jed_attack.campaign.assemble.build_permodel`).
 
 One :func:`wandb.init` run spans the whole team (one process); every lane logs to it,
 each metric tagged with its ``model`` + ``worker`` so lanes are comparable in one chart.
@@ -394,8 +395,8 @@ async def worker_loop(
     batch with the higher public-throughput objective, stopping at the first round that
     doesn't strictly improve (or on a refine round's own failure). Every submission of
     the kept batch is appended to the flat-file blackboard as its own candidate; a new
-    objective best reships ``attack.py``
-    (:func:`~jed_attack.campaign.assemble.build`). A refine
+    objective best reships ``attack.py`` via the per-model router
+    (:func:`~jed_attack.campaign.assemble.build_permodel`). A refine
     round's failure is caught and the best-so-far batch is still shipped; an
     empty batch skips the generation; a whole generation's failure (proposer blip,
     refusal yielding no JSON, score outage) is caught and backed off so the lane keeps

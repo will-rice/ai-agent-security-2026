@@ -156,21 +156,6 @@ class Record(BaseModel):
         return cls.model_validate(data)
 
 
-def _champion_candidates(record: "Record") -> str:
-    """Filled flat candidate-list JSON for a champion record's two pools, concatenated.
-
-    LEGACY single-pool ship helper: fills ``record.messages`` (both pools concatenated,
-    see :attr:`Record.messages`) into one candidate list via :func:`_pool_chains`, for
-    :func:`assemble.build`'s flat single-pool template. Blackboard's own ship methods
-    route per-model via :func:`_champion_map` + :func:`assemble.build_permodel`
-    instead; this stays for ``scripts/cut_submission.py`` and its own tests, which
-    still ship the flat cut.
-    """
-    return json.dumps(
-        _pool_chains(record.messages, config.SHIP_CANDIDATE_CAP), separators=(",", ":")
-    )
-
-
 def _fill_chains(specs: list[tuple[str, str, str]], cap: int) -> list[list[str]]:
     """Fill ``(text, type, url_scheme)`` specs into typed candidate chains.
 
@@ -179,27 +164,6 @@ def _fill_chains(specs: list[tuple[str, str, str]], cap: int) -> list[list[str]]
     typed python pools and serializes them internally (no JSON string in between).
     """
     return [list(chain) for chain in fill.ordered_chains(specs, cap)]
-
-
-def _pool_chains(messages: list[dict], cap: int) -> list[list[str]]:
-    """Filled candidate chains for a flat list of message dicts (the legacy ship path).
-
-    Builds the same ``(text, type, url_scheme)`` spec
-    :meth:`Submission.candidate_chains` builds from validated ``Message`` objects, but
-    from plain dicts (``Record.messages``, which never needs re-validation since it
-    already came from a ``Submission``), then fills via :func:`_fill_chains`. Used only
-    by :func:`_champion_candidates` (the flat legacy cut); the per-model ship path
-    (:func:`_champion_map`) calls :meth:`Submission.candidate_chains` directly instead.
-    """
-    specs = [
-        (
-            str(m["text"]),
-            str(m.get("type", "exfil")),
-            str(m.get("url_scheme", fill.DEFAULT_URL_SCHEME)),
-        )
-        for m in messages
-    ]
-    return _fill_chains(specs, cap)
 
 
 def _champion_map(record: "Record") -> dict[str, list[list[str]]]:
@@ -249,21 +213,6 @@ def _archive_path(board_path: Path) -> Path:
     (``<stem>.archive.jsonl``) so a warm start reloads both from the same directory.
     """
     return board_path.with_name(board_path.stem + ".archive.jsonl")
-
-
-def _frontier_candidates(arch: archive.Archive) -> str:
-    """Filled flat candidate-list JSON for the archive's Pareto ship-set.
-
-    LEGACY single-pool ship helper (see :func:`_champion_candidates`): fills every
-    frontier shape into ONE round-robin candidate list for :func:`assemble.build`'s flat
-    template. :meth:`Blackboard.reship_frontier` routes per-model via
-    :func:`_frontier_map` + :func:`assemble.build_permodel` instead; this stays for its
-    own test coverage of the flat cut.
-    """
-    specs = [(e.text, e.mtype, e.url_scheme) for e in arch.ship_set()]
-    return json.dumps(
-        _fill_chains(specs, config.SHIP_CANDIDATE_CAP), separators=(",", ":")
-    )
 
 
 def _frontier_map(arch: archive.Archive) -> dict[str, list[list[str]]]:

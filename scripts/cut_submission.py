@@ -22,8 +22,7 @@ import subprocess
 import sys
 
 from jed_attack.campaign import config
-from jed_attack.campaign.assemble import build as build_attack
-from jed_attack.campaign.blackboard import Blackboard, Record, _champion_candidates
+from jed_attack.campaign.blackboard import Blackboard, Record, _champion_map, _ship_pools
 
 KERNEL_DIR = config.CAMPAIGN_ROOT / "submission_kernel" / "jed-attack-submission"
 NOTEBOOK = KERNEL_DIR / "jed-attack-submission.ipynb"
@@ -78,9 +77,13 @@ def build_and_inject(log: logging.Logger, diversity_band: float = 0.0) -> Record
     if champion is None:
         sys.exit("no champion in blackboard -- nothing to ship")
 
-    candidates_json = _champion_candidates(champion)
-    n_candidates = len(json.loads(candidates_json))
-    attack_path = build_attack(candidates_json, config.BUILD_NEXT_DIR)
+    # Route through the SAME per-model router the live Blackboard reship path uses
+    # (_champion_map + _ship_pools -> assemble.build_permodel), so this script's
+    # --push cut can never disagree with what the optimizer would ship: each pool
+    # goes only to its own victim, not the flat both-pools-to-both-victims cut.
+    pools = _champion_map(champion)
+    n_candidates = sum(len(chains) for chains in pools.values())
+    attack_path = _ship_pools(pools, config.BUILD_NEXT_DIR)
     py_compile.compile(str(attack_path), doraise=True)
     attack_src = attack_path.read_text(encoding="utf-8")
 
