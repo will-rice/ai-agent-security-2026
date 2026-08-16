@@ -28,7 +28,7 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 # cleanly and wandb.finish() its run; `tmux kill-session` sends SIGHUP, which it does
 # NOT catch, so killing the session first strands the wandb run as a zombie "running".
 # So: SIGTERM the worker, wait for it to exit (letting wandb finalize), SIGKILL any
-# straggler, then drop the session. One in-flight score_submission runs in a thread
+# straggler, then drop the session. One in-flight score_pools runs in a thread
 # that asyncio cancellation cannot stop and may use the full 300-second replay budget,
 # so the default grace period must exceed that budget.
 STOP_TIMEOUT_S="${JED_OPTIMIZER_STOP_TIMEOUT_S:-330}"

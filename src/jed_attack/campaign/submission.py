@@ -193,7 +193,8 @@ class Submission(BaseModel):
         """Every ``(model, message)`` pair across both pools, ``config.MODELS`` order.
 
         This is the flat, per-pool-concatenated order the per-pool scorer's
-        ``per_message`` list mirrors, so judge/record consumers can zip the two.
+        ``per_message`` list mirrors; each yielded item already carries its own model
+        tag, so a consumer can align it against ``per_message`` without a separate zip.
         """
         for model in config.MODELS:
             for message in self.pool(model):

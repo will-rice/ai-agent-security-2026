@@ -1,12 +1,13 @@
 """Embed a pre-filled candidate list into a fixed, isolated ``attack.py``.
 
 The submission ships the candidate list itself: :func:`build` takes the materialized
-JSON (``Submission.to_shipped_json``) and writes it into :data:`_TEMPLATE`, a thin,
-submission-agnostic skeleton whose only logic is to return the pre-validated candidates
-(capped at the SDK's ``MAX_REPLAY_FINDINGS``) -- NO live probe and NO self-sizing, so
-the victim is never run during generation. The candidates are validated (100% firing) at
-dump time and local replay is byte-identical to the T4 gateway, so re-running the victim
-here would only duplicate the replay the gateway does. The emitted ``attack.py`` imports
+JSON (filled via ``Submission.candidate_chains``) and writes it into :data:`_TEMPLATE`,
+a thin, submission-agnostic skeleton whose only logic is to return the pre-validated
+candidates (capped at the SDK's ``MAX_REPLAY_FINDINGS``) -- NO live probe and NO
+self-sizing, so the victim is never run during generation. The candidates are validated
+(100% firing) at dump time and local replay is byte-identical to the T4 gateway, so
+re-running the victim here would only duplicate the replay the gateway does. The
+emitted ``attack.py`` imports
 only ``aicomp_sdk`` + stdlib (``json`` is stdlib and the list is an embedded string
 literal), so it satisfies the isolation contract with no first-party import. It prepends
 a Kaggle sys.path preamble (no-op off-Kaggle), so ``build_next`` is directly shippable.
