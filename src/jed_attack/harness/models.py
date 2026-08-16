@@ -176,10 +176,17 @@ def gguf_agent_factory(
         model_id: str = DEFAULT_GPT_OSS_MODEL_ID
         make_agent = GPTOSSAgent
     elif model_key == "gemma_4":
+        from functools import partial
+
         from aicomp_sdk.agents.gemma4_agent import DEFAULT_GEMMA4_MODEL_ID, Gemma4Agent
 
+        from jed_attack.harness.kaggle_parsers import KaggleGemma4ToolCallParser
+
         model_id = DEFAULT_GEMMA4_MODEL_ID
-        make_agent = Gemma4Agent
+        # Match the grader: it builds the gemma agent with KaggleGemma4ToolCallParser
+        # (gemma_model_server.py), not the SDK default. partial injects the parser so
+        # ResidentAgentFactory's make_agent(backend) call reproduces the grader exactly.
+        make_agent = partial(Gemma4Agent, parser=KaggleGemma4ToolCallParser())
     else:
         raise ValueError(f"unknown model_key: {model_key}")
 

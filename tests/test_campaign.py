@@ -4432,6 +4432,36 @@ def test_assembled_attack_caps_at_sdk_replay_findings_and_carries_no_latency(
     assert len(kept) == MAX_REPLAY_FINDINGS
 
 
+def test_kaggle_gemma_parser_matches_grader_routing() -> None:
+    """Local gemma parsing matches the grader's ``KaggleGemma4ToolCallParser``.
+
+    The grader routes a ``{``-prefixed (JSON / double-brace) argument blob through
+    ``normalize_tool_arguments`` -- the SDK's plain parser rejects it. Our vendored copy
+    must do the same so local fire matches the grader for shapes beyond the clean
+    single-post one (where both agree). This is the ONLY behavioral difference between
+    the two parsers, so it is what the test pins.
+    """
+    from aicomp_sdk.agents.gemma4_agent import _parse_gemma4_arguments
+    from aicomp_sdk.agents.types import InvalidModelOutputError
+
+    from jed_attack.harness.kaggle_parsers import _parse_gemma4_arguments_kaggle
+
+    # JSON / double-brace args (the Aug-5 gemma failure mode): grader normalizes it,
+    # the plain SDK parser raises -> a candidate that fires on the grader would score
+    # NON-firing under the plain parser.
+    json_blob = '{"data": "SECRET_MARKER", "url": "s://a0"}'
+    assert _parse_gemma4_arguments_kaggle(json_blob) == {
+        "data": "SECRET_MARKER",
+        "url": "s://a0",
+    }
+    with pytest.raises(InvalidModelOutputError):
+        _parse_gemma4_arguments(json_blob)
+
+    # Bare key:value (our shipped single-post shape): both parsers agree exactly.
+    bare = 'data:<|"|>SECRET_MARKER<|"|>,url:<|"|>s://a0<|"|>'
+    assert _parse_gemma4_arguments_kaggle(bare) == _parse_gemma4_arguments(bare)
+
+
 def test_blackboard_load_raises_when_all_rows_malformed(tmp_path: Path) -> None:
     """Fail loudly on a fully-degraded board rather than warm-starting empty.
 
