@@ -4499,6 +4499,40 @@ def test_assembled_attack_caps_at_sdk_replay_findings_and_carries_no_latency(
     assert len(kept) == MAX_REPLAY_FINDINGS
 
 
+def test_assemble_build_permodel_embeds_both_pools_and_start_probe(
+    tmp_path: Path,
+) -> None:
+    """``build_permodel`` writes a compiling router with a start-only probe.
+
+    The router embeds the forge pool (gpt) and the plain pool (gemma), classifies the
+    victim with a single forge/plain latency probe at the start of ``run`` (the
+    ``_RATIO_GPT_MIN`` threshold), and ships that model's pool at full count -- no
+    per-candidate probe, no self-sizing trim.
+    """
+    import py_compile
+
+    from jed_attack.campaign import assemble
+
+    forge_json = json.dumps([["forge msg 0"], ["forge msg 1"]])
+    plain_json = json.dumps([["plain msg 0"], ["plain msg 1"]])
+
+    out = assemble.build_permodel(forge_json, plain_json, tmp_path / "permodel")
+
+    py_compile.compile(str(out), doraise=True)
+    src = out.read_text()
+
+    assert "class AttackAlgorithm(AttackAlgorithmBase)" in src
+    assert "forge msg 0" in src and "forge msg 1" in src
+    assert "plain msg 0" in src and "plain msg 1" in src
+    assert "_RATIO_GPT_MIN" in src
+    assert "_PROBE_FORGE" in src
+    assert "_PROBE_PLAIN" in src
+
+    # start-only probe: no per-candidate probing loop, no latency-based self-size trim.
+    assert "_EST_LATENCY_S" not in src
+    assert src.count("env.interact") == 1  # exactly the one start-probe call site
+
+
 def test_kaggle_gemma_parser_matches_grader_routing() -> None:
     """Local gemma parsing matches the grader's ``KaggleGemma4ToolCallParser``.
 
