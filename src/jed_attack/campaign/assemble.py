@@ -144,12 +144,19 @@ class AttackAlgorithm(AttackAlgorithmBase):
         # let gpt reason for thousands of tokens, cratering that column).
         pool = _FORGE
         try:
+            # Warm up FIRST: the one-time prefill of the huge tool-schema chat template +
+            # model/KV warmup lands on the first interact (~7x the warm cost). Timed
+            # first, it inflated forge_t and misread gpt as gemma -> shipped plain -> gpt
+            # reasoned thousands of tokens, cratering that column. Absorb it here.
+            _timed(env, _PROBE_FORGE, hops)
             fs, ps = [], []
             for _ in range(_PROBE_REPS):
                 fs.append(_timed(env, _PROBE_FORGE, hops))
                 ps.append(_timed(env, _PROBE_PLAIN, hops))
-            forge_t = sorted(fs)[len(fs) // 2]
-            plain_t = sorted(ps)[len(ps) // 2]
+            # MIN, not median-as-max: the fastest sample is the least warmup/noise
+            # contaminated, and the classification wants the models' true relative speed.
+            forge_t = min(fs)
+            plain_t = min(ps)
             # gpt: plain >> forge (reasons on plain) -> ratio high -> keep forge.
             # gemma: plain ~ forge -> ratio ~1 -> ship the leaner plain shape.
             if forge_t > 0 and (plain_t / forge_t) < _RATIO_GPT_MIN:
