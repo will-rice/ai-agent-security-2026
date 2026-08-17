@@ -311,10 +311,20 @@ def _shape_elites(
             }
             fires = {model: gate_severity[model] > 0.0 for model in config.MODELS}
             # Throughput is TOKEN-based (replay time = one forward pass per token); the
-            # gen_char bucket stays char-based -- only a MAP-Elites diversity axis.
+            # gen_char bucket stays char-based -- only a MAP-Elites diversity axis. The
+            # gateway prefills the shape's input on every replay too, so fold the
+            # input's token cost into throughput's denominator -- but only on the
+            # firing branch (a non-firing model must stay pinned to inf -> 0.0
+            # regardless of input length).
+            input_tokens = {
+                model: len(message.text) / config.CHARS_PER_TOKEN[model]
+                for model in config.MODELS
+            }
             throughputs = {
                 model: throughput(
-                    gen_tokens[model] if fires[model] else float("inf"), model
+                    gen_tokens[model] if fires[model] else float("inf"),
+                    model,
+                    input_tokens=input_tokens[model] if fires[model] else 0.0,
                 )
                 for model in config.MODELS
             }

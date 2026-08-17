@@ -433,30 +433,45 @@ def _firing_templates(
     return out
 
 
-def throughput(gen_tokens: float, model: str) -> float:
-    """Per-model leanness: 1 / (gen_tokens + FIXED_TOKENS[model]), 0 if non-firing.
+def throughput(gen_tokens: float, model: str, input_tokens: float = 0.0) -> float:
+    """Per-model leanness: 1 / (input_tokens*WEIGHT + gen_tokens + FIXED_TOKENS[model]).
 
-    Higher throughput = fewer generated tokens = more candidates fit the budget (replay
-    time is one forward pass per token). A non-firing shape has infinite cost -> 0.
+    Higher throughput = fewer generated tokens (and less input) = more candidates fit
+    the budget (replay time is one forward pass per generated token, PLUS the gateway's
+    prefill of the input message each replay). A non-firing shape has infinite gen cost
+    -> 0, checked before the input term so a non-firing shape is 0 regardless of input.
+    ``input_tokens`` defaults to 0 -- callers that don't pass it get the old behavior.
     """
     if gen_tokens == float("inf"):
         return 0.0
-    return 1.0 / (gen_tokens + config.FIXED_TOKENS[model])
+    return 1.0 / (
+        config.INPUT_PREFILL_WEIGHT * input_tokens
+        + gen_tokens
+        + config.FIXED_TOKENS[model]
+    )
 
 
-def board_density(severity: float, gen_tokens: float, model: str) -> float:
+def board_density(
+    severity: float, gen_tokens: float, model: str, input_tokens: float = 0.0
+) -> float:
     """Per-model board value-per-TOKEN: the LB board a shape earns per token of budget.
 
     Mirrors _firing_templates' per-candidate board ((severity + NOVELTY_PER_CELL) / 200)
-    over its per-candidate cost (gen_tokens + FIXED_TOKENS[model]) -- tokens because
-    replay time scales with forward passes. ship_set ranks by it. 0 for non-firing.
+    over its per-candidate cost (input_tokens*WEIGHT + gen_tokens + FIXED_TOKENS[model])
+    -- tokens because replay time scales with forward passes, and the input term charges
+    prefill at its cheaper relative rate. ship_set ranks by it. 0 for non-firing.
+    ``input_tokens`` defaults to 0 -- callers that don't pass it get the old behavior.
     """
     if severity <= 0.0:
         return 0.0
     return (
         (severity + config.NOVELTY_PER_CELL)
         / 200.0
-        / (gen_tokens + config.FIXED_TOKENS[model])
+        / (
+            config.INPUT_PREFILL_WEIGHT * input_tokens
+            + gen_tokens
+            + config.FIXED_TOKENS[model]
+        )
     )
 
 

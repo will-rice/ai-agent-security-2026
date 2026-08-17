@@ -283,6 +283,15 @@ FILL_BUDGET_TOKENS: dict[str, float] = {
     model: REPLAY_MARGIN_S / T4_RATE_S_PER_TOKEN[model] for model in MODELS
 }
 
+# Per-token cost of INPUT prefill relative to a GENERATED token. The gateway prefills
+# each shape's user message on every replay, so a longer input is real replay cost too
+# -- but prefill is cheaper than generation (it runs in parallel over the whole prompt,
+# one forward pass for many tokens, vs one forward pass PER generated token), so this is
+# < 1. A calibration knob, not a measured constant: start conservative. The Pareto
+# self-corrects if it's wrong -- dropping a needed forge tail to save input would
+# explode gen_tokens, crater throughput, and lose on the output axis anyway.
+INPUT_PREFILL_WEIGHT = 0.2
+
 # The single gate guardrail the optimizer scores + reads its objective from. "rules"
 # (aicomp_sdk guardrail_rules) is the data-inspecting private proxy: EXFIL scores 0
 # (denied), CONFUSED_DEPUTY survives. Public ("optimal") is abandoned; scoring one

@@ -8577,6 +8577,18 @@ def test_throughput_from_gen_chars() -> None:
     assert throughput(float("inf"), "gpt_oss") == 0.0  # non-firing dominated
 
 
+def test_throughput_charges_input_prefill_cost() -> None:
+    """Longer input lowers throughput; omitting input_tokens keeps the old value."""
+    from jed_attack.campaign.submission_score import throughput
+
+    # input adds cost -> a shape with a longer input message throughputs lower.
+    assert throughput(30.0, "gemma_4", input_tokens=10) < throughput(
+        30.0, "gemma_4", input_tokens=0
+    )
+    # backward compat: no input_tokens arg == input_tokens=0 == the old formula.
+    assert throughput(30.0, "gemma_4", input_tokens=0) == throughput(30.0, "gemma_4")
+
+
 def test_archive_dominance_and_frontier() -> None:
     """Pareto dominance over per-model throughputs, and a cross-cell global frontier."""
     from jed_attack.campaign import archive as ar
@@ -9007,6 +9019,84 @@ def test_board_density_rewards_severity_and_leanness() -> None:
         / (30.0 + config.FIXED_TOKENS["gpt_oss"])
     )
     assert lean_hi == exp
+
+
+def test_model_density_is_the_direct_throughput_identity() -> None:
+    """model_density == (sev + NOVELTY_PER_CELL)/200 * throughput -- no recovery.
+
+    Also checks it matches the OLD recovery-based value (1/t - FIXED, then
+    board_density) when throughput was computed with input_tokens=0 -- the identity
+    change is exact at zero input cost, so pre-change callers stay unaffected.
+    """
+    from jed_attack.campaign import archive as ar
+    from jed_attack.campaign import config
+    from jed_attack.campaign.submission_score import board_density, throughput
+
+    t = throughput(30.0, "gpt_oss")  # input_tokens=0 -> old formula
+    elite = ar.Elite(
+        "t",
+        "exfil",
+        {"gpt_oss": t, "gemma_4": 0.0},
+        {"gpt_oss": 16.0, "gemma_4": 0.0},
+        "",
+        "forge",
+        5,
+    )
+    direct = (16.0 + config.NOVELTY_PER_CELL) / 200.0 * t
+    assert ar.model_density(elite, "gpt_oss") == pytest.approx(direct)
+    old_recovery = board_density(
+        16.0, 1.0 / t - config.FIXED_TOKENS["gpt_oss"], "gpt_oss"
+    )
+    assert ar.model_density(elite, "gpt_oss") == pytest.approx(old_recovery)
+
+
+def test_frontier_prefers_shorter_input() -> None:
+    """Same severity, but the elite built from a shorter input has higher density.
+
+    Simulates two identically-severe shapes where one was authored with a shorter
+    input message on gemma_4 (folded into throughput per the INPUT_PREFILL_WEIGHT
+    identity, so a shorter input yields a strictly higher stored gemma_4 throughput).
+    A lower gpt_oss throughput on the SHORT elite keeps the pair a genuine Pareto
+    tradeoff (both survive on the frontier), isolating the input-cost effect to the
+    gemma_4 axis, where it must rank higher by model_density and ship first overall.
+    """
+    from jed_attack.campaign import archive as ar
+    from jed_attack.campaign.submission_score import throughput
+
+    sev = {"gpt_oss": 16.0, "gemma_4": 16.0}
+    long_input_gemma_t = throughput(30.0, "gemma_4", input_tokens=40.0)
+    short_input_gemma_t = throughput(30.0, "gemma_4", input_tokens=5.0)
+    assert short_input_gemma_t > long_input_gemma_t
+
+    long_input = ar.Elite(
+        "LONG",
+        "exfil",
+        {"gpt_oss": 0.02, "gemma_4": long_input_gemma_t},
+        sev,
+        "",
+        "forge",
+        5,
+    )
+    short_input = ar.Elite(
+        "SHORT",
+        "exfil",
+        {"gpt_oss": 0.017, "gemma_4": short_input_gemma_t},
+        sev,
+        "",
+        "forge",
+        6,
+    )
+    assert ar.model_density(short_input, "gemma_4") > ar.model_density(
+        long_input, "gemma_4"
+    )
+    assert ar.elite_board_density(short_input) > ar.elite_board_density(long_input)
+
+    arch = ar.Archive()
+    arch.insert(long_input)
+    arch.insert(short_input)
+    ship = arch.ship_set()
+    assert {e.text for e in ship} == {"LONG", "SHORT"}  # non-dominated tradeoff pair
+    assert ship[0].text == "SHORT"  # higher board-density (shorter input) ships first
 
 
 # --- Optimizer-authored URL scheme (Approach B) ----------------------------------
