@@ -24,6 +24,7 @@ from jed_attack.campaign.judge_policy import (
     compare_candidates,
 )
 from jed_attack.campaign.submission import MessageType, Submission
+from jed_attack.campaign.submission_score import board_density
 
 _log = logging.getLogger(__name__)
 
@@ -215,27 +216,46 @@ def _archive_path(board_path: Path) -> Path:
     return board_path.with_name(board_path.stem + ".archive.jsonl")
 
 
+def _model_density(elite: archive.Elite, model: str) -> float:
+    """One model's board-density for ``elite`` (0 if it doesn't fire there).
+
+    Recovers ``gen_tokens`` from the cached per-model throughput (the exact inverse of
+    :func:`submission_score.throughput`) and scores ``board_density`` -- the same
+    recovery :func:`archive.elite_board_density` does, but for ONE model so a pool can
+    be ranked by its OWN victim's density.
+    """
+    t = elite.throughput.get(model, 0.0)
+    if t <= 0.0:
+        return 0.0
+    gen_tokens = 1.0 / t - config.FIXED_TOKENS[model]
+    return board_density(elite.severity.get(model, 0.0), gen_tokens, model)
+
+
 def _frontier_map(arch: archive.Archive) -> dict[str, list[list[str]]]:
     """Per-model filled candidate chains for the archive's Pareto ship-set.
 
-    The archive is already per-model (``Elite.throughput``/``severity`` dicts keyed by
-    ``config.MODELS`` -- see the archive module docstring): an elite ships into a
-    model's pool only when it actually fires there (``throughput[model] > 0``), so a
-    gpt-only elite never wastes gemma's replay budget and vice versa. Feeds
-    :func:`assemble.build_permodel` via :func:`_ship_pools`.
+    Ranks and caps EACH pool by its OWN victim's board-density: a global summed-density
+    truncation (the old :meth:`Archive.ship_set`) let the denser model monopolize every
+    ``ARCHIVE_FRONTIER_CAP`` slot -- gemma-plain shapes are uniformly denser than
+    gpt-forge, so the top-N were 100% gemma and gpt shipped an EMPTY pool (gpt column
+    scored 0). Filtering per model here (``throughput[model] > 0``) keeps a gpt-only
+    elite out of gemma's pool and vice versa, and the per-model cap guarantees BOTH
+    victims get their densest firing shapes. Feeds :func:`assemble.build_permodel` via
+    :func:`_ship_pools`.
     """
-    ship_set = arch.ship_set()
-    return {
-        model: _fill_chains(
-            [
-                (e.text, e.mtype, e.url_scheme)
-                for e in ship_set
-                if e.throughput.get(model, 0.0) > 0.0
-            ],
+    frontier = arch.frontier()
+    out: dict[str, list[list[str]]] = {}
+    for model in config.MODELS:
+        firing = sorted(
+            (e for e in frontier if e.throughput.get(model, 0.0) > 0.0),
+            key=lambda e: (_model_density(e, model), -e.input_chars),
+            reverse=True,
+        )[: config.ARCHIVE_FRONTIER_CAP]
+        out[model] = _fill_chains(
+            [(e.text, e.mtype, e.url_scheme) for e in firing],
             config.SHIP_CANDIDATE_CAP,
         )
-        for model in config.MODELS
-    }
+    return out
 
 
 def _severity_sum(entry: dict) -> float:

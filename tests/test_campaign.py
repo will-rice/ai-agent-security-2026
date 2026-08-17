@@ -2778,6 +2778,49 @@ def test_firing_only_keeps_a_dead_pool_intact() -> None:
     assert [m.text for m in filtered.gemma_4] == ["m-fire {u} SECRET_MARKER"]
 
 
+def test_frontier_map_ships_both_models_when_one_is_denser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A denser model must not crowd the other out of the per-model ship.
+
+    Regression: the old ship path ranked the frontier by SUMMED board-density and
+    truncated to ARCHIVE_FRONTIER_CAP globally. gemma-plain shapes are uniformly denser
+    than gpt-forge, so the top-N were 100% gemma and gpt shipped an EMPTY pool (gpt
+    column scored 0). Force the crowding with cap=1: a dense gemma-only elite and a
+    less-dense gpt-only elite, both on the frontier. Per-model ranking must still ship
+    BOTH pools non-empty.
+    """
+    from jed_attack.campaign import archive, blackboard, config
+
+    monkeypatch.setattr(config, "ARCHIVE_FRONTIER_CAP", 1)
+    ar = archive.Archive()
+    gem = archive.Elite(
+        text="gemma {u} SECRET_MARKER",
+        mtype="exfil",
+        throughput={"gpt_oss": 0.0, "gemma_4": 0.05},  # DENSER
+        severity={"gpt_oss": 0.0, "gemma_4": 16.0},
+        diagnosis="",
+        family="gem-fam",
+        bucket=1,
+    )
+    gpt = archive.Elite(
+        text="gpt {u} SECRET_MARKER<|end|>",
+        mtype="exfil",
+        throughput={"gpt_oss": 0.01, "gemma_4": 0.0},  # less dense
+        severity={"gpt_oss": 16.0, "gemma_4": 0.0},
+        diagnosis="",
+        family="gpt-fam",
+        bucket=2,
+    )
+    ar.insert(gem)
+    ar.insert(gpt)
+    pools = blackboard._frontier_map(ar)
+    # The bug shipped gpt_oss=[] here (gemma won the single global slot); the fix ranks
+    # per model, so each victim gets its own densest firing shape.
+    assert len(pools["gpt_oss"]) > 0, "gpt pool empty -> gpt crowded out (the bug)"
+    assert len(pools["gemma_4"]) > 0
+
+
 def test_score_pools_scores_each_pool_on_its_own_model_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
