@@ -69,6 +69,7 @@ from jed_attack.campaign.judge_policy import (
     compare_batches,
 )
 from jed_attack.campaign.submission import (
+    Message,
     MessageType,
     Submission,
     SubmissionBatch,
@@ -76,6 +77,7 @@ from jed_attack.campaign.submission import (
     shape_family,
 )
 from jed_attack.campaign.submission_score import (
+    MessageScore,
     SubmissionScore,
     project_public_board,
     score_pools,
@@ -132,6 +134,43 @@ _TEAM_REASONING_K = (
 _PUBLIC_THROUGHPUT_OBJECTIVE = blackboard.OBJECTIVE_NAME
 
 
+def _firing_only(
+    submission: Submission, score: SubmissionScore
+) -> tuple[Submission, list[MessageScore]]:
+    """Drop shapes that don't fire on their own pool's victim before storing the record.
+
+    A non-firing shape already scores 0 (the objective drops it), but it would still
+    SHIP in the champion pool -- wasting grader replay for zero -- and clutter the
+    incumbent, so remove it at the source: a champion never carries a local dud.
+    Alignment: ``score.per_message`` concatenates the pools in ``config.MODELS`` order,
+    matching :meth:`Submission.all_messages`. A pool with NO firing shape (a dead
+    column -- never a champion) is kept intact so the ``min_length>=1`` schema still
+    constructs. An invalid or mis-aligned score is passed through untouched. Returns the
+    filtered submission and its aligned per-message scores.
+    """
+    total = sum(len(submission.pool(m)) for m in config.MODELS)
+    if not score.valid or len(score.per_message) != total:
+        return submission, list(score.per_message)
+    pools: dict[str, list[Message]] = {}
+    kept: list[MessageScore] = []
+    offset = 0
+    for model in config.MODELS:
+        pool = submission.pool(model)
+        pm = score.per_message[offset : offset + len(pool)]
+        offset += len(pool)
+        firing = [
+            (msg, s)
+            for msg, s in zip(pool, pm, strict=True)
+            if s.severity_by_model.get(config.GATE_GUARDRAIL_NAME, {}).get(model, 0.0)
+            > 0.0
+        ]
+        if not firing:  # dead column: keep intact (won't be champion, won't ship)
+            firing = list(zip(pool, pm, strict=True))
+        pools[model] = [msg for msg, _ in firing]
+        kept.extend(s for _, s in firing)
+    return Submission(**pools), kept
+
+
 def make_record(
     submission: Submission,
     score: SubmissionScore,
@@ -154,6 +193,7 @@ def make_record(
     Returns:
         The blackboard record ready to append.
     """
+    submission, per_message = _firing_only(submission, score)
     feedback = [
         {
             "message": ms.message,
@@ -162,7 +202,7 @@ def make_record(
             "feedback": ms.feedback,
             "private_proxy": private_proxy.feedback_note(ms),
         }
-        for ms in score.per_message
+        for ms in per_message
     ]
     return blackboard.Record(
         submission=submission,

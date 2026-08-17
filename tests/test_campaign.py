@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from jed_attack.campaign.judge import RobustnessRequest
     from jed_attack.campaign.judge_policy import CandidateObjective, JudgeAssessment
     from jed_attack.campaign.submission import Message, Submission
-    from jed_attack.campaign.submission_score import SubmissionScore
+    from jed_attack.campaign.submission_score import MessageScore, SubmissionScore
 
 
 def _exfil(text: str, hops: int, url_scheme: str = "http://{h}.co") -> "Message":
@@ -2687,6 +2687,95 @@ def test_objective_is_char_projection_mean() -> None:
     assert op._score_public_raw_per_gen_char(score) == pytest.approx(expected)
     # A both-model deputy shape keeps both columns alive, so the mean is positive.
     assert expected > 0.0
+
+
+def _fire_stub(text: str, model: str, severity: float) -> "MessageScore":
+    """A per-message score that fires on ``model`` iff ``severity > 0``."""
+    from jed_attack.campaign import config
+    from jed_attack.campaign.submission import MessageType
+    from jed_attack.campaign.submission_score import MessageScore
+
+    return MessageScore(
+        message=text,
+        type=MessageType.EXFIL,
+        severity={},
+        severity_by_model={
+            config.GATE_GUARDRAIL_NAME: ({model: severity} if severity else {})
+        },
+        trace={},
+        feedback="",
+        gen_chars_by_model={model: 100.0},
+        turns_by_model={model: 1.0},
+    )
+
+
+def test_firing_only_drops_local_duds_per_pool() -> None:
+    """_firing_only keeps only shapes that fire on their OWN pool's victim."""
+    from jed_attack.campaign import optimize_prompts as op
+    from jed_attack.campaign.submission import Submission
+    from jed_attack.campaign.submission_score import SubmissionScore
+
+    sub = Submission(
+        gpt_oss=[
+            _exfil("g-fire {u} SECRET_MARKER", 1),
+            _exfil("g-dud {u} SECRET_MARKER", 1),
+        ],
+        gemma_4=[
+            _exfil("m-fire {u} SECRET_MARKER", 1),
+            _exfil("m-dud {u} SECRET_MARKER", 1),
+        ],
+    )
+    # per_message = the two pools concatenated in config.MODELS order (gpt then gemma).
+    score = SubmissionScore(
+        public=0.0,
+        total_hops=4,
+        valid=True,
+        fires=True,
+        per_message=[
+            _fire_stub("g-fire {u} SECRET_MARKER", "gpt_oss", 16.0),
+            _fire_stub("g-dud {u} SECRET_MARKER", "gpt_oss", 0.0),
+            _fire_stub("m-fire {u} SECRET_MARKER", "gemma_4", 16.0),
+            _fire_stub("m-dud {u} SECRET_MARKER", "gemma_4", 0.0),
+        ],
+    )
+    filtered, per_message = op._firing_only(sub, score)
+    assert [m.text for m in filtered.gpt_oss] == ["g-fire {u} SECRET_MARKER"]
+    assert [m.text for m in filtered.gemma_4] == ["m-fire {u} SECRET_MARKER"]
+    # the aligned per-message list is filtered in lockstep (one firing row per pool).
+    assert [ms.message for ms in per_message] == [
+        "g-fire {u} SECRET_MARKER",
+        "m-fire {u} SECRET_MARKER",
+    ]
+
+
+def test_firing_only_keeps_a_dead_pool_intact() -> None:
+    """A pool with NO firing shape is kept whole -- min_length>=1 still constructs."""
+    from jed_attack.campaign import optimize_prompts as op
+    from jed_attack.campaign.submission import Submission
+    from jed_attack.campaign.submission_score import SubmissionScore
+
+    sub = Submission(
+        gpt_oss=[
+            _exfil("g-dud1 {u} SECRET_MARKER", 1),
+            _exfil("g-dud2 {u} SECRET_MARKER", 1),
+        ],
+        gemma_4=[_exfil("m-fire {u} SECRET_MARKER", 1)],
+    )
+    score = SubmissionScore(
+        public=0.0,
+        total_hops=3,
+        valid=True,
+        fires=True,
+        per_message=[
+            _fire_stub("g-dud1 {u} SECRET_MARKER", "gpt_oss", 0.0),
+            _fire_stub("g-dud2 {u} SECRET_MARKER", "gpt_oss", 0.0),
+            _fire_stub("m-fire {u} SECRET_MARKER", "gemma_4", 16.0),
+        ],
+    )
+    filtered, _ = op._firing_only(sub, score)
+    # the all-dead gpt_oss pool stays intact (not emptied); gemma keeps its firer.
+    assert len(filtered.gpt_oss) == 2
+    assert [m.text for m in filtered.gemma_4] == ["m-fire {u} SECRET_MARKER"]
 
 
 def test_score_pools_scores_each_pool_on_its_own_model_only(
