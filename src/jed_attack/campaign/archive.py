@@ -8,7 +8,9 @@ Selection is Pareto over the raw per-model throughput/severity, never a scalar.
 """
 
 import json
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
+from itertools import zip_longest
 from pathlib import Path
 
 from jed_attack.campaign import config
@@ -80,6 +82,61 @@ def elite_board_density(elite: Elite) -> float:
     return total
 
 
+def model_density(elite: Elite, model: str) -> float:
+    """One model's board-density for ``elite`` (0.0 if it doesn't fire on ``model``).
+
+    Recovers ``gen_tokens`` from the cached per-model throughput (the exact inverse of
+    ``submission_score.throughput``) and scores ``board_density`` for just that model --
+    the same recovery :func:`elite_board_density` does, but per-model so a pool/rank/
+    select site can judge a shape by its OWN victim's density instead of the summed
+    cross-model total (which lets the uniformly-denser model's shapes crowd the other
+    out of every rank/select site -- the OPRO table, archive parents, and the shipped
+    frontier all rank per-model for this reason).
+    """
+    t = elite.throughput.get(model, 0.0)
+    if t <= 0.0:
+        return 0.0
+    gen_tokens = 1.0 / t - config.FIXED_TOKENS[model]
+    return board_density(elite.severity.get(model, 0.0), gen_tokens, model)
+
+
+def rank_by_model_density(elites: Iterable[Elite]) -> list[Elite]:
+    """Interleave ``elites`` per-model (round-robin) so neither model crowds out.
+
+    Each model in :data:`config.MODELS` ranks its OWN firing elites
+    (``throughput[model] > 0``) by :func:`model_density`, best first; the per-model
+    rankings are then interleaved round-robin (model 0's best, model 1's best, model
+    0's 2nd-best, ...), deduplicated by identity so a shape that fires on BOTH models is
+    emitted once, at its first (best) slot. A plain sort by *summed* board-density lets
+    a uniformly-denser model (historically gemma-plain vs gpt-forge) monopolize every
+    top-N slot; this is the shared fix used by the OPRO table and archive parents.
+
+    Args:
+        elites: The candidate elites (typically an archive frontier).
+
+    Returns:
+        The elites in interleaved best-first order; every input elite that fires on at
+        least one model appears exactly once.
+    """
+    per_model = [
+        sorted(
+            (e for e in elites if e.throughput.get(m, 0.0) > 0.0),
+            key=lambda e, m=m: model_density(e, m),
+            reverse=True,
+        )
+        for m in config.MODELS
+    ]
+    seen: set[int] = set()
+    out: list[Elite] = []
+    for group in zip_longest(*per_model):
+        for e in group:
+            if e is None or id(e) in seen:
+                continue
+            seen.add(id(e))
+            out.append(e)
+    return out
+
+
 class Archive:
     """A behavioral grid of Pareto-non-dominated shape elites."""
 
@@ -121,19 +178,37 @@ class Archive:
         )[: config.ARCHIVE_FRONTIER_CAP]
 
     def parents(self, k: int) -> list[Elite]:
-        """Sample k parents biased to the frontier + under-filled cells.
+        """Up to k parents: per-model-balanced frontier specialists + exploration fill.
+
+        Interleaves each model's frontier specialists by their OWN board-density
+        (:func:`rank_by_model_density`), so a uniformly-denser model's shapes cannot
+        crowd the other model's specialists out of a small ``k`` (the bug a fixed
+        prefix ``front[:k]`` had -- gemma-heavy frontiers shipped zero gpt parents).
+        If that interleaved list is still short of ``k``, tops up from the
+        least-filled archive cells -- MAP-Elites' diversity/exploration material,
+        wired in here (it was dead code on the normal frontier-full path before),
+        skipping any shape already picked.
 
         Args:
             k: Number of parents to return.
 
         Returns:
-            Up to k elites, preferring the frontier and falling back to elites
-            from the least-filled cells.
+            Up to k elites: per-model-balanced frontier specialists first, then
+            under-filled-cell exploration material.
         """
-        front = self.frontier()
-        # bias to the frontier; deterministic (no RNG in-loop) — rotate by cell count.
+        picks = rank_by_model_density(self.frontier())[:k]
+        if len(picks) >= k:
+            return picks
+        seen = {id(e) for e in picks}
         under = sorted(self._cells.items(), key=lambda kv: len(kv[1]))
-        picks = front[:k] or [x for _, cell in under for x in cell][:k]
+        for _, cell in under:
+            for e in cell:
+                if id(e) in seen:
+                    continue
+                picks.append(e)
+                seen.add(id(e))
+                if len(picks) >= k:
+                    return picks
         return picks
 
     def to_jsonl(self, path: Path) -> None:

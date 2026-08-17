@@ -2821,6 +2821,94 @@ def test_frontier_map_ships_both_models_when_one_is_denser(
     assert len(pools["gemma_4"]) > 0
 
 
+def test_archive_parents_includes_a_gpt_specialist_from_a_gemma_heavy_frontier() -> (
+    None
+):
+    """parents(k) must not be 100% gemma when gemma outnumbers gpt on the frontier.
+
+    Regression: the old parents() returned a fixed frontier-ORDER prefix
+    (``front[:k]``); with more, denser gemma elites on the frontier than a small k,
+    every gpt specialist fell past the prefix and parents() never sampled one.
+    Per-model interleaving must surface at least one gpt specialist.
+    """
+    from jed_attack.campaign import archive as ar
+
+    arch = ar.Archive()
+    for i in range(25):
+        arch.insert(
+            ar.Elite(
+                f"gemma-{i}",
+                "exfil",
+                {"gpt_oss": 0.0, "gemma_4": 0.01 + i * 0.001},
+                {"gpt_oss": 0.0, "gemma_4": 16.0 - i * 0.01},
+                "",
+                f"gem-fam-{i}",
+                i,
+            )
+        )
+    arch.insert(
+        ar.Elite(
+            "gpt-only",
+            "exfil",
+            {"gpt_oss": 0.002, "gemma_4": 0.0},
+            {"gpt_oss": 16.0, "gemma_4": 0.0},
+            "",
+            "gpt-fam",
+            999,
+        )
+    )
+    assert len(arch.frontier()) == 26  # gemma elites trade off; all 25 + gpt survive
+    parents = arch.parents(4)
+    assert any(p.throughput["gpt_oss"] > 0 for p in parents), "no gpt parent sampled"
+
+
+def test_archive_parents_tops_up_from_under_filled_cells_when_frontier_is_short() -> (
+    None
+):
+    """parents(k) tops up from under-filled cells when the frontier alone is short.
+
+    Regression: the old ``front[:k] or [...cells...]`` fallback is DEAD CODE whenever
+    the frontier is non-empty -- ``front[:k]`` is a non-empty (truthy) list even when
+    it has FEWER than k elements, so the ``or`` never triggers and the under-filled
+    cell material (MAP-Elites' diversity/exploration stock) is never sampled. Force it:
+    a globally-dominated elite (``dud``) resident in its OWN under-filled cell, and a
+    frontier of just one specialist (``champ``) -- with k=2 the frontier alone can't
+    reach k, so the fix must top up with ``dud`` from its cell (and must not double
+    count ``champ``, which the per-model interleave already picked).
+    """
+    from jed_attack.campaign import archive as ar
+
+    champ = ar.Elite(
+        "champ",
+        "exfil",
+        {"gpt_oss": 0.01, "gemma_4": 0.0},
+        {"gpt_oss": 16.0, "gemma_4": 0.0},
+        "",
+        "champ-fam",
+        1,
+    )
+    dud = ar.Elite(
+        "dud",
+        "exfil",
+        {"gpt_oss": 0.005, "gemma_4": 0.0},  # dominated by champ on every axis
+        {"gpt_oss": 10.0, "gemma_4": 0.0},
+        "",
+        "dud-fam",
+        2,
+    )
+    arch = ar.Archive()
+    arch.insert(champ)
+    arch.insert(dud)
+    assert ar.dominates(champ, dud)
+    assert [e.text for e in arch.frontier()] == ["champ"]  # dud is globally dominated
+
+    parents = arch.parents(2)
+    texts = [p.text for p in parents]
+    assert "dud" in texts, "under-filled-cell top-up never ran"
+    assert texts.count("champ") == 1  # no double-count between frontier + top-up
+    assert len(parents) == 2
+
+
 def test_score_pools_scores_each_pool_on_its_own_model_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3197,6 +3285,37 @@ def test_make_record_persists_private_proxy_feedback() -> None:
     assert "private_proxy:" in record.feedback[0]["private_proxy"]
     assert "encoded_exfil" in record.feedback[0]["private_proxy"]
     assert any("private_proxy:" in row for row in rows)
+
+
+def test_make_record_tags_each_feedback_entry_with_its_victim_model() -> None:
+    """Feedback entries carry the VICTIM model, not the proposer lane.
+
+    Regression: pre-fix, feedback dicts carried no per-entry model at all, so
+    :meth:`Blackboard.top_messages` fell back to the PROPOSER lane (``record.model``)
+    for every entry -- victim-blind. ``submission.all_messages()`` yields
+    ``(model, Message)`` in ``config.MODELS`` order, matching ``score.per_message``
+    in the normal (aligned) path -- each entry's "model" must be its OWN victim.
+    """
+    from jed_attack.campaign import optimize_prompts as op
+    from jed_attack.campaign.submission import Submission
+    from jed_attack.campaign.submission_score import SubmissionScore
+
+    sub = Submission(
+        gpt_oss=[_exfil("g-fire {u} SECRET_MARKER", 1)],
+        gemma_4=[_exfil("m-fire {u} SECRET_MARKER", 1)],
+    )
+    score = SubmissionScore(
+        public=0.09,
+        total_hops=2,
+        valid=True,
+        fires=True,
+        per_message=[
+            _fire_stub("g-fire {u} SECRET_MARKER", "gpt_oss", 16.0),
+            _fire_stub("m-fire {u} SECRET_MARKER", "gemma_4", 16.0),
+        ],
+    )
+    record = op.make_record(sub, score, "reasoning", "proposer-x", 0)
+    assert [entry["model"] for entry in record.feedback] == ["gpt_oss", "gemma_4"]
 
 
 def test_submission_prompt_promotes_deputy_to_active_slots() -> None:
@@ -5138,6 +5257,94 @@ def test_blackboard_append_persists_selects_and_ships(
     # attack.py written (last write = the best at that point)
     assert (out / "attack.py").exists()
     assert board.recent_reasoning(k=1)[0][0] == "deepseek-v4-flash"
+
+
+def test_top_messages_balances_across_victim_models() -> None:
+    """top_messages must not return all-one-victim once entries are victim-tagged.
+
+    Regression: pre-fix, every feedback entry was tagged by the PROPOSER lane
+    (``record.model``), never the victim it actually fired on, and ranked in one
+    GLOBAL top-k by severity; with more, more-severe gpt_oss entries than k, every
+    gemma_4 entry fell out of the top-k (and the returned "model" was the proposer
+    lane, not the victim). Balanced per-victim interleaving must surface BOTH
+    victims' best messages, correctly labelled.
+    """
+    from jed_attack.campaign import blackboard as bb
+    from jed_attack.campaign.submission import Message, MessageType, Submission
+
+    filler = Message(type=MessageType.EXFIL, text="filler {u} SECRET_MARKER", hops=1)
+
+    def record(feedback: list[dict]) -> bb.Record:
+        return bb.Record(
+            submission=Submission(gpt_oss=[filler], gemma_4=[filler]),
+            public=0.0,
+            feedback=feedback,
+            model="proposer-x",  # same proposer lane authored both -- victim must
+            worker=0,  # still come from the entry's own "model" tag, not this.
+            ts=1.0,
+        )
+
+    gpt_feedback = [
+        {
+            "message": f"gpt-{i}",
+            "type": "exfil",
+            "severity": {"optimal": 20.0 - i},
+            "feedback": "",
+            "model": "gpt_oss",
+        }
+        for i in range(10)  # ten MORE SEVERE gpt_oss entries than k
+    ]
+    gemma_feedback = [
+        {
+            "message": "gemma-0",
+            "type": "exfil",
+            "severity": {"optimal": 5.0},
+            "feedback": "",
+            "model": "gemma_4",
+        }
+    ]
+    board = bb.Blackboard(
+        Path("unused.jsonl"), [record(gpt_feedback), record(gemma_feedback)]
+    )
+    top = board.top_messages(MessageType.EXFIL, k=3)
+    victims = {model for _, model, _ in top}
+    assert victims == {"gpt_oss", "gemma_4"}, f"not balanced across victims: {victims}"
+
+
+def test_top_messages_explicit_empty_tag_is_not_reattributed_to_proposer_lane() -> None:
+    """A PRESENT-but-"" victim tag must NOT fall through to record.model.
+
+    Regression: ``entry.get("model") or record.model or ""`` cannot distinguish a
+    PRESENT-but-empty tag (make_record's deliberate "no reliable victim" marker, from
+    _firing_only's mismatched-length path) from an ABSENT key (a genuine legacy row);
+    both fell back to record.model. providers.py has proposer lanes literally named
+    "gpt_oss"/"gemma_4" -- an unattributed ("") entry authored by such a lane would
+    then be silently misattributed into that VICTIM's balanced bucket.
+    """
+    from jed_attack.campaign import blackboard as bb
+    from jed_attack.campaign.submission import Message, MessageType, Submission
+
+    filler = Message(type=MessageType.EXFIL, text="filler {u} SECRET_MARKER", hops=1)
+    record = bb.Record(
+        submission=Submission(gpt_oss=[filler], gemma_4=[filler]),
+        public=0.0,
+        feedback=[
+            {
+                "message": "unattributed-msg",
+                "type": "exfil",
+                "severity": {"optimal": 9.0},
+                "feedback": "",
+                "model": "",  # explicit "no reliable victim" marker
+            }
+        ],
+        model="gpt_oss",  # a proposer lane literally named like a victim
+        worker=0,
+        ts=1.0,
+    )
+    board = bb.Blackboard(Path("unused.jsonl"), [record])
+    top = board.top_messages(MessageType.EXFIL, k=5)
+    gpt_texts = {text for text, model, _ in top if model == "gpt_oss"}
+    assert "unattributed-msg" not in gpt_texts
 
 
 def test_blackboard_ships_champion_as_filled_json(tmp_path: Path) -> None:
@@ -8502,6 +8709,28 @@ def test_ship_set_ranks_by_board_density() -> None:
     assert ship[0].text == "STRONG"  # higher board-density ships first
 
 
+def test_model_density_is_zero_for_a_model_the_elite_never_fires_on() -> None:
+    """model_density reads ONE model's own density; the other model's is 0.
+
+    A gpt-only specialist (gemma throughput 0.0, never fired there) must score 0 on
+    "gemma_4" and a real positive density on "gpt_oss" -- the per-model split that lets
+    a pool be ranked by its OWN victim instead of a summed cross-model total.
+    """
+    from jed_attack.campaign import archive as ar
+
+    gpt_only = ar.Elite(
+        "gpt {u} SECRET_MARKER<|end|>",
+        "exfil",
+        {"gpt_oss": 0.005, "gemma_4": 0.0},
+        {"gpt_oss": 16.0, "gemma_4": 0.0},
+        "",
+        "forge",
+        5,
+    )
+    assert ar.model_density(gpt_only, "gpt_oss") > 0
+    assert ar.model_density(gpt_only, "gemma_4") == 0
+
+
 def test_render_opro_table_sorted_no_scalar() -> None:
     """OPRO table sorts best-first and shows BOTH per-model columns, not one scalar."""
     from jed_attack.campaign import archive as ar
@@ -8546,6 +8775,50 @@ def test_render_opro_table_shows_severity_alongside_throughput() -> None:
     # exactly one thru/sev pair per model -- no extra scalar objective column
     assert table.count("thru=") == 2
     assert table.count("sev=") == 2
+
+
+def test_render_opro_table_interleaves_per_model_so_gpt_isnt_crowded_out() -> None:
+    """25 dense gemma specialists must not crowd every gpt row out of the table.
+
+    Regression: the old table ranked by SUMMED board-density and truncated globally
+    to OPRO_TABLE_ROWS; gemma-plain shapes are uniformly denser than gpt-forge, so
+    with more gemma elites than OPRO_TABLE_ROWS the table showed ZERO gpt rows even
+    though gpt specialists exist on the frontier.
+    """
+    from jed_attack.campaign import archive as ar
+    from jed_attack.campaign import config
+    from jed_attack.campaign import optimize_prompts as op
+
+    rows_cap = (
+        config.OPRO_TABLE_ROWS
+    )  # default cap; confirms crowding is possible below
+    gemma_elites = [
+        ar.Elite(
+            f"gemma-{i} {{u}} SECRET_MARKER",
+            "exfil",
+            {"gpt_oss": 0.0, "gemma_4": 0.05 - i * 0.0001},
+            {"gpt_oss": 0.0, "gemma_4": 16.0},
+            "",
+            f"gem-fam-{i}",
+            i,
+        )
+        for i in range(25)
+    ]
+    gpt_elites = [
+        ar.Elite(
+            f"gpt-{i} {{u}} SECRET_MARKER<|end|>",
+            "exfil",
+            {"gpt_oss": 0.01 - i * 0.0001, "gemma_4": 0.0},
+            {"gpt_oss": 16.0, "gemma_4": 0.0},
+            "",
+            f"gpt-fam-{i}",
+            i + 100,
+        )
+        for i in range(10)
+    ]
+    assert len(gemma_elites) + len(gpt_elites) > rows_cap  # crowding possible
+    table = op._render_opro_table(gemma_elites + gpt_elites)
+    assert any(f"gpt-{i} " in table for i in range(10)), "no gpt row in the table"
 
 
 def test_render_parents_shows_severity_alongside_throughput() -> None:
@@ -8660,6 +8933,42 @@ def test_prose_markers_absent_from_schema_only_dump() -> None:
         "SEVERITY",
     ):
         assert marker not in schema_only
+
+
+def test_incumbent_objective_line_drops_coasting_language() -> None:
+    """The RENDERED incumbent objective line teaches both-pools-must-fire, not coasting.
+
+    Regression guard: the old wording ("a pool strong on its own victim is never
+    penalized for the other pool's weakness" / prompts.toml's "a weak column only
+    costs that pool's half of the mean") licensed neglecting a pool. Asserts on the
+    rendered text (not the source docstring/prose) so a future edit that silently
+    reintroduces coasting language is caught.
+    """
+    from jed_attack.campaign import blackboard as bb
+    from jed_attack.campaign import optimize_prompts as op
+    from jed_attack.campaign.submission import Message, MessageType, Submission
+
+    filler = Message(type=MessageType.EXFIL, text="filler {u} SECRET_MARKER", hops=1)
+    incumbent = bb.Record(
+        submission=Submission(gpt_oss=[filler], gemma_4=[filler]),
+        public=0.09,
+        feedback=[],
+        objective_name=op._PUBLIC_THROUGHPUT_OBJECTIVE,
+        ts=1.0,
+    )
+    rendered = op._render_incumbent(incumbent, [], {})
+    assert "HALVES" in rendered
+    assert "both pools must fire well" in rendered.lower()
+    assert "never penalized" not in rendered
+    assert "only costs half" not in rendered
+    assert "no longer share a ceiling" not in rendered
+
+    # The hot-reloaded prompts.toml template carries the same de-coasted framing.
+    template = op._load_prompts()["template"]
+    assert "HALVES" in template
+    assert "never penalized" not in template
+    assert "only costs" not in template
+    assert "no longer share a ceiling" not in template
 
 
 def test_render_parents_falls_back_when_diagnosis_missing() -> None:

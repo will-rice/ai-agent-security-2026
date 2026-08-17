@@ -12,6 +12,7 @@ import asyncio
 import functools
 import json
 import logging
+from itertools import zip_longest
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +25,6 @@ from jed_attack.campaign.judge_policy import (
     compare_candidates,
 )
 from jed_attack.campaign.submission import MessageType, Submission
-from jed_attack.campaign.submission_score import board_density
 
 _log = logging.getLogger(__name__)
 
@@ -216,39 +216,26 @@ def _archive_path(board_path: Path) -> Path:
     return board_path.with_name(board_path.stem + ".archive.jsonl")
 
 
-def _model_density(elite: archive.Elite, model: str) -> float:
-    """One model's board-density for ``elite`` (0 if it doesn't fire there).
-
-    Recovers ``gen_tokens`` from the cached per-model throughput (the exact inverse of
-    :func:`submission_score.throughput`) and scores ``board_density`` -- the same
-    recovery :func:`archive.elite_board_density` does, but for ONE model so a pool can
-    be ranked by its OWN victim's density.
-    """
-    t = elite.throughput.get(model, 0.0)
-    if t <= 0.0:
-        return 0.0
-    gen_tokens = 1.0 / t - config.FIXED_TOKENS[model]
-    return board_density(elite.severity.get(model, 0.0), gen_tokens, model)
-
-
 def _frontier_map(arch: archive.Archive) -> dict[str, list[list[str]]]:
     """Per-model filled candidate chains for the archive's Pareto ship-set.
 
-    Ranks and caps EACH pool by its OWN victim's board-density: a global summed-density
-    truncation (the old :meth:`Archive.ship_set`) let the denser model monopolize every
+    Ranks and caps EACH pool by its OWN victim's board-density
+    (:func:`archive.model_density`): a global summed-density truncation (the old
+    :meth:`Archive.ship_set`) let the denser model monopolize every
     ``ARCHIVE_FRONTIER_CAP`` slot -- gemma-plain shapes are uniformly denser than
     gpt-forge, so the top-N were 100% gemma and gpt shipped an EMPTY pool (gpt column
     scored 0). Filtering per model here (``throughput[model] > 0``) keeps a gpt-only
     elite out of gemma's pool and vice versa, and the per-model cap guarantees BOTH
-    victims get their densest firing shapes. Feeds :func:`assemble.build_permodel` via
-    :func:`_ship_pools`.
+    victims get their densest firing shapes. No ``input_chars`` tiebreak -- prefill
+    length is not a measured replay cost, only a hedge, so it never overrides density.
+    Feeds :func:`assemble.build_permodel` via :func:`_ship_pools`.
     """
     frontier = arch.frontier()
     out: dict[str, list[list[str]]] = {}
     for model in config.MODELS:
         firing = sorted(
             (e for e in frontier if e.throughput.get(model, 0.0) > 0.0),
-            key=lambda e: (_model_density(e, model), -e.input_chars),
+            key=lambda e: archive.model_density(e, model),
             reverse=True,
         )[: config.ARCHIVE_FRONTIER_CAP]
         out[model] = _fill_chains(
@@ -458,12 +445,32 @@ class Blackboard:
         return labels
 
     def top_messages(self, mtype: MessageType, k: int) -> list[tuple[str, str, float]]:
-        """Best-scoring individual messages of a shape: ``(text, model, severity)``.
+        """Best-scoring individual messages of a shape, balanced across victim models.
 
-        Ranked by severity-sum, deduped by text, best first. This is the cross-model
-        material a worker on one model learns from another's wins.
+        Each feedback entry's VICTIM model (its own ``"model"`` tag -- see
+        :func:`optimize_prompts.make_record`) buckets it into that victim's own
+        top-by-severity ranking, deduped by text within the bucket; the two known
+        victims' (:data:`~jed_attack.campaign.config.MODELS`) rankings are then
+        interleaved round-robin so neither victim's messages crowd the other out of a
+        small ``k`` -- a single global top-k by severity was victim-blind once one
+        victim's shapes were uniformly more severe or more numerous (and, before the
+        per-message tag existed, the entry was mislabeled with the PROPOSER lane
+        instead of the victim it actually fired on). PRESENT vs ABSENT matters: a
+        legacy row persisted before the ``"model"`` tag existed has no ``"model"`` key
+        at all and falls back to the record's proposer lane; an entry that carries an
+        EXPLICIT ``""`` (:func:`optimize_prompts.make_record`'s deliberate "no reliable
+        victim" marker for a mis-aligned score) is used VERBATIM, never silently
+        reattributed to ``record.model`` -- proposer lanes can be literally named
+        "gpt_oss"/"gemma_4" (see ``providers.py``), so falling an explicit "" through to
+        ``record.model`` could misattribute an unattributed entry into a real victim's
+        bucket. Either way, a victim outside ``config.MODELS`` (including "") lands in
+        one shared catch-all bucket appended after the known victims -- graceful, never
+        a crash.
         """
-        best_by_text: dict[str, tuple[str, float]] = {}
+        other = "_other"
+        buckets: dict[str, dict[str, tuple[str, float]]] = {
+            m: {} for m in (*config.MODELS, other)
+        }
         for record in self._records:
             for entry in record.feedback:
                 if entry.get("type") != mtype.value:
@@ -472,14 +479,27 @@ class Blackboard:
                 text = entry.get("message", "")
                 if sev <= 0 or not text:
                     continue
-                if text not in best_by_text or sev > best_by_text[text][1]:
-                    best_by_text[text] = (record.model, sev)
-        ranked = sorted(
-            ((t, m, s) for t, (m, s) in best_by_text.items()),
-            key=lambda x: x[2],
-            reverse=True,
-        )
-        return ranked[:k]
+                # Present-but-"" (make_record's explicit "unattributed" marker) must
+                # NOT fall through to record.model -- only an ABSENT key (a genuine
+                # legacy row) does.
+                victim = entry["model"] if "model" in entry else record.model
+                bucket = buckets[victim] if victim in buckets else buckets[other]
+                if text not in bucket or sev > bucket[text][1]:
+                    bucket[text] = (victim, sev)
+        ranked = [
+            sorted(buckets[m].items(), key=lambda kv: kv[1][1], reverse=True)
+            for m in (*config.MODELS, other)
+        ]
+        out: list[tuple[str, str, float]] = []
+        for group in zip_longest(*ranked):
+            for item in group:
+                if item is None:
+                    continue
+                text, (victim, sev) = item
+                out.append((text, victim, sev))
+                if len(out) >= k:
+                    return out
+        return out
 
     def recent_reasoning(self, k: int, chars: int = 800) -> list[tuple[str, str]]:
         """The most recent non-empty reasoning blobs: ``(model, excerpt)`` (bounded)."""

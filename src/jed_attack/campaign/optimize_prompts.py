@@ -194,6 +194,17 @@ def make_record(
         The blackboard record ready to append.
     """
     submission, per_message = _firing_only(submission, score)
+    # Tag each feedback entry with its VICTIM model (not the proposer lane) so
+    # blackboard.top_messages can rank/interleave teammate messages per victim.
+    # all_messages() yields (model, Message) in config.MODELS order, the same order
+    # score_pools concatenates per_message in -- aligned whenever _firing_only's
+    # normal (filtered) path ran. The mismatched-length early-return path (an
+    # invalid or off-length score, kept verbatim by _firing_only) has no reliable
+    # per-message model; tag those "" rather than zip-crash or fabricate an
+    # alignment that isn't there.
+    victim_models = [model for model, _ in submission.all_messages()]
+    if len(victim_models) != len(per_message):
+        victim_models = [""] * len(per_message)
     feedback = [
         {
             "message": ms.message,
@@ -201,8 +212,9 @@ def make_record(
             "severity": ms.severity,
             "feedback": ms.feedback,
             "private_proxy": private_proxy.feedback_note(ms),
+            "model": victim,
         }
-        for ms in per_message
+        for ms, victim in zip(per_message, victim_models, strict=True)
     ]
     return blackboard.Record(
         submission=submission,
@@ -1273,8 +1285,9 @@ def _render_incumbent(
             "generated tokens (INCLUDING the reasoning channel) = higher score; each "
             "pool is scored on its OWN victim only (no cross-replay), and the "
             "objective is the MEAN of the two per-pool boards (the leaderboard metric) "
-            "-- each pool is independently optimizable, so a pool strong on its own "
-            "victim is never penalized for the other pool's weakness."
+            "-- so BOTH pools must fire well: a DEAD column (a pool that fails to "
+            "fire) HALVES the whole score, a cost worth avoiding, not a free half-"
+            "credit for the pool that still fires."
         )
     else:
         objective_line = (
@@ -1434,10 +1447,13 @@ def _render_opro_table(elites: list[archive.Elite]) -> str:
 
     Shows the whole scored landscape (not just the single incumbent), one row per
     archive elite, so the model can optimize against a trajectory the way OPRO does.
-    Rows are ordered by summed per-model board-density (display order only -- no
-    scalar is printed, only the raw per-model throughput/severity columns).
+    Rows are ordered by :func:`archive.rank_by_model_density` -- each model's OWN
+    firing elites ranked by ITS density, interleaved round-robin (display order only --
+    no scalar is printed, only the raw per-model throughput/severity columns). A plain
+    sort by summed board-density showed 100% gemma once gemma-plain shapes were
+    uniformly denser than gpt-forge; the interleave keeps gpt exemplars visible too.
     """
-    rows = sorted(elites, key=archive.elite_board_density, reverse=True)
+    rows = archive.rank_by_model_density(elites)
     lines = [
         "SCORED SHAPES SO FAR (DATA; leaner (higher throughput) AND more severe",
         "(higher sev) both win -- neither alone is enough):",
