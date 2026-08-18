@@ -9152,6 +9152,11 @@ def test_reward_is_zero_and_never_ships_when_shape_does_not_fire() -> None:
     joined = "\n".join(c for chain in bb._frontier_map(arch)["gemma_4"] for c in chain)
     assert "FIRES" in joined and "NOFIRE" not in joined  # only the firing shape ships
 
+    # firing is intrinsic to selection too: a non-firing shape is never a parent.
+    ranked = ar.rank_by_model_density([generates_no_fire, fires])
+    assert ranked == [fires]  # the non-firing shape is filtered out entirely
+    assert generates_no_fire not in arch.parents(10)
+
 
 def test_frontier_map_ship_breaks_density_ties_toward_shorter_input() -> None:
     """The ship path (_frontier_map) prefers shorter input among equal-density shapes.

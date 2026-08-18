@@ -108,7 +108,8 @@ def rank_by_model_density(elites: Iterable[Elite]) -> list[Elite]:
     """Interleave ``elites`` per-model (round-robin) so neither model crowds out.
 
     Each model in :data:`config.MODELS` ranks its OWN firing elites
-    (``throughput[model] > 0``) by :func:`model_density`, best first; the per-model
+    (``model_density > 0``: throughput>0 AND severity>0) by :func:`model_density`, best
+    first; the per-model
     rankings are then interleaved round-robin (model 0's best, model 1's best, model
     0's 2nd-best, ...), deduplicated by identity so a shape that fires on BOTH models is
     emitted once, at its first (best) slot. A plain sort by *summed* board-density lets
@@ -124,7 +125,7 @@ def rank_by_model_density(elites: Iterable[Elite]) -> list[Elite]:
     """
     per_model = [
         sorted(
-            (e for e in elites if e.throughput.get(m, 0.0) > 0.0),
+            (e for e in elites if model_density(e, m) > 0.0),
             key=lambda e, m=m: model_density(e, m),
             reverse=True,
         )
@@ -189,9 +190,9 @@ class Archive:
         crowd the other model's specialists out of a small ``k`` (the bug a fixed
         prefix ``front[:k]`` had -- gemma-heavy frontiers shipped zero gpt parents).
         If that interleaved list is still short of ``k``, tops up from the
-        least-filled archive cells -- MAP-Elites' diversity/exploration material,
-        wired in here (it was dead code on the normal frontier-full path before),
-        skipping any shape already picked.
+        least-filled archive cells -- MAP-Elites' diversity/exploration material --
+        skipping any shape already picked OR any non-firing shape (firing is intrinsic
+        to selection, so a generate-but-never-fire shape is never a parent).
 
         Args:
             k: Number of parents to return.
@@ -207,8 +208,10 @@ class Archive:
         under = sorted(self._cells.items(), key=lambda kv: len(kv[1]))
         for _, cell in under:
             for e in cell:
-                if id(e) in seen:
-                    continue
+                if id(e) in seen or not any(
+                    model_density(e, m) > 0.0 for m in config.MODELS
+                ):
+                    continue  # firing is intrinsic: never parent a non-firing shape
                 picks.append(e)
                 seen.add(id(e))
                 if len(picks) >= k:
