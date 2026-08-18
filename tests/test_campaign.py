@@ -8578,11 +8578,16 @@ def test_throughput_from_gen_chars() -> None:
 
 
 def test_throughput_charges_input_prefill_cost() -> None:
-    """Longer input lowers throughput; omitting input_tokens keeps the old value."""
+    """Input lowers throughput a little; a saved output token always outranks input."""
     from jed_attack.campaign.submission_score import throughput
 
     # input adds cost -> a shape with a longer input message throughputs lower.
     assert throughput(30.0, "gemma_4", input_tokens=10) < throughput(
+        30.0, "gemma_4", input_tokens=0
+    )
+    # output dominance at the measured weight (0.022): saving ONE generated token beats a
+    # +10-input-token increase (a decode token costs ~45x a prefill token).
+    assert throughput(29.0, "gemma_4", input_tokens=10) > throughput(
         30.0, "gemma_4", input_tokens=0
     )
     # backward compat: no input_tokens arg == input_tokens=0 == the old formula.

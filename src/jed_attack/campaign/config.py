@@ -285,12 +285,12 @@ FILL_BUDGET_TOKENS: dict[str, float] = {
 
 # Per-token cost of INPUT prefill relative to a GENERATED token. The gateway prefills
 # each shape's user message on every replay, so a longer input is real replay cost too
-# -- but prefill is cheaper than generation (it runs in parallel over the whole prompt,
-# one forward pass for many tokens, vs one forward pass PER generated token), so this is
-# < 1. A calibration knob, not a measured constant: start conservative. The Pareto
-# self-corrects if it's wrong -- dropping a needed forge tail to save input would
-# explode gen_tokens, crater throughput, and lose on the output axis anyway.
-INPUT_PREFILL_WEIGHT = 0.2
+# -- but prefill runs in one parallel forward pass over the whole prompt, vs one forward
+# pass PER generated token. MEASURED on the resident gemma GGUF (the grader backend,
+# scratchpad/measure_prefill_vs_decode.py, 2026-08-18): prefill 0.166 ms/token, decode
+# 7.445 ms/token -> ratio 0.166/7.445 ~= 0.022. So input costs ~1/45 of a generated
+# token: minimized for free, never traded against an (expensive) output token.
+INPUT_PREFILL_WEIGHT = 0.022
 
 # The single gate guardrail the optimizer scores + reads its objective from. "rules"
 # (aicomp_sdk guardrail_rules) is the data-inspecting private proxy: EXFIL scores 0
