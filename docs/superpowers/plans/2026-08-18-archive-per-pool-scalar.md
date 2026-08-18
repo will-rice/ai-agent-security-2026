@@ -1,3 +1,8 @@
+> **SUPERSEDED (2026-08-18):** Task 1 (weight recalibration) shipped as planned. Task 2
+> (per-cell scalar collapse) was DROPPED -- it ships fat shapes across cost buckets. The
+> Pareto frontier was kept; instead firing was made intrinsic to the reward + an explicit
+> input tiebreak was added. See the spec's OUTCOME section.
+
 # Archive Per-Pool Scalar — Implementation Plan
 
 > Executes docs/superpowers/specs/2026-08-18-archive-per-pool-scalar-design.md.

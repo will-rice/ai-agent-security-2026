@@ -100,3 +100,24 @@ input lives in `throughput`); the cross-model Pareto path in `insert`/`frontier`
 ## Terminal step
 
 After green: cold-restart the optimizer on the per-pool-scalar archive with the recalibrated cost.
+
+## OUTCOME (2026-08-18) — collapse DROPPED, Pareto kept
+
+Implementing the collapse surfaced that "one densest elite per (model, family, bucket)
+cell, ship all cells" ships FAT shapes: ``bucket`` is a cost axis, so a fat shape in a
+high-cost bucket occupies its own cell and rides the frontier (the cold-start test caught
+it). Deciding what SHIPS requires comparing across cost buckets to drop dominated fat
+shapes -- which the global Pareto frontier does and a per-cell scalar cannot. Also, the
+junk-protection this collapse aimed to remove came only from ``input_chars`` as a Pareto
+AXIS, which was never in play (input lives in ``throughput``). So the collapse fixed no
+live bug and introduced one; it was reverted.
+
+WHAT SHIPPED instead (all green, reviewed):
+- ``INPUT_PREFILL_WEIGHT`` 0.2 -> measured 0.022 (input minimized at the right magnitude).
+- Firing is intrinsic to the reward: ``model_density``/``elite_board_density`` and the
+  ``rank_by_model_density`` / ``parents()`` selection all return/contribute 0 unless
+  ``severity > 0`` (not merely ``throughput > 0``) -- a generate-but-never-fire shape can
+  neither ship nor parent.
+- ``_frontier_map`` ships only firing shapes and breaks density ties toward shorter input.
+- The Pareto frontier is KEPT: it correctly excludes fat-firing and non-firing shapes
+  across cost buckets, which is load-bearing.
