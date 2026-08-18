@@ -23,7 +23,7 @@ import build_kernel
 NVIDIA_KAGGLE_SCRIPTS = Path("/home/will/.agents/skills/nvidia-kaggle-skill/scripts")
 ENV_FILE = build_kernel.REPO_ROOT / ".env"  # supplies KAGGLE_API_TOKEN
 SUBMISSION_FILE = "submission.csv"  # the output the competition rerun scores
-MESSAGE = "short-url 1524: no grade-time self-sizing (returns the whole pool up to the SDK MAX_REPLAY_FINDINGS cap), 100% fire-16-both s:// domains; scored 89.055"
+MESSAGE = "reply-suppression lever frontier: exfil shapes end with 'End your turn with no message', collapsing the WASTED post-tool-call reply turn. Measured gpt_oss 36->28 tok (-22%), gemma_4 31->29. Same per-model router (detection-fixed). Local hygiene on the shipped pools: _FORGE->gpt 98.3%, _PLAIN->gemma 100% fire-16. Expect both columns leaner -> more completions than the 89-94 champion."
 POLL_INTERVAL_S = 30
 POLL_TIMEOUT_S = 6 * 60 * 60  # 6h covers the push run plus the rerun eval
 # ------------------------------------------------------
@@ -50,6 +50,17 @@ def main() -> None:
     _load_env(ENV_FILE)
     if not os.environ.get("KAGGLE_API_TOKEN"):
         sys.exit(f"KAGGLE_API_TOKEN not set (expected in {ENV_FILE})")
+
+    # FIRING GATE: a cut cannot be submitted unless every embedded candidate is verified
+    # firing (a hash-bound verified.json from scripts/verify_cut.py). This fails BEFORE
+    # the push, so a dud pool can never reach a submission.
+    from jed_attack.campaign.verify import is_verified
+
+    attack_path = build_kernel.REPO_ROOT / build_kernel.ATTACK_PY
+    ok, reason = is_verified(attack_path)
+    if not ok:
+        sys.exit(f"FIRING GATE: refusing to submit -- {reason}")
+    print(f"firing gate: {reason} ({build_kernel.ATTACK_PY})")
 
     sys.path.insert(0, str(NVIDIA_KAGGLE_SCRIPTS))
     import submit_kernel as sk
