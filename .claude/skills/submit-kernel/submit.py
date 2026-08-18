@@ -23,7 +23,7 @@ import build_kernel
 NVIDIA_KAGGLE_SCRIPTS = Path("/home/will/.agents/skills/nvidia-kaggle-skill/scripts")
 ENV_FILE = build_kernel.REPO_ROOT / ".env"  # supplies KAGGLE_API_TOKEN
 SUBMISSION_FILE = "submission.csv"  # the output the competition rerun scores
-MESSAGE = "reply-suppression lever frontier: exfil shapes end with 'End your turn with no message', collapsing the WASTED post-tool-call reply turn. Measured gpt_oss 36->28 tok (-22%), gemma_4 31->29. Same per-model router (detection-fixed). Local hygiene on the shipped pools: _FORGE->gpt 98.3%, _PLAIN->gemma 100% fire-16. Expect both columns leaner -> more completions than the 89-94 champion."
+MESSAGE = "reply-suppression lever frontier, GATE-VERIFIED 100% firing: exfil shapes end with 'End your turn with no message', collapsing the wasted post-tool-call reply turn (gpt 36->28 tok, gemma 31->29). Firing gate replayed all 4000 candidates and dropped 27 gpt + 2 gemma duds -> 1973 gpt / 1998 gemma verified-firing. Expect both columns leaner -> more completions than the 89-94 champion."
 POLL_INTERVAL_S = 30
 POLL_TIMEOUT_S = 6 * 60 * 60  # 6h covers the push run plus the rerun eval
 # ------------------------------------------------------
