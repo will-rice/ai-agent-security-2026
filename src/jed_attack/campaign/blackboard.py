@@ -226,16 +226,18 @@ def _frontier_map(arch: archive.Archive) -> dict[str, list[list[str]]]:
     gpt-forge, so the top-N were 100% gemma and gpt shipped an EMPTY pool (gpt column
     scored 0). Filtering per model here (``throughput[model] > 0``) keeps a gpt-only
     elite out of gemma's pool and vice versa, and the per-model cap guarantees BOTH
-    victims get their densest firing shapes. No ``input_chars`` tiebreak -- prefill
-    length is not a measured replay cost, only a hedge, so it never overrides density.
+    victims get their densest firing shapes. Ties on density break toward the SHORTER
+    input (``-input_chars``): input prefill is a real but small replay cost (measured
+    ~1/45 of a generated token, folded into throughput at INPUT_PREFILL_WEIGHT), so it
+    never overrides density but does decide equal-density shapes toward less prefill.
     Feeds :func:`assemble.build_permodel` via :func:`_ship_pools`.
     """
     frontier = arch.frontier()
     out: dict[str, list[list[str]]] = {}
     for model in config.MODELS:
         firing = sorted(
-            (e for e in frontier if e.throughput.get(model, 0.0) > 0.0),
-            key=lambda e: archive.model_density(e, model),
+            (e for e in frontier if archive.model_density(e, model) > 0.0),
+            key=lambda e: (archive.model_density(e, model), -e.input_chars),
             reverse=True,
         )[: config.ARCHIVE_FRONTIER_CAP]
         out[model] = _fill_chains(

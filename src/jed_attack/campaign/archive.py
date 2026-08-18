@@ -70,7 +70,8 @@ def elite_board_density(elite: Elite) -> float:
     directly on the elite's cached (already input-inclusive) per-model throughput, never
     recovered back to ``gen_tokens`` (a recovery would double-count the input cost baked
     into ``throughput``, since inverting ``1/t`` yields ``input_cost + gen_tokens``, not
-    ``gen_tokens`` alone). Non-firing models (``throughput <= 0``) contribute 0. The
+    ``gen_tokens`` alone). A model the elite does NOT fire on (``throughput <= 0`` OR
+    ``severity <= 0``) contributes 0 -- firing is intrinsic to the reward. The
     single source of truth for "how good is this elite to ship" -- used by
     :meth:`Archive.ship_set`, the OPRO trajectory table, and the reported champion, so
     all three rank elites identically.
@@ -78,9 +79,10 @@ def elite_board_density(elite: Elite) -> float:
     total = 0.0
     for m in config.MODELS:
         t = elite.throughput[m]
-        if t <= 0.0:
+        severity = elite.severity[m]
+        if t <= 0.0 or severity <= 0.0:  # not firing on m -> contributes nothing
             continue
-        total += (elite.severity[m] + config.NOVELTY_PER_CELL) / 200.0 * t
+        total += (severity + config.NOVELTY_PER_CELL) / 200.0 * t
     return total
 
 
@@ -96,9 +98,10 @@ def model_density(elite: Elite, model: str) -> float:
     reason).
     """
     t = elite.throughput.get(model, 0.0)
-    if t <= 0.0:
+    severity = elite.severity.get(model, 0.0)
+    if t <= 0.0 or severity <= 0.0:  # not firing -> zero reward -> never ranks/ships
         return 0.0
-    return (elite.severity.get(model, 0.0) + config.NOVELTY_PER_CELL) / 200.0 * t
+    return (severity + config.NOVELTY_PER_CELL) / 200.0 * t
 
 
 def rank_by_model_density(elites: Iterable[Elite]) -> list[Elite]:
