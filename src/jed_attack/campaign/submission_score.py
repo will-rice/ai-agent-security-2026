@@ -415,15 +415,17 @@ def _min_robust_severity(
     guardrail_factory: Callable[[], Any],
     base_severity: int,
 ) -> int:
-    """``base_severity`` (primary host) lowered to the MIN across the probe hosts.
+    """``base_severity`` (primary host) lowered to the MIN across the word-host probes.
 
-    The primary replay uses host index 0. :data:`config.ROBUSTNESS_PROBE_INDICES` render
-    to other real (non-word) hosts via :func:`fill.host` (which skips words); taking the
-    MIN makes a shape score as its WORST sampled host, so the search cannot prefer a
-    shape that only fires on host 0. Word-host marker-absorption -- the fragility this
-    once guarded -- is now structurally impossible (``fill.host`` never emits a word),
-    so this is a general multi-host firing check. Short-circuits at the first non-firing
-    probe. Callers apply this to EXFIL messages only (deputy has no URL to absorb into).
+    The primary replay uses a benign host (index 0), where an under-delimited exfil
+    marker still fires. :data:`config.ROBUSTNESS_PROBE_INDICES` render to English-word
+    hosts where the victim absorbs an under-delimited marker into the URL and does
+    NOT fire; taking the MIN makes such a shape score as its WORST host, so the
+    search cannot
+    prefer a fragile shape that only ever gets scored on a benign host.
+    Short-circuits at the first non-firing probe. Callers apply this to EXFIL
+    messages only (deputy has no
+    URL to absorb the marker into).
     """
     severity = base_severity
     for index in config.ROBUSTNESS_PROBE_INDICES:

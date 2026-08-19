@@ -343,12 +343,11 @@ GEN_CHAR_BUCKET_S = 25.0  # quantization bin (chars) for the archive's cost axis
 ARCHIVE_FRONTIER_CAP = int(os.getenv("JED_ARCHIVE_FRONTIER_CAP", "36"))
 
 # Extra host indices scored as a ROBUSTNESS probe on TOP of the primary host (index 0).
-# ``fill.host`` skips word-hosts, so these render to real (non-word, firing) hosts: the
-# probe is now a general multi-host FIRING check -- a shape's severity is the MIN across
-# the primary + these, so a shape that fires on host 0 but duds on a sampled host scores
-# non-firing and the search cannot converge to it. (Word-host marker-absorption, the
-# original fragility, is now structurally impossible -- ``fill.host`` never emits one.)
-# EXFIL only. Empty tuple disables it.
+# These render to English-WORD hosts (an/at/by/if) where an under-delimited marker
+# ("{u} SECRET_MARKER") gets absorbed into the URL and does NOT fire. A shape's severity
+# is the MIN across the primary + these, so the objective sees a fragile shape as
+# non-firing and the search cannot converge to it (the terse-but-duddy shape the
+# single-benign-host objective used to prefer). EXFIL only. Empty tuple disables it.
 ROBUSTNESS_PROBE_INDICES = (13, 19, 50, 213)
 
 # OPRO scored-trajectory table (optimize_prompts._render_opro_table): max elite rows
