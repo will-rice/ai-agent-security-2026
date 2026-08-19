@@ -1,0 +1,18 @@
+{
+  "attack_sha256": "cdaddc3d611064a0aa0dc6c780871fb4d3e6b5f29267ef4e9fc377df7049d6ee",
+  "all_fire": true,
+  "pools": {
+    "_FORGE": {
+      "model": "gpt_oss",
+      "input": 2000,
+      "firing": 1973,
+      "dropped": 27
+    },
+    "_PLAIN": {
+      "model": "gemma_4",
+      "input": 2000,
+      "firing": 1998,
+      "dropped": 2
+    }
+  }
+}
