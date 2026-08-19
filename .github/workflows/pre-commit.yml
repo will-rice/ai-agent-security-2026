@@ -45,19 +45,11 @@ jobs:
         run: |
           uvx kaggle competitions download "$COMPETITION" -p vendor/
           unzip -o -q "vendor/$COMPETITION.zip" -d vendor/bundle
-          python3 - <<'PY'
-          import pathlib
-          import zipfile
-
-          bundle = pathlib.Path("vendor/bundle")
-          whl = pathlib.Path("vendor/aicomp_sdk-3.1.2-py3-none-any.whl")
-          with zipfile.ZipFile(whl, "w", zipfile.ZIP_DEFLATED) as z:
-              for sub in ("aicomp_sdk", "aicomp_sdk-3.1.2.dist-info"):
-                  for p in sorted((bundle / sub).rglob("*")):
-                      if p.is_file():
-                          z.write(p, p.relative_to(bundle).as_posix())
-          print("wrote", whl, whl.stat().st_size, "bytes")
-          PY
+          # Deterministic wheel build (fixed timestamps + ZIP_STORED) so the CI-rebuilt
+          # wheel is byte-identical to the locally-built one uv.lock pins its hash to.
+          # A non-deterministic zip (mtimes, zlib-version DEFLATE) caused "Hash mismatch
+          # for aicomp-sdk" on every run. Same script runs locally when re-locking.
+          python3 scripts/build_vendor_wheel.py vendor/bundle vendor/aicomp_sdk-3.1.2-py3-none-any.whl
 
       - name: Run pre-commit hook
         run: |

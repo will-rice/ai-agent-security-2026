@@ -9373,6 +9373,24 @@ def test_candidate_chains_ships_the_scheme() -> None:
     )
 
 
+def _resident_scoring_available() -> bool:
+    """True only where the resident scoring backend can load (a GPU is present).
+
+    The score/replay integration tests build a resident victim model (gemma GGUF +
+    the transformers MXFP4 gpt_oss); CI has no GPU and no multi-GB model files, so they
+    must skip there. Locally (green) a GPU is present and the models are downloaded.
+    """
+    try:
+        import torch
+
+        return bool(torch.cuda.is_available())
+    except Exception:
+        return False
+
+
+@pytest.mark.skipif(
+    not _resident_scoring_available(), reason="needs a GPU + resident scoring model"
+)
 def test_score_measures_rendered_scheme() -> None:
     """score_submission records the RENDERED text (concrete URL), not the {u} template.
 
@@ -9621,6 +9639,9 @@ def test_reship_best_ships_both_pools_via_build_permodel(tmp_path: Path) -> None
     assert "gemma SECRET_MARKER" in src  # plain pool (gemma_4) embedded
 
 
+@pytest.mark.skipif(
+    not _resident_scoring_available(), reason="needs a GPU + resident scoring model"
+)
 def test_short_scheme_ships_and_fires_16_both() -> None:
     """An authored short scheme ships a clean unique URL and fires on both victims.
 

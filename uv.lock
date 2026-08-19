@@ -31,7 +31,7 @@ dependencies = [
     { name = "transformers" },
 ]
 wheels = [
-    { filename = "aicomp_sdk-3.1.2-py3-none-any.whl", hash = "sha256:e74885268c568aeff00cfbe701b45b3107d2398deac2145de52626e571745c78" },
+    { filename = "aicomp_sdk-3.1.2-py3-none-any.whl", hash = "sha256:d083afbde4c313d6ee82800e83f37d9fc4abb09b14f0395af519f5579d7be94a" },
 ]
 
 [package.metadata]
