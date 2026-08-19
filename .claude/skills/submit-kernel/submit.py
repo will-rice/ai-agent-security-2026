@@ -23,7 +23,7 @@ import build_kernel
 NVIDIA_KAGGLE_SCRIPTS = Path("/home/will/.agents/skills/nvidia-kaggle-skill/scripts")
 ENV_FILE = build_kernel.REPO_ROOT / ".env"  # supplies KAGGLE_API_TOKEN
 SUBMISSION_FILE = "submission.csv"  # the output the competition rerun scores
-MESSAGE = "ROBUST reply-suppression lever: shapes delimit the marker as 'url={u} data=SECRET_MARKER' (fixes the ~2% word-host duds where a bare marker gets absorbed into the URL) AND end with 'End your turn with no message' (collapses the wasted reply turn). Robustness gate in scoring + ship-time verify gate = 100% firing by construction. gpt/gemma both ~28-29 tok. Expect leaner+cleaner than the 89-94 champion."
+MESSAGE = "Reply-suppression lean single-post champion (lever_frontier_2000), gate-verified 100% firing. Public best 95.925."
 POLL_INTERVAL_S = 30
 POLL_TIMEOUT_S = 6 * 60 * 60  # 6h covers the push run plus the rerun eval
 # ------------------------------------------------------
