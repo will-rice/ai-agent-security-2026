@@ -58,7 +58,7 @@ class CandidateObjective:
     valid: bool
     firing: bool
     public: float
-    replay_seconds: float
+    gen_tokens: float
     assessment: JudgeAssessment | None
 
 
@@ -235,10 +235,10 @@ def compare_candidates(a: CandidateObjective, b: CandidateObjective) -> Comparis
     public = _public_decision(a.public, b.public, "public_tiebreak")
     if public.winner != "tie":
         return public
-    if a.replay_seconds != b.replay_seconds:
+    if a.gen_tokens != b.gen_tokens:
         return Comparison(
-            "a" if a.replay_seconds < b.replay_seconds else "b",
-            "lower_replay_seconds",
+            "a" if a.gen_tokens < b.gen_tokens else "b",
+            "lower_gen_tokens",
         )
     return Comparison("tie", "exact_tie")
 
@@ -292,14 +292,14 @@ def compare_batches(
             valid=all(score.valid for score in a_scores),
             firing=all(score.fires for score in a_scores),
             public=a_public,
-            replay_seconds=_sum_replay_seconds(a_scores),
+            gen_tokens=_sum_gen_tokens(a_scores),
             assessment=_aggregate_assessment(a_assessments),
         ),
         CandidateObjective(
             valid=all(score.valid for score in b_scores),
             firing=all(score.fires for score in b_scores),
             public=b_public,
-            replay_seconds=_sum_replay_seconds(b_scores),
+            gen_tokens=_sum_gen_tokens(b_scores),
             assessment=_aggregate_assessment(b_assessments),
         ),
     )
@@ -330,8 +330,17 @@ def _mean_public(scores: Sequence[SubmissionScore]) -> float:
     return mean(score.public for score in scores) if scores else 0.0
 
 
-def _sum_replay_seconds(scores: Sequence[SubmissionScore]) -> float:
-    return sum(sum(score.replay_seconds.values()) for score in scores)
+def _sum_gen_tokens(scores: Sequence[SubmissionScore]) -> float:
+    """Total generated tokens across the scores -- a DETERMINISTIC leanness tie-break.
+
+    Sums each submission's per-message ``gen_tokens_by_model`` (greedy-decode exact, no
+    wall-clock), so the final judge tie-break bakes in no measured time.
+    """
+    return sum(
+        sum(ms.gen_tokens_by_model.values())
+        for score in scores
+        for ms in score.per_message
+    )
 
 
 def _batch_judge_ready(

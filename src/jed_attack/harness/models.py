@@ -115,8 +115,15 @@ class ResidentAgentFactory:
         self._make_agent = make_agent
 
     def reset(self) -> None:
-        """Clear the shared backend's KV cache so the next replay starts clean."""
-        self._backend.llm.reset()
+        """Clear the shared backend's KV cache so the next replay starts clean.
+
+        Only the llama.cpp backend keeps a persistent prefix cache across generate
+        calls; the transformers backend is stateless per generate, so its reset is a
+        no-op (``llm`` is absent).
+        """
+        llm = getattr(self._backend, "llm", None)
+        if llm is not None:
+            llm.reset()
 
     def __call__(self) -> AgentProtocol:
         """Build a fresh agent over the shared, already-loaded GGUF backend."""
@@ -214,6 +221,35 @@ def gguf_agent_factory(
     # The freshly built backend's ``llm`` is non-None (only ``close()`` nulls it),
     # so it satisfies ResettableBackend; the SDK types ``llm`` as ``Any | None``.
     return ResidentAgentFactory(cast(ResettableBackend, backend), make_agent)
+
+
+def transformers_gpt_oss_factory(main_gpu: int | None = None) -> ResidentAgentFactory:
+    """Return a resident factory for gpt_oss using the SDK's TRANSFORMERS backend.
+
+    The Kaggle grader serves gpt_oss via the SDK's ``build_gpt_oss_backend`` -- the
+    transformers backend loading the native MXFP4 ``openai/gpt-oss-20b`` with
+    ``max_new_tokens=256`` -- NOT a llama.cpp GGUF. A 4-bit-requantized GGUF is a
+    DIFFERENT model: it mis-ranks shapes on the reasoning row (measured: the forge
+    champion is 22 gen-tokens on MXFP4 vs 28 on our Q4_K_M GGUF, and no-forge shapes
+    diverge in the opposite direction). This factory runs the grader's exact backend so
+    the objective ranks shapes on the model the grader actually replays.
+
+    The transformers backend is stateless per ``generate`` (no persistent prefix cache),
+    so :meth:`ResidentAgentFactory.reset` is a no-op for it. Metering reads
+    ``HFGenerationResponse.raw_text`` exactly as for the GGUF backend.
+
+    Args:
+        main_gpu: CUDA device index to pin the model to (``device_map='cuda:N'``);
+            ``None`` uses the SDK default ``device_map='auto'``.
+
+    Returns:
+        A :class:`ResidentAgentFactory` over the shared transformers backend.
+    """
+    from aicomp_sdk.agents.gpt_oss_agent import GPTOSSAgent, build_gpt_oss_backend
+
+    device_map = "auto" if main_gpu is None else f"cuda:{main_gpu}"
+    backend = build_gpt_oss_backend(device_map=device_map)
+    return ResidentAgentFactory(cast(ResettableBackend, backend), GPTOSSAgent)
 
 
 def _resolve_agent(model_key: str) -> tuple[str, Callable[[Any], AgentProtocol]]:

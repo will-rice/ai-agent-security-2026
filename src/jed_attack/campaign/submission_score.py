@@ -45,6 +45,7 @@ from jed_attack.harness.models import (
     ResidentAgentFactory,
     gguf_agent_factory,
     gguf_target_path,
+    transformers_gpt_oss_factory,
 )
 
 _SEED = 123  # match the gate / Kaggle env seed
@@ -105,6 +106,9 @@ class _RawGenMeter:
         # markers like ``<|channel|>`` are ONE token but many chars, so tokens -- not
         # chars -- track the T4's per-forward-pass cost).
         self._llm = getattr(backend, "llm", None)
+        # The transformers backend has no llama.cpp ``llm``; it exposes an HF tokenizer.
+        # Either tokenizes ``raw_text`` with harmony/gemma markers as ONE token each.
+        self._tokenizer = getattr(backend, "tokenizer", None)
         # Shadow the bound method with our counter; cast so the type checker allows the
         # instance-attribute assignment over a declared method.
         cast(Any, backend).generate = self._metered_generate
@@ -114,15 +118,24 @@ class _RawGenMeter:
         self.calls = 0  # generate() calls == agent turns for this replay
 
     def _count_tokens(self, text: str) -> int:
-        """Generated token count for ``text`` (markers = 1 token); 0 when no llm."""
-        if not text or self._llm is None:
+        """Generated token count for ``text`` (markers = 1 token); 0 if unavailable."""
+        if not text:
             return 0
-        try:
-            return len(
-                self._llm.tokenize(text.encode("utf-8"), add_bos=False, special=True)
-            )
-        except Exception:
-            return 0
+        if self._llm is not None:
+            try:
+                return len(
+                    self._llm.tokenize(
+                        text.encode("utf-8"), add_bos=False, special=True
+                    )
+                )
+            except Exception:
+                return 0
+        if self._tokenizer is not None:
+            try:
+                return len(self._tokenizer.encode(text))
+            except Exception:
+                return 0
+        return 0
 
     def _metered_generate(self, request: HFGenerationRequest) -> HFGenerationResponse:
         response = self._generate(request)
@@ -148,10 +161,19 @@ def _resident_backend(model_key: str) -> ResidentAgentFactory:
     """Return ``model_key``'s resident agent factory, loading its GGUF once."""
     with _resident_lock:
         if model_key not in _backends:
-            gguf = gguf_target_path(model_key, config.MODELS_DIR)
-            factory = gguf_agent_factory(
-                model_key, gguf, main_gpu=config.MODEL_GPU[model_key]
-            )
+            if model_key == "gpt_oss":
+                # GRADER-EXACT: gpt_oss is served via the SDK transformers backend
+                # (native MXFP4 openai/gpt-oss-20b, max_new_tokens=256), NOT a GGUF --
+                # a 4-bit requant mis-ranks reasoning-row shapes. See
+                # models.transformers_gpt_oss_factory.
+                factory: ResidentAgentFactory = transformers_gpt_oss_factory(
+                    main_gpu=config.MODEL_GPU[model_key]
+                )
+            else:
+                gguf = gguf_target_path(model_key, config.MODELS_DIR)
+                factory = gguf_agent_factory(
+                    model_key, gguf, main_gpu=config.MODEL_GPU[model_key]
+                )
             # Meter the shared backend's raw generation (incl. reasoning); no public
             # accessor exists, so reach the backend the factory holds directly (it is a
             # concrete generate-capable backend, typed only as ResettableBackend here).
@@ -232,9 +254,10 @@ class SubmissionScore:
         per_message: One :class:`MessageScore` per input message, in order.
         total_hops: Summed ``Message.hops`` over every message (the T4 tool-hop cost;
             the schema guarantees it fits the budget). Kept for proposer feedback.
-        replay_seconds: green replay wall-clock seconds per model -- telemetry only
-            (judge tie-breaks, wandb); the T4 time budget is enforced against the
-            deterministic gen-char projection instead, not against this.
+        replay_seconds: green replay wall-clock seconds per model -- telemetry ONLY
+            (wandb throughput rates). No decision reads it: the objective and the judge
+            tie-break both use the deterministic generated-token count, so optimization
+            bakes in no measured time.
         gen_chars: total assistant characters the victim GENERATED per model — a
             DETERMINISTIC replay-cost proxy (no wall-clock noise). Fewer chars means
             faster replay and more candidates fit the fixed budget, so the optimizer's

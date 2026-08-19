@@ -21,9 +21,20 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("cut", help="path to the cut's attack.py")
+    parser.add_argument(
+        "--min-severity", type=float, default=5.0,
+        help="required EXFIL severity per candidate (5=1 post, 10=2 posts)",
+    )
+    parser.add_argument(
+        "--full-fire", action="store_true",
+        help="require each candidate to fire its OWN K*5 (correct for MIXED pools);"
+        " overrides --min-severity",
+    )
     args = parser.parse_args()
 
-    manifest = verify_and_filter_cut(Path(args.cut))
+    manifest = verify_and_filter_cut(
+        Path(args.cut), args.min_severity, full_fire=args.full_fire
+    )
     for var, pool in manifest["pools"].items():
         logging.info(
             "%s -> %-8s %d firing, %d dropped (of %d) = %.1f%%",

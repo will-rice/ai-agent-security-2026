@@ -263,7 +263,7 @@ def _assessment_objective(record: Record) -> CandidateObjective:
         valid=record.valid,
         firing=record.fires,
         public=record.public,
-        replay_seconds=0.0,
+        gen_tokens=0.0,
         assessment=(
             JudgeAssessment.model_validate(record.assessment)
             if record.assessment is not None

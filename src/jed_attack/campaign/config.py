@@ -243,44 +243,39 @@ if PORTFOLIO_LAMBDA < 0.0:
 # keeps as many distinct fast shapes as it can (free: public-neutral, private hedge).
 DIVERSITY_SHAPE_CAP = MAX_SHIP_MESSAGES
 
-# Recalibrated 2026-08-12 from the LB back-out (958.5 candidates -> 86.265 public =>
-# ~9.39 s/candidate at ~146/124 gen chars; ARTIFACT_SCORE_BUDGET_S = 9000). The prior
-# 3.9/3.4 s intercept double-counted env-reset overhead and made the projection ~2/3 of
-# the real board. Solve T4_FIXED_S from: 9.39 = T4_FIXED_S + RATE*gen.
-T4_RATE_S_PER_CHAR: dict[str, float] = {"gpt_oss": 0.0546, "gemma_4": 0.1052}
-T4_FIXED_S: dict[str, float] = {"gpt_oss": 1.4, "gemma_4": 1.5}
-REPLAY_MARGIN_S = (
-    ARTIFACT_SCORE_BUDGET_S  # 9000; the shipped latency-precise trim owns safety
-)
-# Cost stays in DETERMINISTIC chars (raw_gen_chars, no wall-clock noise); seconds enter
-# ONLY here, to derive the per-model char constants the objective walks. FIXED_CHARS =
-# per-candidate fixed cost in chars = T4_FIXED_S / T4_RATE_S_PER_CHAR (~25.6 gpt_oss,
-# ~14.3 gemma_4 after the 2026-08-12 recalibration; replaces the old global 55*turns):
-FIXED_CHARS: dict[str, float] = {
-    model: T4_FIXED_S[model] / T4_RATE_S_PER_CHAR[model] for model in MODELS
-}
-# Per-model char budget = REPLAY_MARGIN_S / rate; cost = raw_gen_chars + FIXED_CHARS.
-FILL_BUDGET_CHARS: dict[str, float] = {
-    model: REPLAY_MARGIN_S / T4_RATE_S_PER_CHAR[model] for model in MODELS
-}
-
-# TOKEN cost model (2026-08-16): replay time is one forward pass PER GENERATED TOKEN, so
-# tokens -- not chars -- are the true cost. The harmony/gemma markers (`<|channel|>`,
-# `<|tool_call>`, `<|"|>`) are ONE token but many chars, so char/token differs by format
-# (measured on the shipped forge shape: gemma 119c/31t=3.84, gpt 141c/30t=4.70) and a
-# char objective mis-ranks shapes. Derive the per-token seconds from the calibrated
-# per-char rate x chars/token (no new T4 fit needed): RATE_S_PER_TOKEN = RATE_S_PER_CHAR
-# x CHARS_PER_TOKEN. FIXED_TOKENS = T4_FIXED_S / RATE_S_PER_TOKEN (the per-candidate
-# fixed floor in tokens); cost = raw_gen_tokens + FIXED_TOKENS.
+# Per-candidate REPLAY COST MODEL (DECODE-BOUND, direct). Settled 2026-08-19:
+# the multipost submissions scored WORSE than single-post (2-post 77.7, 4-post 69.6 vs
+# single 93.9), and the completed-candidate counts scaled ~linearly with post-count
+# (1043 -> 457 -> 211, i.e. per-candidate cost 1x -> 2.28x -> 4.94x). That is the
+# decode-bound signature: replay time is ~one forward pass PER GENERATED TOKEN with a
+# SMALL fixed floor, so K posts cost ~K* the time for only K* the severity -> multi-post
+# nets a LOSS (cost grows slightly super-linearly). The prefill-bound bet (large FIXED)
+# is REFUTED. So the fixed floor is SMALL and LEANNESS (fewer generated tokens) is the
+# lever -- the reply-suppression single-post cuts (v6 95.9, v7 94.6) beat the champion.
+#
+# TOKENS are the cost unit (format markers are 1 token / many chars, so a char objective
+# mis-ranks). The objective is HONEST LEANNESS: board_density = value/(input*WEIGHT +
+# gen_tokens), so the search rewards the leanest firing single-post shape.
 CHARS_PER_TOKEN: dict[str, float] = {"gpt_oss": 4.70, "gemma_4": 3.84}
-T4_RATE_S_PER_TOKEN: dict[str, float] = {
-    model: T4_RATE_S_PER_CHAR[model] * CHARS_PER_TOKEN[model] for model in MODELS
+# NO assumed per-candidate floor (0). A nonzero FIXED acts like a KNOWN floor cost, but
+# we do NOT know the grader's per-candidate overhead -- the multipost back-out gave
+# contradictory estimates (negative from the post-count slope, large-positive from the
+# noisy single-post pair). For fixed-severity single-post the term CANCELS in the
+# ranking anyway (board_density is invariant to an additive constant), so 0 is both
+# honest and ranking-neutral.
+FIXED_TOKENS: dict[str, float] = {"gpt_oss": 0.0, "gemma_4": 0.0}
+# Replay budget in token-equivalents, back-calibrated to the real scores: single-post
+# (~30 gen tokens) completed ~1043 candidates -> budget = 1043 * gen. Telemetry only
+# for the lb_est projection (nothing in the ship/rank path reads it).
+FILL_BUDGET_TOKENS: dict[str, float] = {"gpt_oss": 31_290.0, "gemma_4": 32_333.0}
+# Parallel CHAR constants for the reporting projection ONLY (project_public_board /
+# lb_est reads raw_gen_chars). Derived from the token constants so the projection stays
+# consistent with the objective automatically: chars = tokens x CHARS_PER_TOKEN.
+FIXED_CHARS: dict[str, float] = {
+    model: FIXED_TOKENS[model] * CHARS_PER_TOKEN[model] for model in MODELS
 }
-FIXED_TOKENS: dict[str, float] = {
-    model: T4_FIXED_S[model] / T4_RATE_S_PER_TOKEN[model] for model in MODELS
-}
-FILL_BUDGET_TOKENS: dict[str, float] = {
-    model: REPLAY_MARGIN_S / T4_RATE_S_PER_TOKEN[model] for model in MODELS
+FILL_BUDGET_CHARS: dict[str, float] = {
+    model: FILL_BUDGET_TOKENS[model] * CHARS_PER_TOKEN[model] for model in MODELS
 }
 
 # Per-token cost of INPUT prefill relative to a GENERATED token. The gateway prefills
