@@ -7,6 +7,7 @@ is returned as ``None`` and logged -- proof the message space is tapped, not hid
 import logging
 from dataclasses import dataclass
 
+from jed_attack.adversarial import telemetry
 from jed_attack.adversarial.ga import evolve
 from jed_attack.adversarial.gcg_driver import run_gcg
 from jed_attack.adversarial.oracle import OracleResult, evaluate
@@ -56,6 +57,12 @@ def search(
         for cand in run_gcg(base_template, num_steps=gcg_steps):
             res = evaluate(cand.message, model)  # oracle is the judge, not GCG loss
             _log.info("GCG candidate fires=%s board=%.2f", res.fires, res.board_density)
+            telemetry.log(
+                {
+                    "gcg_candidate/board": res.board_density,
+                    "gcg_candidate/fires": float(res.fires),
+                }
+            )
             if res.fires:
                 seeds.append(cand.message)
     ga_seed = base_template.replace("{optim_str}", "").strip()
@@ -68,6 +75,7 @@ def search(
     ]
     if not firing:
         _log.warning("search(%s): no firing shape found", model)
+        telemetry.log({"result/best_board": 0.0, "result/beats_floor": 0.0})
         return None
     best_message, best_result = max(firing, key=lambda pair: pair[1].board_density)
     if not beats_floor(best_result.board_density, floor_board):
@@ -78,5 +86,14 @@ def search(
             best_result.board_density,
             floor_board,
         )
+        telemetry.log(
+            {
+                "result/best_board": best_result.board_density,
+                "result/beats_floor": 0.0,
+            }
+        )
         return None
+    telemetry.log(
+        {"result/best_board": best_result.board_density, "result/beats_floor": 1.0}
+    )
     return Best(message=best_message, result=best_result)

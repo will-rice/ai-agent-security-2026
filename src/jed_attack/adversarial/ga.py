@@ -7,6 +7,7 @@ mutates around them. Deterministic (index-seeded) so runs are reproducible.
 import logging
 from dataclasses import dataclass
 
+from jed_attack.adversarial import telemetry
 from jed_attack.adversarial.alphabet import special_tokens
 from jed_attack.adversarial.oracle import OracleResult, evaluate
 
@@ -58,12 +59,20 @@ def evolve(
         firing = [i for i in population if i.result and i.result.fires]
         firing.sort(key=lambda i: i.result.board_density, reverse=True)
         survivors = firing[:pop]
+        best_board = survivors[0].result.board_density if survivors else 0.0
         _log.info(
             "GA %s round %d: %d firing, best board=%.2f",
             model,
             round_idx,
             len(firing),
-            survivors[0].result.board_density if survivors else 0.0,
+            best_board,
+        )
+        telemetry.log(
+            {
+                "ga/round": round_idx,
+                "ga/best_board": best_board,
+                "ga/n_firing": len(firing),
+            }
         )
         children: list[Individual] = []
         for parent_idx, parent in enumerate(survivors[: max(1, pop // 4)]):

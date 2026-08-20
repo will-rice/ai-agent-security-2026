@@ -13,6 +13,8 @@ import torch
 from nanogcg import GCGConfig
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizer
 
+from jed_attack.adversarial import telemetry
+
 _log = logging.getLogger(__name__)
 
 _MODEL_ID = "openai/gpt-oss-20b"
@@ -80,6 +82,8 @@ def run_gcg(
     result = nanogcg.run(
         model, cast(PreTrainedTokenizer, tok), message, FIRING_TARGET, cfg
     )
+    for loss in result.losses:
+        telemetry.log({"gcg/loss": loss})
     filled = message.replace("{optim_str}", result.best_string)
     del model
     torch.cuda.empty_cache()
