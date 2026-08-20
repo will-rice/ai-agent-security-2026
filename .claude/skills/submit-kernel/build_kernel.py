@@ -27,7 +27,7 @@ TITLE = "JED lever frontier champion"  # the kernel slug is DERIVED from this (s
 MACHINE_SHAPE = "NvidiaTeslaT4"  # this competition rejects P100 (400 FAILED_PRECONDITION)
 ENABLE_GPU = True
 ENABLE_INTERNET = False  # rerun env is offline; attack imports only aicomp_sdk + stdlib
-ATTACK_PY = "run/submission_cuts/lever_frontier_2000_mxfp4/attack.py"  # MXFP4-regated champion (1971 gpt/1998 gemma firing)
+ATTACK_PY = "run/submission_cuts/lever_frontier_2000_gguf/attack.py"  # GGUF-regated champion (1966 gpt/1998 gemma firing) -- grader serves gpt_oss as unsloth Q4_K_M GGUF, not MXFP4
 OUT_ROOT = "run/submission_kernel"  # kernel folders are written under here, one per slug
 # -------------------------------------------------------------------------------
 

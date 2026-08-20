@@ -23,7 +23,7 @@ import build_kernel
 NVIDIA_KAGGLE_SCRIPTS = Path("/home/will/.agents/skills/nvidia-kaggle-skill/scripts")
 ENV_FILE = build_kernel.REPO_ROOT / ".env"  # supplies KAGGLE_API_TOKEN
 SUBMISSION_FILE = "submission.csv"  # the output the competition rerun scores
-MESSAGE = "lever_frontier champion, MXFP4-regated firing gate (1971 gpt/1998 gemma). Public best 95.925."
+MESSAGE = "lever_frontier champion, GGUF-regated (grader-faithful: gpt_oss=unsloth Q4_K_M GGUF). 1966 gpt/1998 gemma firing."
 POLL_INTERVAL_S = 30
 POLL_TIMEOUT_S = 6 * 60 * 60  # 6h covers the push run plus the rerun eval
 # ------------------------------------------------------
