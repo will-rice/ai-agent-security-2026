@@ -20,8 +20,8 @@ class MutationForge:
 def special_tokens(model: str) -> tuple[str, ...]:
     """Every control/added token in ``model``'s tokenizer, longest-first.
 
-    Uses ``get_added_vocab`` (added-token table); the harmony ``<|channel|>``/``<|call|>``
-    and gemma ``<|tool_call>`` families live there.
+    Uses ``get_added_vocab`` (added-token table); the harmony ``<|channel|>``/
+    ``<|call|>`` and gemma ``<|tool_call>`` families live there.
     """
     tok = AutoTokenizer.from_pretrained(MODEL_HF[model])
     assert tok is not None  # from_pretrained only returns None on an invalid repo id
