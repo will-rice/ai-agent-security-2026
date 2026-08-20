@@ -45,7 +45,6 @@ from jed_attack.harness.models import (
     ResidentAgentFactory,
     gguf_agent_factory,
     gguf_target_path,
-    transformers_gpt_oss_factory,
 )
 
 _SEED = 123  # match the gate / Kaggle env seed
@@ -161,19 +160,17 @@ def _resident_backend(model_key: str) -> ResidentAgentFactory:
     """Return ``model_key``'s resident agent factory, loading its GGUF once."""
     with _resident_lock:
         if model_key not in _backends:
-            if model_key == "gpt_oss":
-                # GRADER-EXACT: gpt_oss is served via the SDK transformers backend
-                # (native MXFP4 openai/gpt-oss-20b, max_new_tokens=256), NOT a GGUF --
-                # a 4-bit requant mis-ranks reasoning-row shapes. See
-                # models.transformers_gpt_oss_factory.
-                factory: ResidentAgentFactory = transformers_gpt_oss_factory(
-                    main_gpu=config.MODEL_GPU[model_key]
-                )
-            else:
-                gguf = gguf_target_path(model_key, config.MODELS_DIR)
-                factory = gguf_agent_factory(
-                    model_key, gguf, main_gpu=config.MODEL_GPU[model_key]
-                )
+            # GRADER-EXACT: BOTH victims are served by the competition's dedicated
+            # GGUF model servers -- jed_attack_gateway._make_agent_factory routes
+            # gpt_oss and gemma (both in REMOTE_MODEL_NAMES) to gpt_oss_model_server /
+            # gemma_model_server, each a GgufModelServer over the unsloth Q4_K_M GGUF,
+            # BYPASSING the SDK's build_agent_factory/build_gpt_oss_backend. So gpt_oss
+            # is the llama.cpp GGUF, NOT transformers MXFP4 (verified 2026-08-20 by
+            # reading the model-server source + a T4 calib that loaded the GGUF).
+            gguf = gguf_target_path(model_key, config.MODELS_DIR)
+            factory = gguf_agent_factory(
+                model_key, gguf, main_gpu=config.MODEL_GPU[model_key]
+            )
             # Meter the shared backend's raw generation (incl. reasoning); no public
             # accessor exists, so reach the backend the factory holds directly (it is a
             # concrete generate-capable backend, typed only as ResettableBackend here).
@@ -299,14 +296,17 @@ def replay_trace(
     agent_factory = _resident_backend(model_key)
     meter = _gen_meters[model_key]
     with _model_locks[model_key]:
-        # Clear the shared llama.cpp KV cache FIRST. The resident context keeps its
-        # cache across completion calls and SandboxEnv.reset() does not touch it, so
-        # without this the previous message's context leaks into this replay and
-        # later messages in a submission degrade to non-firing (verified: identical
-        # message fires 16 then 0, 0, 0...). Resetting makes every replay independent,
-        # matching the T4 gateway's fresh-env-per-candidate scoring. Inside the lock
-        # so a concurrent lane cannot reset mid-generation.
-        agent_factory.reset()
+        # Do NOT clear the llama.cpp KV cache between candidates -- the GRADER doesn't.
+        # The gateway's per-candidate env.reset() -> agent.reset_state() clears only the
+        # agent's LOGICAL state, NOT the resident model server's llm KV (verified
+        # 2026-08-20 from GgufModelServer). So the grader keeps the KV and llama.cpp
+        # reuses the shared [system, schema] prefix across candidates, amortizing that
+        # prefill. A fresh SandboxEnv per replay (below) already gives logical
+        # independence; keeping the KV matches the grader and is ~40% faster. Firing
+        # is unaffected: fresh env + prefix-reuse fires 50/50 identical to reset on both
+        # models (the old "16 then 0,0,0" was a STALE-ENV bug -- re-interacting without
+        # env.reset -- not KV reuse). The lock still serializes replays (one llama.cpp
+        # context is not thread-safe). meter.reset() zeroes the per-replay token tally.
         meter.reset()  # count only this replay's generation, under the same lock
         env = SandboxEnv(
             seed=_SEED,
