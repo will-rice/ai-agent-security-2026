@@ -27,7 +27,7 @@ TITLE = "JED lever frontier champion"  # the kernel slug is DERIVED from this (s
 MACHINE_SHAPE = "NvidiaTeslaT4"  # this competition rejects P100 (400 FAILED_PRECONDITION)
 ENABLE_GPU = True
 ENABLE_INTERNET = False  # rerun env is offline; attack imports only aicomp_sdk + stdlib
-ATTACK_PY = "run/submission_cuts/lever_frontier_2000/attack.py"  # the artifact to embed (repo-relative; a cut path also works)
+ATTACK_PY = "run/submission_cuts/lever_frontier_2000_mxfp4/attack.py"  # MXFP4-regated champion (1971 gpt/1998 gemma firing)
 OUT_ROOT = "run/submission_kernel"  # kernel folders are written under here, one per slug
 # -------------------------------------------------------------------------------
 
