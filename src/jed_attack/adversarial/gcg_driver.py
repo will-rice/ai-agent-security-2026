@@ -11,6 +11,7 @@ from typing import cast
 import nanogcg
 import torch
 from nanogcg import GCGConfig
+from nanogcg.gcg import AttackBuffer
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizer
 
 from jed_attack.adversarial import telemetry
@@ -77,13 +78,25 @@ def run_gcg(
         verbosity="WARNING",
     )
     _log.info("running nanoGCG: steps=%d search_width=%d", num_steps, search_width)
+    # Live per-step loss to wandb: nanoGCG exposes no callback, so hook
+    # AttackBuffer.log_buffer (invoked once per step) to stream the best-so-far loss
+    # DURING the run, instead of dumping the whole curve only after it returns.
+    original_log_buffer = AttackBuffer.log_buffer
+
+    def hooked_log_buffer(self: AttackBuffer, tokenizer: object) -> object:
+        """Log the per-step best-so-far loss, then defer to the original."""
+        telemetry.log({"gcg/loss": self.get_lowest_loss()})
+        return original_log_buffer(self, tokenizer)
+
+    AttackBuffer.log_buffer = hooked_log_buffer
     # cast: POC-verified (scratchpad/gcg_poc.py) that nanoGCG's overly narrow
     # PreTrainedTokenizer param hint accepts this tokenizer at runtime.
-    result = nanogcg.run(
-        model, cast(PreTrainedTokenizer, tok), message, FIRING_TARGET, cfg
-    )
-    for loss in result.losses:
-        telemetry.log({"gcg/loss": loss})
+    try:
+        result = nanogcg.run(
+            model, cast(PreTrainedTokenizer, tok), message, FIRING_TARGET, cfg
+        )
+    finally:
+        AttackBuffer.log_buffer = original_log_buffer
     filled = message.replace("{optim_str}", result.best_string)
     del model
     torch.cuda.empty_cache()
