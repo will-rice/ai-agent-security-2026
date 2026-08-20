@@ -6,6 +6,7 @@ GCG loss is a proxy for "emits the target"; firing is decided by the oracle, nev
 
 import logging
 from dataclasses import dataclass
+from typing import cast
 
 import nanogcg
 import torch
@@ -62,10 +63,6 @@ def run_gcg(
     """
     message = assemble_message(base_message_template)
     tok = AutoTokenizer.from_pretrained(_MODEL_ID)
-    if not isinstance(tok, PreTrainedTokenizer):
-        raise TypeError(
-            f"{_MODEL_ID} tokenizer is {type(tok)}, nanogcg needs a PreTrainedTokenizer"
-        )
     model = AutoModelForCausalLM.from_pretrained(
         _MODEL_ID, torch_dtype="auto", device_map=f"cuda:{main_gpu}"
     )
@@ -78,7 +75,11 @@ def run_gcg(
         verbosity="WARNING",
     )
     _log.info("running nanoGCG: steps=%d search_width=%d", num_steps, search_width)
-    result = nanogcg.run(model, tok, message, FIRING_TARGET, cfg)
+    # cast: POC-verified (scratchpad/gcg_poc.py) that nanoGCG's overly narrow
+    # PreTrainedTokenizer param hint accepts this tokenizer at runtime.
+    result = nanogcg.run(
+        model, cast(PreTrainedTokenizer, tok), message, FIRING_TARGET, cfg
+    )
     filled = message.replace("{optim_str}", result.best_string)
     del model
     torch.cuda.empty_cache()
