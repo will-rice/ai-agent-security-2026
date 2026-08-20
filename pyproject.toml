@@ -16,6 +16,7 @@ dependencies = [
   # macOS (local dev) skips it via the marker -- scoring is green-only.
   "kernels>=0.15.2,<0.16",
   "llama-cpp-python>=0.3.34; sys_platform == 'linux'",
+  "nanogcg>=0.2.3",
   "openai>=2.45.0",
   "pre-commit>=4.1.0",
   "pydantic>=2.12.2",

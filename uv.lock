@@ -503,6 +503,7 @@ dependencies = [
     { name = "huggingface-hub" },
     { name = "kernels" },
     { name = "llama-cpp-python", marker = "sys_platform == 'linux'" },
+    { name = "nanogcg" },
     { name = "openai" },
     { name = "pre-commit" },
     { name = "pydantic" },
@@ -525,6 +526,7 @@ requires-dist = [
     { name = "huggingface-hub", specifier = ">=0.27.0" },
     { name = "kernels", specifier = ">=0.15.2,<0.16" },
     { name = "llama-cpp-python", marker = "sys_platform == 'linux'", specifier = ">=0.3.34", index = "https://abetlen.github.io/llama-cpp-python/whl/cu124" },
+    { name = "nanogcg", specifier = ">=0.2.3" },
     { name = "openai", specifier = ">=2.45.0" },
     { name = "pre-commit", specifier = ">=4.1.0" },
     { name = "pydantic", specifier = ">=2.12.2" },
@@ -776,6 +778,19 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/e0/47/dd32fa426cc72114383ac549964eecb20ecfd886d1e5ccf5340b55b02f57/mpmath-1.3.0.tar.gz", hash = "sha256:7a28eb2a9774d00c7bc92411c19a89209d5da7c4c9a9e227be8330a23a25b91f", size = 508106, upload-time = "2023-03-07T16:47:11.061Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/43/e3/7d92a15f894aa0c9c4b49b8ee9ac9850d6e63b03c9c32c0367a13ae62209/mpmath-1.3.0-py3-none-any.whl", hash = "sha256:a0b2b9fe80bbcd81a6647ff13108738cfb482d481d826cc0e02f5b35e5c88d2c", size = 536198, upload-time = "2023-03-07T16:47:09.197Z" },
+]
+
+[[package]]
+name = "nanogcg"
+version = "0.2.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "torch" },
+    { name = "transformers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9f/f0/c68249b0d4b7c2d47d4507afb3d0f8bcee5a25dd3bd11f09c527126f9469/nanogcg-0.2.3.tar.gz", hash = "sha256:0f3fe79a152c4c97a0ef9ff3284eeba9255b48d50f1daa7446d8e2de5e8c71e4", size = 13467, upload-time = "2025-01-07T20:06:27.786Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e3/5a/1319e4379a0bd3f937a8e48f3fa877160333af2a44de3e8c068fb68f84f9/nanogcg-0.2.3-py3-none-any.whl", hash = "sha256:e06d2ab42ec681b9a06b7540ccb4f2493c301e63871adae561bf551f0f0a3b43", size = 12124, upload-time = "2025-01-07T20:06:25.542Z" },
 ]
 
 [[package]]
