@@ -1612,6 +1612,11 @@ def _batch_score_metrics(scores: list[SubmissionScore]) -> dict[str, float]:
         "batch_p50_replay_s_total": _nearest_percentile(totals, 50),
         "batch_p95_replay_s_total": _nearest_percentile(totals, 95),
         "batch_mean_gen_chars_bottleneck": _mean_or_zero(gen_costs),
+        # Leanest submission's bottleneck chars this batch -- the real improvement
+        # signal: LOWER = a leaner (higher-board) shape found. It drops below the
+        # floor (~139 gpt / ~120 gemma chars) only on a genuine gain, and (unlike the
+        # MEAN) is NOT dragged up by heavy exploration probes in the same batch.
+        "batch_min_gen_chars_bottleneck": min(gen_costs) if gen_costs else 0.0,
         "batch_public_raw_per_replay_s": _safe_div(
             sum(score.public * 200.0 for score in scores), total_replay
         ),
@@ -1752,6 +1757,15 @@ def _generation_wandb_metrics(
         # (= 0.09 * n_shapes) and rose purely with shape count.
         "batch_mean_board_mean_models": batch_objective[0],
         "best_board_mean_models": objective_best.objective,
+        # Clean IMPROVEMENT panel (namespaced so it groups in W&B). run_best_board
+        # MONOTONIC running-best board -- flat = NOT improving, a step up = a new
+        # champion. gen_best_board is THIS generation's best kept submission; when it
+        # rises above run_best_board the loop just improved. Both ignore the noisy batch
+        # MEAN (`batch_mean_board_mean_models`), which exploration probes drag down even
+        # when the batch holds a strong shape. Pair with
+        # (leanest shape found; lower is better) for the leanness gradient.
+        "improvement/run_best_board": objective_best.objective,
+        "improvement/gen_best_board": mean(boards.values()) if boards else 0.0,
         "best_objective_name": objective_best.objective_name,
         # The mean of the per-model boards for THIS generation's kept best submission
         # (the champion's mean is `best_board_mean_models`; sources differ).
