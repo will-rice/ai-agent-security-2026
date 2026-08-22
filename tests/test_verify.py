@@ -14,7 +14,8 @@ _Replay = Callable[[str, str, object], tuple[dict, list, float]]
 def _fake_replay(fire_if: Callable[[str], bool]) -> _Replay:
     """A replay_chain stub firing one EXFIL per message where ``fire_if`` is true.
 
-    A K-message chain fires K posts, matching the grader's per-message replay.
+    A K-message chain fires K posts, matching the grader's per-message replay. The trace
+    carries ``raw_gen_tokens`` = total message length, so ordering-by-cost is testable.
     """
 
     def replay(
@@ -23,7 +24,8 @@ def _fake_replay(fire_if: Callable[[str], bool]) -> _Replay:
         preds = [
             {"predicate": "EXFILTRATION", "severity": 5} for m in messages if fire_if(m)
         ]
-        return {}, preds, 0.1
+        trace = {"raw_gen_tokens": float(sum(len(m) for m in messages))}
+        return trace, preds, 0.1
 
     return replay
 
@@ -33,6 +35,19 @@ def test_firing_only_drops_non_firing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(verify, "replay_chain", _fake_replay(lambda c: "GOOD" in c))
     chains = [["GOOD a"], ["DUD b"], ["GOOD c"]]
     assert verify.firing_only(chains, "gpt_oss") == [["GOOD a"], ["GOOD c"]]
+
+
+def test_firing_only_orders_leanest_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Firing chains come back ordered by ascending gen tokens (shortest-job-first).
+
+    The grader replays in list order until its deadline, so the cheapest firing
+    candidates must ship first to maximize how many complete.
+    """
+    monkeypatch.setattr(verify, "replay_chain", _fake_replay(lambda m: "GOOD" in m))
+    fat = ["GOOD " + "x" * 40]  # more chars -> more gen tokens -> ships last
+    lean = ["GOOD y"]  # fewest chars -> ships first
+    mid = ["GOOD " + "z" * 15]
+    assert verify.firing_only([fat, lean, mid], "gpt_oss") == [lean, mid, fat]
 
 
 def test_firing_only_checks_all_messages_full_fire(
