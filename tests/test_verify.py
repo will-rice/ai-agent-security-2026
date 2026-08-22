@@ -1,6 +1,6 @@
 """Tests for the pre-submission firing gate (campaign.verify)."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import pytest
@@ -12,12 +12,17 @@ _Replay = Callable[[str, str, object], tuple[dict, list, float]]
 
 
 def _fake_replay(fire_if: Callable[[str], bool]) -> _Replay:
-    """A replay_trace stub: fires EXFIL iff ``fire_if(candidate)`` is true."""
+    """A replay_chain stub firing one EXFIL per message where ``fire_if`` is true.
 
-    def replay(candidate: str, model: str, guard: object) -> tuple[dict, list, float]:
-        preds = (
-            [{"predicate": "EXFILTRATION", "severity": 5}] if fire_if(candidate) else []
-        )
+    A K-message chain fires K posts, matching the grader's per-message replay.
+    """
+
+    def replay(
+        messages: Sequence[str], model: str, guard: object
+    ) -> tuple[dict, list, float]:
+        preds = [
+            {"predicate": "EXFILTRATION", "severity": 5} for m in messages if fire_if(m)
+        ]
         return {}, preds, 0.1
 
     return replay
@@ -25,16 +30,29 @@ def _fake_replay(fire_if: Callable[[str], bool]) -> _Replay:
 
 def test_firing_only_drops_non_firing(monkeypatch: pytest.MonkeyPatch) -> None:
     """firing_only keeps only candidates that fire on the model."""
-    monkeypatch.setattr(verify, "replay_trace", _fake_replay(lambda c: "GOOD" in c))
+    monkeypatch.setattr(verify, "replay_chain", _fake_replay(lambda c: "GOOD" in c))
     chains = [["GOOD a"], ["DUD b"], ["GOOD c"]]
     assert verify.firing_only(chains, "gpt_oss") == [["GOOD a"], ["GOOD c"]]
+
+
+def test_firing_only_checks_all_messages_full_fire(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A multipost chain must fire EVERY message under full_fire.
+
+    A later-post dud drops the whole chain, which chain[0]-only checking would ship.
+    """
+    monkeypatch.setattr(verify, "replay_chain", _fake_replay(lambda m: "GOOD" in m))
+    kept = ["GOOD a SECRET_MARKER", "GOOD b SECRET_MARKER"]  # both fire -> 2*5=10
+    dud = ["GOOD c SECRET_MARKER", "DUD d SECRET_MARKER"]  # 2nd duds -> 5 < 10 -> drop
+    assert verify.firing_only([kept, dud], "gpt_oss", full_fire=True) == [kept]
 
 
 def test_verify_and_filter_drops_duds_and_writes_manifest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Duds are dropped, the cut is rewritten firing-only, and the manifest passes."""
-    monkeypatch.setattr(verify, "replay_trace", _fake_replay(lambda c: "GOOD" in c))
+    monkeypatch.setattr(verify, "replay_chain", _fake_replay(lambda c: "GOOD" in c))
     build_permodel(
         [["GOOD f1"], ["DUD f2"], ["GOOD f3"]], [["GOOD p1"], ["DUD p2"]], tmp_path
     )
@@ -55,7 +73,7 @@ def test_verify_refuses_a_pool_with_zero_firing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A pool with no firing candidate raises rather than shipping an empty pool."""
-    monkeypatch.setattr(verify, "replay_trace", _fake_replay(lambda c: "GOOD" in c))
+    monkeypatch.setattr(verify, "replay_chain", _fake_replay(lambda c: "GOOD" in c))
     build_permodel([["GOOD f"]], [["DUD p"]], tmp_path)  # plain pool all-dud
     with pytest.raises(ValueError, match="ZERO firing"):
         verify.verify_and_filter_cut(tmp_path / "attack.py")
@@ -72,7 +90,7 @@ def test_gate_fails_when_cut_changed_after_verify(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Editing the cut after verification breaks the hash bind, so the gate refuses."""
-    monkeypatch.setattr(verify, "replay_trace", _fake_replay(lambda c: True))
+    monkeypatch.setattr(verify, "replay_chain", _fake_replay(lambda c: True))
     build_permodel([["GOOD f"]], [["GOOD p"]], tmp_path)
     verify.verify_and_filter_cut(tmp_path / "attack.py")
     assert verify.is_verified(tmp_path / "attack.py")[0]

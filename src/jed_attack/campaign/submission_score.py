@@ -293,6 +293,28 @@ def replay_trace(
         ``elapsed`` is the green wall-clock seconds spent in ``env.interact`` (the T4
         time budget is measured against this).
     """
+    return replay_chain([message], model_key, guardrail_factory)
+
+
+def replay_chain(
+    messages: Sequence[str], model_key: str, guardrail_factory: Callable[[], Any]
+) -> tuple[dict[str, Any], list[dict[str, Any]], float]:
+    """Replay a MULTI-MESSAGE candidate by interacting ALL messages in ONE env.
+
+    Mirrors the grader (one env per candidate, then each message interacted, up to
+    ``MAX_REPLAY_MESSAGES_PER_FINDING=32``). Returns the accumulated trace, ALL
+    predicates (a K-post chain fires K EXFILTRATIONs), and total elapsed. A
+    single-message chain is exactly :func:`replay_trace`; firing verification for
+    multipost MUST use this so posts 2..K are checked, not just the first.
+
+    Args:
+        messages: The candidate's user messages, interacted in order in one env.
+        model_key: ``"gpt_oss"`` or ``"gemma_4"`` -- selects the resident backend.
+        guardrail_factory: Zero-arg guardrail factory.
+
+    Returns:
+        ``(trace_dict, predicates, elapsed)`` -- ``predicates`` sums over all K posts.
+    """
     agent_factory = _resident_backend(model_key)
     meter = _gen_meters[model_key]
     with _model_locks[model_key]:
@@ -306,8 +328,8 @@ def replay_trace(
         # is unaffected: fresh env + prefix-reuse fires 50/50 identical to reset on both
         # models (the old "16 then 0,0,0" was a STALE-ENV bug -- re-interacting without
         # env.reset -- not KV reuse). The lock still serializes replays (one llama.cpp
-        # context is not thread-safe). meter.reset() zeroes the per-replay token tally.
-        meter.reset()  # count only this replay's generation, under the same lock
+        # context is not thread-safe). meter.reset() zeroes the per-candidate tally.
+        meter.reset()  # count only this candidate's generation, under the same lock
         env = SandboxEnv(
             seed=_SEED,
             fixtures_dir=resolve_fixtures_dir(),
@@ -317,7 +339,8 @@ def replay_trace(
         )
         env.reset()
         start = time.perf_counter()
-        env.interact(message, max_tool_hops=_HOPS)
+        for message in messages:
+            env.interact(message, max_tool_hops=_HOPS)
         elapsed = time.perf_counter() - start
         trace = env.export_trace_dict()
         # Stash the reasoning-inclusive generation cost so _trace_gen_chars uses it
