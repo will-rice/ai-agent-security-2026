@@ -540,8 +540,12 @@ def board_density(
     """
     if severity <= 0.0:
         return 0.0
+    # Cap at one EXFIL fire: multipost (sev 16*K) earns no numerator credit, so a K-post
+    # shape (paying ~K* gen_tokens) ranks BELOW a lean single-post -> tokens-per-post
+    # objective (see config.EXFIL_FIRE_WEIGHT).
+    capped = min(severity, config.EXFIL_FIRE_WEIGHT)
     return (
-        (severity + config.NOVELTY_PER_CELL)
+        (capped + config.NOVELTY_PER_CELL)
         / 200.0
         / (
             config.INPUT_PREFILL_WEIGHT * input_tokens

@@ -218,6 +218,17 @@ MAX_SCORE_BATCH = 1
 # bonus (submission_score.py).
 NOVELTY_PER_CELL = 2.0
 
+# TOKENS-PER-POST OBJECTIVE: a candidate's board value is CAPPED at one EXFIL fire (16)
+# in the optimizer's density. Multipost (K http.post -> severity 16*K) was proven
+# token-neutral-to-negative on 2026-08-22: one AttackCandidate is one grader finding
+# with ONE score cell regardless of K (aicomp_sdk/evaluation/ops.py), so K posts pay
+# ~K* the decode for the SAME +2 novelty -> single-post maximizes board-per-token.
+# Capping severity makes the objective's numerator a firing-constant (16+2), so density
+# ranks firing shapes PURELY by throughput = 1/(input+gen_tokens) = fewest tokens per
+# post. A multipost shape fires but scores BELOW a lean single-post (same numerator, ~K*
+# the denominator). See memory multipost-137-lever-and-fixed-tokens.
+EXFIL_FIRE_WEIGHT = 16.0
+
 # Cross-model robustness weight for the optimizer objective (hedges the blind private
 # board). The objective's numerator blends the per-model MEAN board (score.public) with
 # the per-model MINIMUM: robust = (1-L)*mean + L*min. L=0.0 is the current mean behavior
