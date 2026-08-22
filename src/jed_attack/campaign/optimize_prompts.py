@@ -1756,6 +1756,12 @@ def _generation_wandb_metrics(
         # `*_public` metrics were the raw board on the AUTHORED templates
         # (= 0.09 * n_shapes) and rose purely with shape count.
         "batch_mean_board_mean_models": batch_objective[0],
+        # Batch MAX board -- the single best submission this batch. Unlike the MEAN
+        # (dragged down by heavy exploration probes), this tracks the strongest shape
+        # the batch actually produced, so a good find shows up even in a heavy batch.
+        "batch_max_board_mean_models": max(
+            (_score_public_raw_per_gen_char(s) for s in local_scores), default=0.0
+        ),
         "best_board_mean_models": objective_best.objective,
         # Clean IMPROVEMENT panel (namespaced so it groups in W&B). run_best_board
         # MONOTONIC running-best board -- flat = NOT improving, a step up = a new
