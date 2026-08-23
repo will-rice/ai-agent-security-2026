@@ -27,7 +27,7 @@ TITLE = "JED lever frontier champion"  # the kernel slug is DERIVED from this (s
 MACHINE_SHAPE = "NvidiaTeslaT4"  # this competition rejects P100 (400 FAILED_PRECONDITION)
 ENABLE_GPU = True
 ENABLE_INTERNET = False  # rerun env is offline; attack imports only aicomp_sdk + stdlib
-ATTACK_PY = "run/submission_cuts/lever_frontier_2000_gguf/attack.py"  # BARE champion (pick-1, highest public): plain SECRET_MARKER, no data= delimiter, letter-hosts. Experimental cuts (multipost_k4k8, diversity_2000) are pointed at explicitly when submitting them.
+ATTACK_PY = "run/submission_cuts/urllast_single_token/attack.py"  # PICK-1 default: single-token url-last EXFIL (best public ~104). Regenerate with scripts/build_urllast_cut.py; the deputy hedge (pick-2) is scripts/build_deputy_cut.py.
 OUT_ROOT = "run/submission_kernel"  # kernel folders are written under here, one per slug
 # -------------------------------------------------------------------------------
 

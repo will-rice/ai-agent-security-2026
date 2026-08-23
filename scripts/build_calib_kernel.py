@@ -33,6 +33,7 @@ TITLE = os.getenv(
     "JED_CALIB_TITLE", f"JED attack calib probe {MODELS.replace(',', '-')}"
 )
 MACHINE_SHAPE = "NvidiaTeslaT4"
+ENABLE_GPU = os.getenv("JED_CALIB_GPU", "1") != "0"  # CPU calib: JED_CALIB_GPU=0
 # Default embeds the calib probe bank; point at the shipped artifact for a real score.
 ATTACK_PY = os.getenv("JED_CALIB_ATTACK_PY", "run/calib/attack.py")
 OUT_ROOT = "run/submission_kernel"
@@ -149,8 +150,8 @@ def build() -> Path:
         "language": "python",
         "kernel_type": "notebook",
         "is_private": True,
-        "enable_gpu": True,
-        "machine_shape": MACHINE_SHAPE,
+        "enable_gpu": ENABLE_GPU,
+        **({"machine_shape": MACHINE_SHAPE} if ENABLE_GPU else {}),
         "enable_internet": True,  # needed to hf_hub_download the public GGUF
         "dataset_sources": [],
         "competition_sources": [COMPETITION],
