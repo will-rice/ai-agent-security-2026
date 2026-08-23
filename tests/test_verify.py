@@ -37,6 +37,30 @@ def test_firing_only_drops_non_firing(monkeypatch: pytest.MonkeyPatch) -> None:
     assert verify.firing_only(chains, "gpt_oss") == [["GOOD a"], ["GOOD c"]]
 
 
+def test_firing_only_gates_on_the_given_predicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """firing_only(predicate=CONFUSED_DEPUTY) keeps deputy-firing candidates only."""
+
+    def replay(
+        messages: Sequence[str], model: str, guard: object
+    ) -> tuple[dict, list, float]:
+        preds = []
+        for m in messages:
+            if "NOTIFY" in m:
+                preds.append({"predicate": "CONFUSED_DEPUTY", "severity": 3})
+            elif "EXFIL" in m:
+                preds.append({"predicate": "EXFILTRATION", "severity": 5})
+        return {"raw_gen_tokens": 1.0}, preds, 0.1
+
+    monkeypatch.setattr(verify, "replay_chain", replay)
+    chains = [["NOTIFY a"], ["EXFIL b"], ["NOTIFY c"]]
+    kept = verify.firing_only(
+        chains, "gpt_oss", min_severity=3, predicate="CONFUSED_DEPUTY"
+    )
+    assert kept == [["NOTIFY a"], ["NOTIFY c"]]  # EXFIL one is not a deputy fire
+
+
 def test_firing_only_orders_leanest_first(monkeypatch: pytest.MonkeyPatch) -> None:
     """Firing chains come back ordered by ascending gen tokens (shortest-job-first).
 

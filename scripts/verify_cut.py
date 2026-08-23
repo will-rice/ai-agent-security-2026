@@ -30,10 +30,16 @@ def main() -> None:
         help="require each candidate to fire its OWN K*5 (correct for MIXED pools);"
         " overrides --min-severity",
     )
+    parser.add_argument(
+        "--predicate", default="EXFILTRATION",
+        help="predicate to gate on (EXFILTRATION, or CONFUSED_DEPUTY for a deputy hedge"
+        " cut -- pair with --min-severity 3)",
+    )
     args = parser.parse_args()
 
     manifest = verify_and_filter_cut(
-        Path(args.cut), args.min_severity, full_fire=args.full_fire
+        Path(args.cut), args.min_severity, full_fire=args.full_fire,
+        predicate=args.predicate,
     )
     for var, pool in manifest["pools"].items():
         logging.info(
