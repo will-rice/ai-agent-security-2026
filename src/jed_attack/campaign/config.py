@@ -361,6 +361,15 @@ ARCHIVE_FRONTIER_CAP = int(os.getenv("JED_ARCHIVE_FRONTIER_CAP", "36"))
 # single-benign-host objective used to prefer). EXFIL only. Empty tuple disables it.
 ROBUSTNESS_PROBE_INDICES = (13, 19, 50, 213)
 
+# Extra benign host indices sampled to estimate a template's SHIPPED (host-filtered)
+# gen_tokens. Scoring on the single primary host (index 0) let a host-DEPENDENT lean
+# shape be discarded on an unlucky index -- e.g. a shape that decodes 27 tokens on ~83%
+# of hosts but balloons on a few scores as its lucky/unlucky primary, so the search
+# could never BANK it. The template's gen_tokens is instead the MEDIAN over the primary
+# + these firing samples, which is what the cut ships once it host-filters the
+# ballooners out. A spread of benign indices (distinct from the word-host probes).
+LEAN_TOKEN_SAMPLE_INDICES = (100, 800, 2000, 4000)
+
 # OPRO scored-trajectory table (optimize_prompts._render_opro_table): max elite rows
 # shown in the proposer prompt, best-first. Bounds prompt length, not archive size.
 OPRO_TABLE_ROWS = 20

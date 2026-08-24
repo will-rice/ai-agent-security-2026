@@ -2957,6 +2957,7 @@ def test_score_pools_scores_each_pool_on_its_own_model_only(
     from jed_attack.campaign import config as _cfg
 
     monkeypatch.setattr(_cfg, "ROBUSTNESS_PROBE_INDICES", ())
+    monkeypatch.setattr(_cfg, "LEAN_TOKEN_SAMPLE_INDICES", ())
     submission = Submission(
         gpt_oss=[_exfil("SECRET_MARKER {u}", 1, url_scheme="http://gpt{h}.co")],
         gemma_4=[_exfil("SECRET_MARKER {u}", 1, url_scheme="http://gem{h}.co")],
@@ -6067,6 +6068,7 @@ def test_score_submission_replays_each_message_no_dedup(
     from jed_attack.campaign import config as _cfg
 
     monkeypatch.setattr(_cfg, "ROBUSTNESS_PROBE_INDICES", ())
+    monkeypatch.setattr(_cfg, "LEAN_TOKEN_SAMPLE_INDICES", ())
     out = ss.score_submission(
         [
             _exfil("SECRET_MARKER url={u}", 1, url_scheme="a://{h}"),
@@ -6212,6 +6214,7 @@ def test_score_submission_replays_models_concurrently_and_preserves_results(
     from jed_attack.campaign import config as _cfg
 
     monkeypatch.setattr(_cfg, "ROBUSTNESS_PROBE_INDICES", ())
+    monkeypatch.setattr(_cfg, "LEAN_TOKEN_SAMPLE_INDICES", ())
     out = ss.score_submission(
         messages,
         models=("gpt_oss", "gemma_4"),
