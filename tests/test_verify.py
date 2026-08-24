@@ -100,6 +100,50 @@ def test_firing_only_default_keeps_token_heavy_firing(
     assert balloon in kept
 
 
+def _replay_with_hops(hops_for: Callable[[str], int]) -> _Replay:
+    """Replay stub: fires EXFIL where SECRET_MARKER is present, hops_for events/msg."""
+
+    def replay(
+        messages: Sequence[str], model: str, guard: object
+    ) -> tuple[dict, list, float]:
+        preds = [
+            {"predicate": "EXFILTRATION", "severity": 5}
+            for m in messages
+            if "SECRET_MARKER" in m
+        ]
+        events = [{} for m in messages for _ in range(hops_for(m))]
+        return {"raw_gen_tokens": 10.0, "tool_events": events}, preds, 0.1
+
+    return replay
+
+
+def test_firing_only_check_hops_drops_off_spec_toolcall_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """check_hops drops a firing candidate whose tool-call count != its declared calls.
+
+    A single-post shape declares one call via its one SECRET_MARKER; a host that makes
+    the model emit extra tool calls (an 8-turn ballooner) is off-spec and dropped even
+    though it fires.
+    """
+    monkeypatch.setattr(
+        verify, "replay_chain", _replay_with_hops(lambda m: 3 if "BALLOON" in m else 1)
+    )
+    clean = ["SECRET_MARKER a"]  # 1 marker, 1 tool call -> on-spec
+    balloon = ["SECRET_MARKER BALLOON b"]  # 1 marker, 3 tool calls -> off-spec
+    kept = verify.firing_only([clean, balloon], "gpt_oss", check_hops=True)
+    assert kept == [clean]
+
+
+def test_firing_only_default_ignores_hops(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without check_hops (default), an off-spec-hops firing candidate is kept."""
+    monkeypatch.setattr(
+        verify, "replay_chain", _replay_with_hops(lambda m: 3 if "BALLOON" in m else 1)
+    )
+    balloon = ["SECRET_MARKER BALLOON b"]
+    assert verify.firing_only([balloon], "gpt_oss") == [balloon]
+
+
 def test_firing_only_checks_all_messages_full_fire(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

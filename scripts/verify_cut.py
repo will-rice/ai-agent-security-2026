@@ -42,12 +42,18 @@ def main() -> None:
         " (the balloon-host tail of a host-dependent lean shape); pass a negative value"
         " to keep every firing host",
     )
+    parser.add_argument(
+        "--no-hops-check", action="store_false", dest="check_hops",
+        help="skip the structural tool-call-count check (by default a candidate whose"
+        " tool-call count differs from its declared scoring calls is dropped)",
+    )
     args = parser.parse_args()
 
     token_margin = None if args.token_margin < 0 else args.token_margin
     manifest = verify_and_filter_cut(
         Path(args.cut), args.min_severity, full_fire=args.full_fire,
         predicate=args.predicate, token_margin=token_margin,
+        check_hops=args.check_hops,
     )
     for var, pool in manifest["pools"].items():
         logging.info(
