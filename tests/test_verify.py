@@ -74,6 +74,32 @@ def test_firing_only_orders_leanest_first(monkeypatch: pytest.MonkeyPatch) -> No
     assert verify.firing_only([fat, lean, mid], "gpt_oss") == [lean, mid, fat]
 
 
+def test_firing_only_token_margin_drops_ballooners(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With token_margin, a firing-but-token-heavy host (the balloon tail) is dropped.
+
+    A host-dependent lean shape fires lean on most hosts but balloons on a few; the gate
+    ships only the lean-firing hosts so the cut is not diluted by the ballooners.
+    """
+    monkeypatch.setattr(verify, "replay_chain", _fake_replay(lambda m: "GOOD" in m))
+    lean = [["GOOD a"], ["GOOD b"], ["GOOD c"], ["GOOD d"]]  # ~6 tokens each
+    balloon = ["GOOD " + "x" * 50]  # ~55 tokens -> above lean floor + margin
+    kept = verify.firing_only(lean + [balloon], "gpt_oss", token_margin=4.0)
+    assert balloon not in kept
+    assert all(chain in kept for chain in lean)
+
+
+def test_firing_only_default_keeps_token_heavy_firing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without token_margin (default), even a token-heavy firing candidate is kept."""
+    monkeypatch.setattr(verify, "replay_chain", _fake_replay(lambda m: "GOOD" in m))
+    balloon = ["GOOD " + "x" * 50]
+    kept = verify.firing_only([["GOOD a"], balloon], "gpt_oss")  # no token filter
+    assert balloon in kept
+
+
 def test_firing_only_checks_all_messages_full_fire(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

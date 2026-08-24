@@ -13,6 +13,7 @@ import argparse
 import logging
 from pathlib import Path
 
+from jed_attack.campaign import verify as verify_module
 from jed_attack.campaign.verify import verify_and_filter_cut
 
 
@@ -35,11 +36,18 @@ def main() -> None:
         help="predicate to gate on (EXFILTRATION, or CONFUSED_DEPUTY for a deputy hedge"
         " cut -- pair with --min-severity 3)",
     )
+    parser.add_argument(
+        "--token-margin", type=float, default=verify_module._TOKEN_MARGIN,
+        help="drop firing candidates above the pool's lean floor + this many tokens"
+        " (the balloon-host tail of a host-dependent lean shape); pass a negative value"
+        " to keep every firing host",
+    )
     args = parser.parse_args()
 
+    token_margin = None if args.token_margin < 0 else args.token_margin
     manifest = verify_and_filter_cut(
         Path(args.cut), args.min_severity, full_fire=args.full_fire,
-        predicate=args.predicate,
+        predicate=args.predicate, token_margin=token_margin,
     )
     for var, pool in manifest["pools"].items():
         logging.info(
