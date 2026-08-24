@@ -246,3 +246,8 @@ data/
 # Isolated agent worktrees
 .worktrees/
 scratch_notebooks/
+
+# Session scratch + editor backups (never commit)
+scratchpad/
+*.bak
+*.bak-*
