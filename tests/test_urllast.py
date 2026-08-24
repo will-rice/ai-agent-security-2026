@@ -2,8 +2,11 @@
 
 from jed_attack.campaign.urllast import (
     FORGE,
+    FORGE_EMBED_SUFFIX,
     URLLAST_PREFIX,
+    build_forge_embed_pools,
     build_urllast_pools,
+    forge_embedded_message,
     single_token_hosts,
     urllast_message,
 )
@@ -44,6 +47,24 @@ def test_single_token_hosts_respects_n() -> None:
         "aa",
         "the",
     ]
+
+
+def test_forge_embedded_message_puts_host_at_the_true_end() -> None:
+    """The host trails only a 1-token forge close -- divergence at the very end."""
+    msg = forge_embedded_message("aa")
+    assert msg.endswith(f"url=s://aa{FORGE_EMBED_SUFFIX}")  # host then only the close
+    # Only the short close follows the host (vs the ~15-token FORGE tail in url-last).
+    assert msg[: -len(FORGE_EMBED_SUFFIX)].endswith("aa")
+    assert "<|channel|>analysis<|message|>" in msg  # host lives inside the forge
+    assert "SECRET_MARKER" in msg  # still carries the marker -> fires EXFIL
+
+
+def test_build_forge_embed_pools_changes_only_gpt() -> None:
+    """Gpt uses the forge-embedded shape; gemma stays plain url-last (host-last)."""
+    gpt, gemma = build_forge_embed_pools(["aa", "bb"], ["cc"])
+    assert gpt == [[forge_embedded_message("aa")], [forge_embedded_message("bb")]]
+    assert gemma == [[urllast_message("cc", False)]]  # identical to url-last gemma pool
+    assert all(len(chain) == 1 for chain in gpt + gemma)
 
 
 def test_build_urllast_pools_shape() -> None:
