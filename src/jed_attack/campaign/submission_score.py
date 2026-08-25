@@ -547,11 +547,15 @@ def throughput(gen_tokens: float, model: str, input_tokens: float = 0.0) -> floa
     """
     if gen_tokens == float("inf"):
         return 0.0
-    return 1.0 / (
+    denom = (
         config.INPUT_PREFILL_WEIGHT * input_tokens
         + gen_tokens
         + config.FIXED_TOKENS[model]
     )
+    # A firing shape always decodes >=1 token; a 0 denominator is degenerate (a test
+    # stub with 0 gen_tokens and a url-last suffix of 0). Guard so the divergent-suffix
+    # cost -- which is legitimately 0 for a url-last shape -- can never divide by zero.
+    return 1.0 / denom if denom > 0.0 else 0.0
 
 
 def board_density(

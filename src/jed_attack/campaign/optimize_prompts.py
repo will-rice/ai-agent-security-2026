@@ -75,6 +75,7 @@ from jed_attack.campaign.submission import (
     SubmissionBatch,
     gen_char_bucket,
     shape_family,
+    url_suffix_chars,
 )
 from jed_attack.campaign.submission_score import (
     MessageScore,
@@ -295,12 +296,28 @@ def _shape_elites(
         for (_model, message), message_score in zip(
             submission.all_messages(), score.per_message, strict=True
         ):
+            # url-last structural gate: never bank a host-in-the-middle EXFIL shape (its
+            # divergent suffix re-prefills per candidate -> ~40% loss on the grader). It
+            # is dropped here rather than merely down-ranked, so the search can't make
+            # it
+            # the incumbent. shape_index still advances to keep the diagnosis alignment.
+            if (
+                message.type is MessageType.EXFIL
+                and url_suffix_chars(message.text) > config.URL_LAST_MAX_SUFFIX_CHARS
+            ):
+                shape_index += 1
+                continue
             gen_chars = {
                 model: message_score.gen_chars_by_model.get(model, 0.0)
                 for model in config.MODELS
             }
+            # gen_tokens is the true replay cost; fall back to a chars estimate when a
+            # score entry carries only gen_chars (test stubs), so a url-last shape's
+            # 0-suffix cost never leaves a 0 denominator (see
+            # submission_score.throughput).
             gen_tokens = {
-                model: message_score.gen_tokens_by_model.get(model, 0.0)
+                model: message_score.gen_tokens_by_model.get(model)
+                or gen_chars[model] / config.CHARS_PER_TOKEN[model]
                 for model in config.MODELS
             }
             gate_severity = {
@@ -312,19 +329,23 @@ def _shape_elites(
             fires = {model: gate_severity[model] > 0.0 for model in config.MODELS}
             # Throughput is TOKEN-based (replay time = one forward pass per token); the
             # gen_char bucket stays char-based -- only a MAP-Elites diversity axis. The
-            # gateway prefills the shape's input on every replay too, so fold the
-            # input's token cost into throughput's denominator -- but only on the
-            # firing branch (a non-firing model must stay pinned to inf -> 0.0
-            # regardless of input length).
-            input_tokens = {
-                model: len(message.text) / config.CHARS_PER_TOKEN[model]
+            # gateway caches the shared prompt prefix and re-prefills ONLY the divergent
+            # suffix after the per-candidate host, so charge that suffix
+            # (:func:`url_suffix_chars` -- the text between '{u}' and the forge), NOT
+            # the
+            # whole input: a url-LAST shape pays ~0, a host-in-the-middle shape pays its
+            # trailing text on every candidate (the prefill cost that sank the
+            # commentary
+            # shape). Firing branch only (a non-firing model stays inf -> 0.0).
+            suffix_tokens = {
+                model: url_suffix_chars(message.text) / config.CHARS_PER_TOKEN[model]
                 for model in config.MODELS
             }
             throughputs = {
                 model: throughput(
                     gen_tokens[model] if fires[model] else float("inf"),
                     model,
-                    input_tokens=input_tokens[model] if fires[model] else 0.0,
+                    input_tokens=suffix_tokens[model] if fires[model] else 0.0,
                 )
                 for model in config.MODELS
             }

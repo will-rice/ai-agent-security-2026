@@ -289,14 +289,22 @@ FILL_BUDGET_CHARS: dict[str, float] = {
     model: FILL_BUDGET_TOKENS[model] * CHARS_PER_TOKEN[model] for model in MODELS
 }
 
-# Per-token cost of INPUT prefill relative to a GENERATED token. The gateway prefills
-# each shape's user message on every replay, so a longer input is real replay cost too
-# -- but prefill runs in one parallel forward pass over the whole prompt, vs one forward
-# pass PER generated token. MEASURED on the resident gemma GGUF (the grader backend,
-# scratchpad/measure_prefill_vs_decode.py, 2026-08-18): prefill 0.166 ms/token, decode
-# 7.445 ms/token -> ratio 0.166/7.445 ~= 0.022. So input costs ~1/45 of a generated
-# token: minimized for free, never traded against an (expensive) output token.
+# Per-token cost of the divergent prefill suffix relative to a GENERATED token. OUTPUT
+# (decode) DOMINATES the per-candidate cost -- a generated token is far more expensive
+# than a prefill token (local GPU measured 0.022; 2026-08-18). url-last is NOT modelled
+# as a per-token cost here: the board showed a host-in-the-middle shape loses ~40%
+# (2026-08-25 lean27/gate-cut), far more than a per-token weight can explain --
+# STRUCTURAL
+# effect (cross-candidate cache reuse), enforced as a hard gate in _shape_elites
+# (url_suffix_chars must be ~0), not a competing weight. This term stays small so decode
+# dominates; the gate keeps every banked shape url-last.
 INPUT_PREFILL_WEIGHT = 0.022
+
+# url-last structural gate: an EXFIL shape whose divergent suffix (chars between {u} and
+# the forge; submission.url_suffix_chars) exceeds this is host-in-the-middle -- it loses
+# ~40% on the prefill-bound grader (2026-08-25) -- so the search NEVER banks it as an
+# elite. Small non-zero to allow trailing punctuation after '{u}' before the forge.
+URL_LAST_MAX_SUFFIX_CHARS = 2
 
 # The single gate guardrail the optimizer scores + reads its objective from. "rules"
 # (aicomp_sdk guardrail_rules) is the data-inspecting private proxy: EXFIL scores 0

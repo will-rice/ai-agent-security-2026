@@ -278,6 +278,22 @@ def target_count(text: str) -> int:
     return len(TARGET_RE.findall(text))
 
 
+def url_suffix_chars(text: str) -> int:
+    """Chars of the DIVERGENT re-prefill suffix -- between ``{u}`` and the forge.
+
+    The grader caches the shared prompt prefix and re-prefills only the text after the
+    per-candidate host, so a url-LAST shape (nothing between ``{u}`` and
+    forge) pays ~0 here, while a host-in-the-middle shape pays for its trailing
+    data/reply text on EVERY candidate -- the prefill-bound cost the champion avoids (a
+    mid-text host scored ~40% lower on the grader). The objective charges this so the
+    search never again ranks a host-in-the-middle shape above a url-last one. Returns 0
+    for a message with no ``{u}`` (deputy, whose address already trails).
+    """
+    if "{u}" not in text:
+        return 0
+    return len(text.split("{u}", 1)[1].split("<|", 1)[0])
+
+
 def validate_message(text: str, message_type: MessageType) -> tuple[bool, str]:
     """Check a literal message against its type's ship invariants.
 
