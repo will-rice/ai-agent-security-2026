@@ -19,6 +19,8 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from jed_attack.campaign import archive, assemble, config, fill
+from jed_attack.campaign.archive import Archive, Elite
+from jed_attack.campaign.islands import IslandSet
 from jed_attack.campaign.judge_policy import (
     CandidateObjective,
     JudgeAssessment,
@@ -111,6 +113,11 @@ class Record(BaseModel):
     # Per-model public board {model: board}; the mean of these is ``public``. Persisted
     # so the robustness objective and the incumbent block can see per-victim spread.
     public_by_model: dict[str, float] = Field(default_factory=dict)
+    # Which FunSearch island (islands.IslandSet index) authored/scored this record.
+    # Persisted so island_best/global_champion can re-derive per-island rankings from
+    # the flat JSONL alone. Defaults to 0 so a pre-islands row (single shared archive,
+    # island 0's role under the Task-4 bridge) loads unchanged.
+    island: int = 0
 
     @model_validator(mode="before")
     @classmethod
@@ -225,6 +232,17 @@ def _archive_path(board_path: Path) -> Path:
     return board_path.with_name(board_path.stem + ".archive.jsonl")
 
 
+def _islands_dir(board_path: Path) -> Path:
+    """The directory of per-island archive JSONLs persisted alongside the blackboard.
+
+    Mirrors the ``blackboard.jsonl``/``_archive_path`` idiom: each island's frontier
+    lives in its own file (``island_<i>.jsonl``, see :meth:`islands.IslandSet.to_jsonl`)
+    under a sibling directory (``<stem>.islands/``) so a warm start reloads every
+    island from the same directory.
+    """
+    return board_path.with_name(board_path.stem + ".islands")
+
+
 def _frontier_map(arch: archive.Archive) -> dict[str, list[list[str]]]:
     """Per-model filled candidate chains for the archive's Pareto ship-set.
 
@@ -330,17 +348,35 @@ class Blackboard:
         self,
         path: Path,
         records: list[Record],
-        initial_archive: archive.Archive | None = None,
+        initial_islands: IslandSet | None = None,
     ) -> None:
         self._path = path
         self._records = records
-        # The MAP-Elites + Pareto archive of scored shapes: what actually ships
-        # (:meth:`reship_frontier`). Direct constructions (tests, cold start) get a
-        # fresh empty archive; :meth:`load` warm-starts it from the sibling JSONL.
-        self.archive = (
-            initial_archive if initial_archive is not None else archive.Archive()
+        # The N-island MAP-Elites + Pareto archive set: what actually ships
+        # (:meth:`reship_islands`). Direct constructions (tests, cold start) get a
+        # fresh empty set; :meth:`load` warm-starts it from the sibling islands dir.
+        self.islands = (
+            initial_islands
+            if initial_islands is not None
+            else IslandSet.for_count(config.ISLAND_COUNT)
         )
         self._lock = asyncio.Lock()
+
+    @property
+    def archive(self) -> Archive:
+        """Island 0's archive -- temporary bridge, removed in Task 5.
+
+        Keeps every pre-islands ``board.archive.*`` caller (``reship_frontier``,
+        ``champion_by_board_density``, the existing optimizer/test call sites) working
+        unmodified by reading/writing island 0 directly. Task 5 migrates each caller to
+        an explicit island and deletes this property. NOTE: annotated with the bare
+        ``Archive``/``Elite`` symbols (imported directly), not ``archive.Archive`` --
+        a property named ``archive`` shadows the ``archive`` MODULE inside this class's
+        own namespace for any annotation that bareword-references it (Python's deferred
+        annotation evaluation resolves against the class's final namespace, not
+        definition order), so ``archive.Whatever`` in a signature here would crash.
+        """
+        return self.islands.archives[0]
 
     @classmethod
     def load(cls, path: Path) -> "Blackboard":
@@ -373,7 +409,9 @@ class Blackboard:
                 path,
                 malformed_lines[:5],
             )
-        return cls(path, records, archive.Archive.from_jsonl(_archive_path(path)))
+        return cls(
+            path, records, IslandSet.from_jsonl(_islands_dir(path), config.ISLAND_COUNT)
+        )
 
     def best_public(self) -> Record | None:
         """The highest-``public`` record, or ``None`` if empty."""
@@ -386,6 +424,53 @@ class Blackboard:
         if not self._records:
             return None
         return max(self._records, key=_objective_key)
+
+    def island_best(self, i: int) -> Record | None:
+        """The best current-scheme record on island ``i``, or ``None``.
+
+        Mirrors :meth:`best_objective` (the same :func:`_objective_key` ranking),
+        restricted to records tagged ``island == i`` under the current objective
+        scheme (``objective_name == OBJECTIVE_NAME``); a stale-scheme row's magnitude
+        is not comparable to a current one (see :func:`_objective_key`), so it is
+        excluded outright here rather than merely outranked.
+
+        Args:
+            i: Island index.
+
+        Returns:
+            Island ``i``'s best-objective record, or ``None`` if it has none under the
+            current scheme.
+        """
+        candidates = [
+            record
+            for record in self._records
+            if record.island == i and record.objective_name == OBJECTIVE_NAME
+        ]
+        if not candidates:
+            return None
+        return max(candidates, key=_objective_key)
+
+    def global_champion(self) -> Record | None:
+        """The best current-scheme record across every island, or ``None``.
+
+        The ship/telemetry champion for the islands search: the max of
+        :meth:`island_best` over every island in :attr:`islands`. Replaces
+        :meth:`best_objective` at SHIP call sites (:meth:`reship_islands`); telemetry
+        call sites that report the flat-board champion regardless of scheme keep using
+        :meth:`best_objective`.
+
+        Returns:
+            The best-objective record across all islands, or ``None`` if none exist
+            under the current scheme.
+        """
+        bests = [
+            record
+            for i in range(len(self.islands.archives))
+            if (record := self.island_best(i)) is not None
+        ]
+        if not bests:
+            return None
+        return max(bests, key=_objective_key)
 
     def best_diverse(self, band: float) -> Record | None:
         """Champion with the MOST distinct shapes within ``band`` of the best objective.
@@ -577,7 +662,30 @@ class Blackboard:
             _ship_pools(_frontier_map(self.archive), out_dir)
             self.archive.to_jsonl(_archive_path(self._path))
 
-    def champion_by_board_density(self) -> archive.Elite | None:
+    async def reship_islands(self, out_dir: Path) -> None:
+        """Ship the union of every island's frontier, and persist all islands.
+
+        Merges each island's frontier (:meth:`archive.Archive.frontier`) into a fresh
+        :class:`archive.Archive` via :meth:`archive.Archive.insert` -- re-establishing
+        Pareto dominance ACROSS islands (an elite from one island can dominate one from
+        another) -- so :func:`_frontier_map`/:func:`_ship_pools` rank and ship the
+        resulting union exactly the way :meth:`reship_frontier` ships a single archive.
+        Persists every island to its own sibling JSONL via
+        :meth:`islands.IslandSet.to_jsonl` under the same lock so the shipped artifact
+        and the on-disk islands never disagree.
+
+        Args:
+            out_dir: Where :func:`assemble.build_permodel` writes ``attack.py``.
+        """
+        async with self._lock:
+            union = archive.Archive()
+            for island_archive in self.islands.archives:
+                for elite in island_archive.frontier():
+                    union.insert(elite)
+            _ship_pools(_frontier_map(union), out_dir)
+            self.islands.to_jsonl(_islands_dir(self._path))
+
+    def champion_by_board_density(self) -> Elite | None:
         """Frontier point maximizing :func:`archive.elite_board_density` (logging).
 
         The whole frontier ships; this is only the single representative surfaced in

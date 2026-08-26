@@ -5472,6 +5472,44 @@ def test_best_objective_breaks_ties_by_sum_then_defaults_old_rows(
     assert board.best_objective() is hi_sum
 
 
+def test_blackboard_island_best_and_global_champion(tmp_path: Path) -> None:
+    """island_best returns each island's own best; global_champion returns the overall.
+
+    Two records tagged onto different islands with different objectives: each
+    island's own best must be its OWN record (not the other island's, even though it
+    is stronger), while global_champion crosses islands to pick the single strongest.
+    """
+    from jed_attack.campaign import blackboard as bb
+    from jed_attack.campaign.submission import Message, MessageType, Submission
+
+    def rec(objective: float, island: int, tag: str) -> bb.Record:
+        msg = Message(
+            type=MessageType.EXFIL, text=f"SECRET_MARKER {tag} url={{u}}", hops=1
+        )
+        return bb.Record(
+            submission=Submission(gpt_oss=[msg], gemma_4=[msg]),
+            public=1.0,
+            feedback=[],
+            reasoning="",
+            model="m",
+            worker=0,
+            ts=1.0,
+            valid=True,
+            fires=True,
+            objective=objective,
+            objective_name=bb.OBJECTIVE_NAME,
+            island=island,
+        )
+
+    weak = rec(3.0, island=1, tag="WEAK")
+    strong = rec(9.0, island=2, tag="STRONG")
+    board = bb.Blackboard(tmp_path / "board.jsonl", [weak, strong])
+
+    assert board.island_best(1) is weak
+    assert board.island_best(2) is strong
+    assert board.global_champion() is strong
+
+
 def test_blackboard_best_diverse_trades_objective_for_shapes(tmp_path: Path) -> None:
     """best_diverse ships the most-shape record within the band; band=0 is strict.
 
