@@ -23,7 +23,7 @@ import build_kernel
 NVIDIA_KAGGLE_SCRIPTS = Path("/home/will/.agents/skills/nvidia-kaggle-skill/scripts")
 ENV_FILE = build_kernel.REPO_ROOT / ".env"  # supplies KAGGLE_API_TOKEN
 SUBMISSION_FILE = "submission.csv"  # the output the competition rerun scores
-MESSAGE = "url-after-end 108 champion: gpt forge-before-host (host truly last) + plain gemma, 1826 firing/pool (verified all_fire). Re-submitting the best-known real-board shape as the clean floor after the objective was recalibrated to total input+output tokens."
+MESSAGE = "Token-ablation-minimized 108: same firing url-after-end shape run through the exact-reward minimizer (gpt 53->51, gemma 51->48 total tok). Gen is pinned at the 28/29 decode floor, so ALL savings are INPUT tokens -> a board LIFT over the 108 champion means input/prefill costs (CPU-serial), FLAT means decode-bound. Direct decode-vs-prefill test."
 POLL_INTERVAL_S = 30
 POLL_TIMEOUT_S = 6 * 60 * 60  # 6h covers the push run plus the rerun eval
 # Never ship an under-filled pool. A pool below the budget-completable count leaves grader
