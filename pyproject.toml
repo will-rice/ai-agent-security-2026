@@ -14,6 +14,7 @@ dependencies = [
   # GPU scorer, linux-only: a CUDA build from the pinned llama-cuda index (see
   # [tool.uv.sources]) so `uv sync` installs the CUDA wheel instead of PyPI's CPU one.
   # macOS (local dev) skips it via the marker -- scoring is green-only.
+  "kaggle>=2.2.4",
   "kernels>=0.15.2,<0.16",
   "llama-cpp-python>=0.3.34; sys_platform == 'linux'",
   "nanogcg>=0.2.3",

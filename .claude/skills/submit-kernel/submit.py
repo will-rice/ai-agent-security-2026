@@ -23,15 +23,17 @@ import build_kernel
 NVIDIA_KAGGLE_SCRIPTS = Path("/home/will/.agents/skills/nvidia-kaggle-skill/scripts")
 ENV_FILE = build_kernel.REPO_ROOT / ".env"  # supplies KAGGLE_API_TOKEN
 SUBMISSION_FILE = "submission.csv"  # the output the competition rerun scores
-MESSAGE = "Relaxed-gate LEAN cut: optimizer (fill-fraction robustness gate) banked lean shapes -- gpt no-constrain render ~25 tok total (vs champion 28), gemma partial-unquoted ~27 (vs 29), 100pct firing url-last, gated. First real-board test of the leaner decode transferring to completions."
+MESSAGE = "url-after-end 108 champion: gpt forge-before-host (host truly last) + plain gemma, 1826 firing/pool (verified all_fire). Re-submitting the best-known real-board shape as the clean floor after the objective was recalibrated to total input+output tokens."
 POLL_INTERVAL_S = 30
 POLL_TIMEOUT_S = 6 * 60 * 60  # 6h covers the push run plus the rerun eval
 # Never ship an under-filled pool. A pool below the budget-completable count leaves grader
 # time idle before its deadline: champion_gated shipped ~994 firing and scored 89.5, vs the
-# full 2000-candidate champion's 104.4. Require at least this many FIRING candidates per
-# model pool so the grader never runs out of candidates. Raising fire-rate/host-count to
-# clear this is the point -- a tightly-gated small pool loses to a big one.
-MIN_SHIP_CANDIDATES = 1900
+# full 2000-candidate champion's 104.4. The real floor is the completable count -- the grader
+# only replays ~985-1010 candidates before the deadline (memory completion-ceiling-aug15), so
+# any pool comfortably above that (e.g. the 1826-host url-after-end 108 champion) never runs
+# the grader dry. Floor set at 1200 = the completable ceiling plus margin, NOT the leaner-pool
+# host count; a pool above it is fine even if it does not reach 1900 single-token hosts.
+MIN_SHIP_CANDIDATES = 1200
 # ------------------------------------------------------
 
 
