@@ -1,7 +1,7 @@
 """MAP-Elites + Pareto archive of attack shapes.
 
 The unit is a scored shape with a 4-D vector: per-model throughput AND per-model
-severity (one of each per victim model). Cells are keyed by (family, gen_char_bucket);
+severity (one of each per victim model). Cells are keyed by (family, input_char_bucket);
 each cell keeps its Pareto-non-dominated elites, and the globally non-dominated set
 (frontier) is the elite pool that ships, ranked by summed per-model board-density.
 Selection is Pareto over the raw per-model throughput/severity, never a scalar.
@@ -27,7 +27,7 @@ class Elite:
         severity: Per-model predicate severity, `{model: severity}`.
         diagnosis: Free-text scorer/judge diagnosis for this shape.
         family: The MAP-Elites structural family (behavioral descriptor axis 1).
-        bucket: The gen_char_bucket cost bin (behavioral descriptor axis 2).
+        bucket: The input_char_bucket length bin (behavioral descriptor axis 2).
         url_scheme: EXFIL URL template ('{h}' host slot) the shape's shipped candidates
             post to; default reproduces the historical ``http://<host>.co``.
         turns: Per-model agent turn count for this shape's replay, ``{model: turns}``.

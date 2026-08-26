@@ -32,9 +32,9 @@ _log = logging.getLogger(__name__)
 # Tag stamped on every record scored under the CURRENT optimizer objective. Bump this
 # whenever the shipping/objective scheme changes: champion selection prefers rows
 # carrying the current tag so a prior scheme's incomparable magnitudes cannot freeze
-# the logged champion (see _objective_key). The current tag is ``v22`` (simple
-# input_tokens + gen_tokens cost, see docstring); ``v21`` was a PREFIX/TRAILING position
-# weighting, since retired. NOTE: ROBUSTNESS_LAMBDA is currently UN-WIRED -- the score
+# the logged champion (see _objective_key). The current tag is ``v23`` (input-length
+# diversity axis + reply-suppression structural flag; same v22 total-token cost, see
+# docstring). NOTE: ROBUSTNESS_LAMBDA is currently UN-WIRED -- the score
 # never reads it, so a non-zero value only changes the tag/pool below, not the score.
 def objective_scheme_name(
     robustness_lambda: float,
@@ -43,13 +43,15 @@ def objective_scheme_name(
 ) -> str:
     """Scheme tag for the current objective weights.
 
-    ``v22`` marks the simple total-token cost model: throughput = value /
-    (input_tokens + gen_tokens) -- input and output tokens weighted equally, no
-    position split. The board pins it: lean-big LOST on a longer input despite fewer
-    decode tokens (input tokens cost), but forge-embed was FLAT at the same token count
-    (position does not). It replaces v21's PREFIX/TRAILING position weighting, so the
-    denominator scale changed and v21/v20 rows are stale-scheme (discarded on rank).
-    ``v20`` was the MAP-Elites + Pareto
+    ``v23`` re-keys the archive's diversity axis from generated length to INPUT
+    length (``input_char_bucket``) and adds a reply-suppression flag to shape_family:
+    generated output is floored (28/29 on every firing shape), so the old gen-char
+    axis illuminated nothing and the search collapsed to one cell; input length is the
+    axis that varies and that the objective minimises. The cost model is unchanged from
+    ``v22`` (throughput = value / (input_tokens + gen_tokens), input and output weighted
+    equally -- lean-big LOST on a longer input, forge-embed FLAT at the same count).
+    The descriptor change re-keys every cell, so v22/earlier rows are stale (discarded
+    on rank). ``v20`` was the MAP-Elites + Pareto
     shipping scheme: the shipped pool is the archive's Pareto frontier over the two raw
     per-model throughput columns (see :mod:`jed_attack.campaign.archive`), NOT a single
     MIN-scalar champion. The MIN
@@ -61,9 +63,9 @@ def objective_scheme_name(
     below, never the score itself); threaded through only so a future robustness-aware
     objective has its own pool ready.
     """
-    base = f"{gate}_pareto_v22"
+    base = f"{gate}_pareto_v23"
     if robustness_lambda != 0.0:
-        base = f"robust{robustness_lambda:g}_{gate}_pareto_v22"
+        base = f"robust{robustness_lambda:g}_{gate}_pareto_v23"
     if portfolio_lambda != 0.0:
         base = f"portfolio{portfolio_lambda:g}_{base}"
     return base

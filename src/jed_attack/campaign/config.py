@@ -363,7 +363,13 @@ SHAPE_FAMILIES: tuple[str, ...] = (
     "injection_variant",
     "deputy",
 )
-GEN_CHAR_BUCKET_S = 25.0  # quantization bin (chars) for the archive's cost axis
+GEN_CHAR_BUCKET_S = 25.0  # quantization bin (chars) for the (legacy) gen-cost axis
+# The archive's diversity axis is now INPUT length, not generated length. Generated
+# output is floored (28/29 tokens on every firing shape -- ablation + prefill probes),
+# so a gen-char bucket is ~constant and illuminates nothing -> the search collapsed to
+# one cell (monoculture). INPUT length varies and is what the objective minimises, so
+# binning on it (with shape_family) keeps a leanest-input elite per family, per bin.
+INPUT_CHAR_BUCKET_S = 10.0  # ~2-3 input tokens per bin
 
 # MAP-Elites archive: cap on the global frontier (the shipped elite pool). Bounds
 # per-generation replay cost the same way MAX_SHIP_MESSAGES does for the flat pool.

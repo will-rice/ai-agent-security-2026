@@ -74,7 +74,7 @@ from jed_attack.campaign.submission import (
     MessageType,
     Submission,
     SubmissionBatch,
-    gen_char_bucket,
+    input_char_bucket,
     shape_family,
     url_suffix_chars,
 )
@@ -367,7 +367,7 @@ def _shape_elites(
                     severity=gate_severity,
                     diagnosis=diagnosis,
                     family=shape_family(message.text, message.type),
-                    bucket=gen_char_bucket(max(gen_chars.values(), default=0.0)),
+                    bucket=input_char_bucket(len(message.text)),
                     url_scheme=message.url_scheme,
                     turns={
                         model: message_score.turns_by_model.get(model, 0.0)

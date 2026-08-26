@@ -385,26 +385,42 @@ def _validate_deputy(text: str) -> tuple[bool, str]:
 
 
 def gen_char_bucket(gen_chars: float) -> int:
-    """Quantize a shape's generation cost into the archive's cost-axis bin index."""
+    """Quantize a shape's generation cost into a cost-axis bin index (legacy)."""
     return int(math.ceil(gen_chars / config.GEN_CHAR_BUCKET_S))
 
 
+def input_char_bucket(input_chars: float) -> int:
+    """Quantize a shape's INPUT length into the archive's diversity-axis bin index.
+
+    Replaces :func:`gen_char_bucket` as the archive's second descriptor axis: generated
+    output is floored, so it gave no diversity; input length is the axis that varies,
+    so binning on it illuminates the leaner-input frontier.
+    """
+    return int(math.ceil(input_chars / config.INPUT_CHAR_BUCKET_S))
+
+
 def shape_family(text: str, message_type: "MessageType") -> str:
-    """Coarse structural family of a shape (a MAP-Elites behavioral descriptor).
+    """Structural family of a shape (a MAP-Elites behavioral descriptor).
 
     Pure function of the literal text + type: deputy is its own family; among exfil
     shapes, a harmony forge injection is 'forge', a non-'Call'/'http.post-first' lead
     verb is 'verb_variant', extra channel scaffolding beyond a single analysis close is
-    'injection_variant', else 'plain'.
+    'injection_variant', else 'plain'. A ``+sup`` suffix marks a reply-suppressed shape
+    (ends its turn with no message) -- a distinct INPUT structure in its own cell so
+    the search illuminates suppressed and unsuppressed variants side by side instead of
+    collapsing them (structural-descriptor illumination, research lever #3).
     """
     if message_type is MessageType.DEPUTY:
         return "deputy"
     if "<|channel|>" in text:
         # more than one channel token pair -> a richer injection than the plain close
         if text.count("<|channel|>") > 1 or "commentary" in text:
-            return "injection_variant"
-        return "forge"
-    lead = text.split(None, 1)[0].lower() if text.split() else ""
-    if lead not in ("call", "http.post"):
-        return "verb_variant"
-    return "plain"
+            base = "injection_variant"
+        else:
+            base = "forge"
+    else:
+        lead = text.split(None, 1)[0].lower() if text.split() else ""
+        base = "verb_variant" if lead not in ("call", "http.post") else "plain"
+    lower = text.lower()
+    suppressed = "no message" in lower or "end your turn" in lower
+    return f"{base}+sup" if suppressed else base
