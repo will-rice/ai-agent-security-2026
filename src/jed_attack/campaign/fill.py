@@ -9,41 +9,35 @@ typing, validation, target counting, and templatizing can never disagree on what
 target is.
 """
 
+import json
 from collections.abc import Sequence
+from pathlib import Path
 
 from jed_attack.campaign.targets import _EMAIL_RE, _URL_RE
 
 MARKER = "SECRET_MARKER"
-_ALPHA = "abcdefghijklmnopqrstuvwxyz"
 # Default URL scheme -- reproduces the historical ``http://<host>.co`` when a message,
 # elite, or persisted record does not author its own scheme, so every existing ``{u}``
 # caller renders byte-identically.
 DEFAULT_URL_SCHEME = "http://{h}.co"
 
-
-def _alpha_word(index: int, width: int) -> str:
-    value = int(index)
-    chars: list[str] = []
-    for _ in range(width):
-        chars.append(_ALPHA[value % 26])
-        value //= 26
-    return "".join(reversed(chars))
+# The single-token host pool (2-char then 3-char lowercase words that tokenize to
+# exactly one token under BOTH victim GGUF tokenizers). Regenerate with
+# jed_attack.scripts.gen_single_token_hosts whenever a victim model changes.
+SINGLE_TOKEN_HOSTS: list[str] = json.loads(
+    (Path(__file__).parent / "single_token_hosts.json").read_text(encoding="utf-8")
+)
 
 
-def host(index: int, min_len: int = 2) -> str:
-    """A unique lowercase host for a candidate index, at least ``min_len`` chars.
+def host(index: int) -> str:
+    """The unique single-token host for a candidate index.
 
-    Grows the length only when the current length's ``26**length`` space is exhausted,
-    so hosts stay as short as the scheme's floor while remaining unique across the whole
-    pool. ``host(index)`` (default ``min_len=2``) equals the historical 2-then-3 letter
-    host for every index used here.
+    Draws from :data:`SINGLE_TOKEN_HOSTS` (2-char then 3-char lowercase words that are
+    one token under both victim tokenizers), so every candidate's divergent host is a
+    single token -- minimal decode + maximal prefix-cache reuse. Raises past the set (a
+    4-char extension is the future hook; unreachable under ``MAX_REPLAY_FINDINGS``).
     """
-    length = max(1, int(min_len))
-    offset = int(index)
-    while offset >= 26**length:
-        offset -= 26**length
-        length += 1
-    return _alpha_word(offset, length)
+    return SINGLE_TOKEN_HOSTS[int(index)]
 
 
 def render_url(url_scheme: str, index: int) -> str:

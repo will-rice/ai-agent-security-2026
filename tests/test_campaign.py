@@ -9524,18 +9524,6 @@ def test_frontier_map_ship_breaks_density_ties_toward_shorter_input() -> None:
 # --- Optimizer-authored URL scheme (Approach B) ----------------------------------
 
 
-def test_host_growth_matches_old_and_stays_unique() -> None:
-    """host() reproduces the historical 2-then-3 letter host and never collides."""
-    from jed_attack.campaign import fill
-
-    assert fill.host(0) == "aa"
-    assert fill.host(5) == "af"
-    assert fill.host(675) == fill._alpha_word(675, 2)
-    assert fill.host(676) == fill._alpha_word(0, 3)
-    assert fill.host(700) == fill._alpha_word(24, 3)
-    assert len({fill.host(i) for i in range(700)}) == 700  # no collision across growth
-
-
 def test_default_scheme_is_backward_compatible() -> None:
     """The default url_scheme reproduces the http://<host>.co byte-for-byte."""
     from jed_attack.campaign import fill

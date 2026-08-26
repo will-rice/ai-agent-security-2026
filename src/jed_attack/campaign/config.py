@@ -424,8 +424,9 @@ if not 0.0 <= FILL_FIRE_FRACTION <= 1.0:
 # of hosts but balloons on a few scores as its lucky/unlucky primary, so the search
 # could never BANK it. The template's gen_tokens is instead the MEDIAN over the primary
 # + these firing samples, which is what the cut ships once it host-filters the
-# ballooners out. A spread of benign indices (distinct from the word-host probes).
-LEAN_TOKEN_SAMPLE_INDICES = (100, 800, 2000, 4000)
+# ballooners out. A spread of benign indices (distinct from the word-host probes). Must
+# stay under len(fill.SINGLE_TOKEN_HOSTS) (3788) now that host() raises past the pool.
+LEAN_TOKEN_SAMPLE_INDICES = (100, 800, 2000, 3700)
 
 # OPRO scored-trajectory table (optimize_prompts._render_opro_table): max elite rows
 # shown in the proposer prompt, best-first. Bounds prompt length, not archive size.
