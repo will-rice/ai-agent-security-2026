@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from jed_attack.campaign import archive
 from jed_attack.campaign.islands import IslandSet
 
@@ -146,3 +148,22 @@ def test_novelty_insert_purges_a_stale_same_cell_residue_on_a_win() -> None:
     assert ("f", 10) in families  # winner kept, not silently dropped
     assert ("g", 3) in families  # rival untouched
     assert ("g", 1) not in families  # dominator lost the novelty contest to winner
+
+
+def test_stall_triggers_reset_and_migration_cadence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """3 flat generations stall the island; reset clears it; migration is periodic."""
+    from jed_attack.campaign import config
+    from jed_attack.campaign import islands as isl
+
+    monkeypatch.setattr(config, "ISLAND_STAGNATION_GENERATIONS", 3)
+    monkeypatch.setattr(config, "ISLAND_MIGRATION_GENERATIONS", 4)
+    islands = IslandSet.for_count(2)
+    islands.insert(1, _elite("plain", 0.05))
+    d = islands.local_best_density(1)
+    flags = [islands.note_generation(1, d) for _ in range(3)]  # flat density
+    assert flags == [False, False, True]  # 3rd flat generation stalls
+    islands.reset_island(1, _elite("forge", 0.02))
+    assert islands.stall[1] == 0 and len(islands.archives[1].frontier()) == 1
+    assert not isl.should_migrate(3) and isl.should_migrate(4)

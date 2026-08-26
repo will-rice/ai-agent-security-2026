@@ -218,11 +218,26 @@ MAX_SCORE_BATCH = 1
 # bonus (submission_score.py).
 NOVELTY_PER_CELL = 2.0
 
-# FunSearch islands: the novelty island (islands.IslandSet island 0) keeps a contested
-# cell's structurally-DISTINCT elite over its higher-throughput rival, ranking distance
+# FunSearch islands: N independent Archive lineages (islands.IslandSet), one per
+# parallel proposer worker, so the search evolves several lineages instead of
+# collapsing onto one shared frontier. See
+# docs/superpowers/specs/2026-08-26-funsearch-islands-design.md.
+ISLAND_COUNT = int(os.getenv("JED_ISLANDS", "4"))
+
+# The novelty island (islands.IslandSet island 0) keeps a contested cell's
+# structurally-DISTINCT elite over its higher-throughput rival, ranking distance
 # to the k nearest neighbors in the rest of the island (islands.novelty). k, not a
 # fraction/ratio, so it stays an int knob alongside the other campaign constants.
 NOVELTY_NEIGHBORS = int(os.getenv("JED_NOVELTY_K", "3"))
+
+# Consecutive non-improving islands.IslandSet.note_generation calls (an island's local
+# best density not exceeding its best_seen) before a worker hard-resets its island via
+# islands.IslandSet.reset_island. 0 disables stagnation reset.
+ISLAND_STAGNATION_GENERATIONS = int(os.getenv("JED_ISLAND_STALL", "10"))
+
+# Generation cadence at which the global-best elite migrates into a random quality
+# island (islands.should_migrate). 0 disables migration.
+ISLAND_MIGRATION_GENERATIONS = int(os.getenv("JED_ISLAND_MIGRATE", "12"))
 
 # TOKENS-PER-POST OBJECTIVE: a candidate's board value is CAPPED at one EXFIL fire (16)
 # in the optimizer's density. Multipost (K http.post -> severity 16*K) was proven

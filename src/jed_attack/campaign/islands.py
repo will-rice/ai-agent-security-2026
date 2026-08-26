@@ -68,10 +68,13 @@ class IslandSet:
 
     Attributes:
         archives: One archive per island.
-        stall: Per-island count of consecutive inserts that did not improve
-            :attr:`best_seen` (bookkeeping for a later migration/reset task).
-        best_seen: Per-island best :func:`archive.elite_board_density` ever
-            observed (bookkeeping for a later migration/reset task).
+        stall: Per-island count of consecutive :meth:`note_generation` calls whose
+            reported density did not exceed :attr:`best_seen` -- the stagnation clock
+            :data:`config.ISLAND_STAGNATION_GENERATIONS` resets against.
+        best_seen: Per-island best :func:`archive.elite_board_density` ever inserted
+            into that island's frontier -- kept current by both :meth:`insert` (on
+            every elite that enters the frontier) and :meth:`note_generation` (on
+            every generation whose reported density is a new high).
     """
 
     archives: list[Archive]
@@ -104,9 +107,12 @@ class IslandSet:
         Returns:
             Whether the elite entered island ``i``'s frontier.
         """
-        if i == 0:
-            return self._novelty_insert(elite)
-        return self.archives[i].insert(elite)
+        entered = (
+            self._novelty_insert(elite) if i == 0 else self.archives[i].insert(elite)
+        )
+        if entered:
+            self.best_seen[i] = max(self.best_seen[i], elite_board_density(elite))
+        return entered
 
     def _novelty_insert(self, elite: Elite) -> bool:
         """Insert ``elite`` into island 0, the novelty island.
@@ -159,6 +165,46 @@ class IslandSet:
                 if other_cell is not None and blocker in other_cell:
                     other_cell.remove(blocker)
         return archive0.insert(elite)
+
+    def note_generation(self, i: int, density: float) -> bool:
+        """Record one generation's local-best density for island ``i``.
+
+        A generation whose ``density`` exceeds :attr:`best_seen` resets island ``i``'s
+        stall clock; otherwise the clock advances by one.
+
+        Args:
+            i: Island index.
+            density: This generation's local-best board-density for island ``i`` (see
+                :meth:`local_best_density`).
+
+        Returns:
+            Whether island ``i`` has now stalled for
+            :data:`config.ISLAND_STAGNATION_GENERATIONS` consecutive generations
+            without exceeding :attr:`best_seen`. Always ``False`` when that threshold
+            is <= 0 (disabled).
+        """
+        if density > self.best_seen[i]:
+            self.best_seen[i] = density
+            self.stall[i] = 0
+        else:
+            self.stall[i] += 1
+        threshold = config.ISLAND_STAGNATION_GENERATIONS
+        return threshold > 0 and self.stall[i] >= threshold
+
+    def reset_island(self, i: int, seed: Elite | None) -> None:
+        """Hard-reset island ``i`` after it stalls.
+
+        Args:
+            i: Island index to reset.
+            seed: An elite to reseed the fresh archive with (inserted via
+                :meth:`insert`, so island 0's novelty rule still applies), or ``None``
+                to leave the reset archive empty.
+        """
+        self.archives[i] = Archive()
+        if seed is not None:
+            self.insert(i, seed)
+        self.stall[i] = 0
+        self.best_seen[i] = 0.0
 
     def local_best_density(self, i: int) -> float:
         """Max :func:`archive.elite_board_density` over island ``i``'s frontier.
@@ -234,3 +280,21 @@ class IslandSet:
             for i in range(n)
         ]
         return cls(archives=archives, stall=[0] * n, best_seen=[0.0] * n)
+
+
+def should_migrate(generation: int) -> bool:
+    """Whether ``generation`` is a migration tick.
+
+    Args:
+        generation: The current generation counter (1-based; generation 0 never
+            migrates).
+
+    Returns:
+        True every :data:`config.ISLAND_MIGRATION_GENERATIONS` generations. Always
+        False when that cadence is <= 0 (disabled) or ``generation`` is 0.
+    """
+    return (
+        config.ISLAND_MIGRATION_GENERATIONS > 0
+        and generation > 0
+        and generation % config.ISLAND_MIGRATION_GENERATIONS == 0
+    )
