@@ -15,7 +15,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-
 ROOT = Path("/home/will/projects/ai-agent-security-2026")
 SKILL_ROOT = Path("/home/will/.agents/skills/nvidia-kaggle-skill")
 
@@ -67,8 +66,10 @@ def _merge_competition_info(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         INSERT INTO competition_info
-            (competition_id, title, description, evaluation_metric, url, deadline, updated_at)
-        SELECT competition_id, title, description, evaluation_metric, url, deadline, updated_at
+            (competition_id, title, description, evaluation_metric, url, deadline,
+             updated_at)
+        SELECT competition_id, title, description, evaluation_metric, url, deadline,
+               updated_at
         FROM src.competition_info
         WHERE true
         ON CONFLICT(competition_id) DO UPDATE SET
@@ -87,8 +88,12 @@ def _merge_discussions(source: Path, target: Path) -> dict[str, int | bool]:
         raise FileNotFoundError(source)
     if _copy_if_missing(source, target):
         with sqlite3.connect(target) as copied:
-            discussions = copied.execute("SELECT COUNT(*) FROM discussions").fetchone()[0]
-            comments = copied.execute("SELECT COUNT(*) FROM discussion_comments").fetchone()[0]
+            discussions = copied.execute("SELECT COUNT(*) FROM discussions").fetchone()[
+                0
+            ]
+            comments = copied.execute(
+                "SELECT COUNT(*) FROM discussion_comments"
+            ).fetchone()[0]
         return {"copied": True, "discussions": discussions, "comments": comments}
 
     before_discussions = _count(target, "discussions")
@@ -99,11 +104,11 @@ def _merge_discussions(source: Path, target: Path) -> dict[str, int | bool]:
         conn.execute(
             """
             INSERT INTO discussions
-                (competition_id, discussion_id, title, author, author_username, author_tier,
-                 votes, comment_count, body_markdown, url, tags,
+                (competition_id, discussion_id, title, author, author_username,
+                 author_tier, votes, comment_count, body_markdown, url, tags,
                  created_at, updated_at, last_fetched_at, ingested_at)
-            SELECT competition_id, discussion_id, title, author, author_username, author_tier,
-                   votes, comment_count, body_markdown, url, tags,
+            SELECT competition_id, discussion_id, title, author, author_username,
+                   author_tier, votes, comment_count, body_markdown, url, tags,
                    created_at, updated_at, last_fetched_at, ingested_at
             FROM src.discussions
             WHERE true
@@ -123,11 +128,13 @@ def _merge_discussions(source: Path, target: Path) -> dict[str, int | bool]:
                 END,
                 votes = excluded.votes,
                 comment_count = CASE
-                    WHEN excluded.comment_count > discussions.comment_count THEN excluded.comment_count
+                    WHEN excluded.comment_count > discussions.comment_count
+                    THEN excluded.comment_count
                     ELSE discussions.comment_count
                 END,
                 body_markdown = CASE
-                    WHEN length(excluded.body_markdown) > length(discussions.body_markdown)
+                    WHEN length(excluded.body_markdown)
+                        > length(discussions.body_markdown)
                     THEN excluded.body_markdown
                     ELSE discussions.body_markdown
                 END,
@@ -141,7 +148,9 @@ def _merge_discussions(source: Path, target: Path) -> dict[str, int | bool]:
                 END,
                 created_at = COALESCE(discussions.created_at, excluded.created_at),
                 updated_at = COALESCE(excluded.updated_at, discussions.updated_at),
-                last_fetched_at = COALESCE(excluded.last_fetched_at, discussions.last_fetched_at),
+                last_fetched_at = COALESCE(
+                    excluded.last_fetched_at, discussions.last_fetched_at
+                ),
                 ingested_at = excluded.ingested_at
             """
         )
@@ -303,6 +312,7 @@ def _kernel(args: argparse.Namespace) -> dict[str, int | bool]:
 
 
 def main() -> int:
+    """Parse CLI args, run the requested ingest, and print a JSON merge summary."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", default=str(ROOT))
     parser.add_argument("--skill-root", default=str(SKILL_ROOT))

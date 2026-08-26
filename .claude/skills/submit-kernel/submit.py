@@ -60,8 +60,8 @@ def main() -> None:
         sys.exit(f"KAGGLE_API_TOKEN not set (expected in {ENV_FILE})")
 
     # FIRING GATE: a cut cannot be submitted unless every embedded candidate is verified
-    # firing (a hash-bound verified.json from scripts/verify_cut.py). This fails BEFORE
-    # the push, so a dud pool can never reach a submission.
+    # firing (a hash-bound verified.json from `python -m jed_attack.scripts.verify_cut`).
+    # This fails BEFORE the push, so a dud pool can never reach a submission.
     from jed_attack.campaign.verify import is_verified
 
     attack_path = build_kernel.REPO_ROOT / build_kernel.ATTACK_PY

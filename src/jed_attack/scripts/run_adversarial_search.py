@@ -1,6 +1,6 @@
 """Run the adversarial search on one model and report the best firing shape.
 
-Usage: uv run python scripts/run_adversarial_search.py gpt_oss
+Usage: uv run python -m jed_attack.scripts.run_adversarial_search gpt_oss
 Pause the LLM-proposer optimizer first; this claims the GPU.
 """
 

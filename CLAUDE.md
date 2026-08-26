@@ -13,7 +13,8 @@ Load-bearing facts learned by direct source-reading + on-Kaggle verification. Se
   public board.** Reference hashes: optimal `6724fedf…`(2502B), eval_predicates `c8edd759…`,
   sandbox `b781375c…`.
 - **You can score on Kaggle without a submission slot**: push a kernel (competition_sources
-  attached) and read its output. `scripts/build_calib_kernel.py` already uses this pattern.
+  attached) and read its output. `python -m jed_attack.scripts.build_calib_kernel` already uses
+  this pattern.
 
 ## Scoring surface: submission.csv = 4 rows (2 models × 2 guardrails)
 Rows: `gpt_oss_public, gpt_oss_private, gemma_public, gemma_private` (jed_attack_gateway.py).

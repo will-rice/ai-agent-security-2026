@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Build a Kaggle T4 *calibration* kernel: run the REAL competition gateway on a
-T4 to measure per-template (gen_chars, replay-seconds) on grading hardware, WITHOUT
-submitting (public guardrail only, no leaderboard slot spent).
+"""Build a Kaggle T4 *calibration* kernel.
+
+Runs the REAL competition gateway on a T4 to measure per-template (gen_chars,
+replay-seconds) on grading hardware, WITHOUT submitting (public guardrail only, no
+leaderboard slot spent).
 
 The embedded ``run/calib/attack.py`` probes each of its 15 single-post templates
 ``_PROBE_REPS`` times inside ``get_attack`` and prints a ``[fill_telemetry]`` JSON
@@ -41,12 +43,20 @@ OUT_ROOT = "run/submission_kernel"
 BUDGET_S = float(os.getenv("JED_CALIB_BUDGET_S", "900"))
 # PUBLIC repos, no HF token needed. env keys the model server reads for a local path.
 GGUF = {
-    "gpt_oss": ("GPT_OSS_MODEL_PATH", "unsloth/gpt-oss-20b-GGUF", "gpt-oss-20b-Q4_K_M.gguf"),
-    "gemma": ("GEMMA_MODEL_PATH", "unsloth/gemma-4-26B-A4B-it-GGUF", "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"),
+    "gpt_oss": (
+        "GPT_OSS_MODEL_PATH",
+        "unsloth/gpt-oss-20b-GGUF",
+        "gpt-oss-20b-Q4_K_M.gguf",
+    ),
+    "gemma": (
+        "GEMMA_MODEL_PATH",
+        "unsloth/gemma-4-26B-A4B-it-GGUF",
+        "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
+    ),
 }
 # -------------------------------------------------------
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _slugify(title: str) -> str:
@@ -67,11 +77,13 @@ def build() -> Path:
         "from pathlib import Path\n"
         "sys.argv = [sys.argv[0]]\n"
         "Path('/kaggle/working').mkdir(parents=True, exist_ok=True)\n"
-        "for mod, pip in [('llama_cpp','llama-cpp-python'),('huggingface_hub','huggingface_hub')]:\n"
+        "for mod, pip in [('llama_cpp','llama-cpp-python'),"
+        "('huggingface_hub','huggingface_hub')]:\n"
         "    try: __import__(mod)\n"
         "    except Exception:\n"
         "        print('installing', pip, flush=True)\n"
-        "        subprocess.run([sys.executable,'-m','pip','install','-q',pip], check=False)\n"
+        "        subprocess.run([sys.executable,'-m','pip','install','-q',pip], "
+        "check=False)\n"
         "for c in glob.glob('/kaggle/input/**/kaggle_evaluation', recursive=True):\n"
         "    r = str(Path(c).parent)\n"
         "    if r not in sys.path: sys.path.insert(0, r)\n"
@@ -106,37 +118,58 @@ def build() -> Path:
         f"BUDGET_S = {BUDGET_S}\n"
         "import kaggle_evaluation.jed_attack_134815.jed_attack_gateway as jag\n"
         "jag.DEFAULT_BUDGET_S = BUDGET_S\n"
-        "jag.GATEWAY_RESPONSE_TIMEOUT_S = int(BUDGET_S + jag.ATTACK_ENV_OP_GRACE_S + jag.GATEWAY_RESPONSE_TIMEOUT_BUFFER_S)\n"
-        "print(f'[calib] budget={BUDGET_S}s models={os.environ[\"AICOMP_MODEL_NAMES\"]} (public guardrail only)', flush=True)\n"
-        "from kaggle_evaluation.jed_attack_134815 import jed_attack_inference_server as ies\n"
+        "jag.GATEWAY_RESPONSE_TIMEOUT_S = int(BUDGET_S + jag.ATTACK_ENV_OP_GRACE_S + "
+        "jag.GATEWAY_RESPONSE_TIMEOUT_BUFFER_S)\n"
+        "print(f'[calib] budget={BUDGET_S}s "
+        'models={os.environ["AICOMP_MODEL_NAMES"]} '
+        "(public guardrail only)', flush=True)\n"
+        "from kaggle_evaluation.jed_attack_134815 import jed_attack_inference_server "
+        "as ies\n"
         "t0 = time.time(); status = 'FAIL'\n"
         "try:\n"
         "    ies.JEDAttackInferenceServer().run(competition_data_folder=FIXTURES)\n"
-        "    status = 'PASS'; print(f'[calib] === PASS === {time.time()-t0:.0f}s', flush=True)\n"
+        "    status = 'PASS'; print(f'[calib] === PASS === {time.time()-t0:.0f}s', "
+        "flush=True)\n"
         "except Exception as e:\n"
-        "    print(f'[calib] === FAIL === {type(e).__name__}: {str(e)[:400]}', flush=True)\n"
-        "# the [fill_telemetry] line (per-template median_latency_s + median_gen_chars)\n"
+        "    print(f'[calib] === FAIL === {type(e).__name__}: {str(e)[:400]}', "
+        "flush=True)\n"
+        "# the [fill_telemetry] line (per-template median_latency_s + "
+        "median_gen_chars)\n"
         "# is printed to stderr by get_attack; the score lands in submission.csv\n"
         "if Path('submission.csv').exists():\n"
-        "    print('[calib] submission.csv:\\n' + Path('submission.csv').read_text(), flush=True)\n"
+        "    print('[calib] submission.csv:\\n' + Path('submission.csv').read_text(), "
+        "flush=True)\n"
         "# write a non-empty placeholder so the kernel produces an output file\n"
         "with open('/kaggle/working/submission.csv','a') as f: pass"
     )
 
     def code(src: str) -> dict:
-        return {"cell_type": "code", "metadata": {}, "execution_count": None,
-                "outputs": [], "source": src.splitlines(keepends=True)}
+        return {
+            "cell_type": "code",
+            "metadata": {},
+            "execution_count": None,
+            "outputs": [],
+            "source": src.splitlines(keepends=True),
+        }
 
     notebook = {
         "cells": [
             {"cell_type": "markdown", "metadata": {}, "source": [f"# {TITLE}\n"]},
-            code(setup), code(write_attack), code(download), code(run_gateway),
+            code(setup),
+            code(write_attack),
+            code(download),
+            code(run_gateway),
         ],
         "metadata": {
-            "kernelspec": {"language": "python", "display_name": "Python 3", "name": "python3"},
+            "kernelspec": {
+                "language": "python",
+                "display_name": "Python 3",
+                "name": "python3",
+            },
             "language_info": {"name": "python"},
         },
-        "nbformat": 4, "nbformat_minor": 5,
+        "nbformat": 4,
+        "nbformat_minor": 5,
     }
     out_dir = REPO_ROOT / OUT_ROOT / slug
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -158,7 +191,8 @@ def build() -> Path:
         "kernel_sources": [],
     }
     (out_dir / "kernel-metadata.json").write_text(
-        json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+        json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
+    )
     return out_dir
 
 
@@ -167,7 +201,10 @@ def main() -> None:
     folder = build()
     slug = _slugify(TITLE)
     print(f"built calibration kernel: {folder}")
-    print(f"  attack: {REPO_ROOT / ATTACK_PY}  (probe_reps=6, {MODELS} only, {BUDGET_S:.0f}s)")
+    print(
+        f"  attack: {REPO_ROOT / ATTACK_PY}  "
+        f"(probe_reps=6, {MODELS} only, {BUDGET_S:.0f}s)"
+    )
     print("\nPush (runs on T4, does NOT submit -> no slot):")
     print(f"  kaggle kernels push -p {folder}")
     print(f"  kaggle kernels status {KAGGLE_USER}/{slug}")

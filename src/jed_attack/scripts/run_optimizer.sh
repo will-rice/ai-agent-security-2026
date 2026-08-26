@@ -76,4 +76,4 @@ tmux new-session -d -s "$SESSION" -c "$REPO" \
 
 echo "optimizer worker launched in tmux session '$SESSION'"
 echo "  watch:   tmux attach -t $SESSION   (detach: Ctrl-b d)"
-echo "  restart: scripts/run_optimizer.sh"
+echo "  restart: src/jed_attack/scripts/run_optimizer.sh"

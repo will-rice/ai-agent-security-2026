@@ -7,8 +7,8 @@ Like ``build_deputy_cut.py`` but the gpt_oss pool embeds the recipient in the fo
 (plain ``Notify ops@<host>``, already recipient-last). Firing is NOT checked here; gate
 with the DEPUTY predicate afterward:
 
-    uv run python scripts/build_forge_embed_deputy_cut.py
-    uv run python scripts/verify_cut.py \\
+    uv run python -m jed_attack.scripts.build_forge_embed_deputy_cut
+    uv run python -m jed_attack.scripts.verify_cut \\
         run/submission_cuts/forge_embed_deputy/attack.py \\
         --predicate CONFUSED_DEPUTY --min-severity 3
 """
@@ -38,7 +38,7 @@ def main() -> None:
     out = build_permodel(gpt_pool, gemma_pool, OUT_DIR)
     print(f"wrote {out} ({out.stat().st_size // 1024}K)")
     print(
-        f"next: uv run python scripts/verify_cut.py {out} "
+        f"next: uv run python -m jed_attack.scripts.verify_cut {out} "
         "--predicate CONFUSED_DEPUTY --min-severity 3"
     )
 

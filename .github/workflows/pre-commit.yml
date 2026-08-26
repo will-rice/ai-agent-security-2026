@@ -49,7 +49,7 @@ jobs:
           # wheel is byte-identical to the locally-built one uv.lock pins its hash to.
           # A non-deterministic zip (mtimes, zlib-version DEFLATE) caused "Hash mismatch
           # for aicomp-sdk" on every run. Same script runs locally when re-locking.
-          python3 scripts/build_vendor_wheel.py vendor/bundle vendor/aicomp_sdk-3.1.2-py3-none-any.whl
+          python3 src/jed_attack/scripts/build_vendor_wheel.py vendor/bundle vendor/aicomp_sdk-3.1.2-py3-none-any.whl
 
       - name: Run pre-commit hook
         run: |

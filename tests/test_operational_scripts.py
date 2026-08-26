@@ -62,7 +62,7 @@ exit 1
         }
     )
     subprocess.run(
-        [_REPO / "scripts" / "run_optimizer.sh"],
+        [_REPO / "src" / "jed_attack" / "scripts" / "run_optimizer.sh"],
         cwd=_REPO,
         env=env,
         check=True,
@@ -114,7 +114,7 @@ def test_judge_service_launcher_exports_selected_model(tmp_path: Path) -> None:
         }
     )
     subprocess.run(
-        [_REPO / "scripts" / "serve_dylan_judges.sh"],
+        [_REPO / "src" / "jed_attack" / "scripts" / "serve_dylan_judges.sh"],
         cwd=_REPO,
         env=env,
         check=True,

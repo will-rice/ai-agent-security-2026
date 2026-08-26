@@ -6,8 +6,8 @@ model's GGUF vocab, builds the ``Notify ops@<host>`` deputy pools, and writes th
 ``attack.py``. Firing is NOT checked here (needs the GPU-resident backend); verify with
 the DEPUTY predicate afterward:
 
-    uv run python scripts/build_deputy_cut.py
-    uv run python scripts/verify_cut.py \\
+    uv run python -m jed_attack.scripts.build_deputy_cut
+    uv run python -m jed_attack.scripts.verify_cut \\
         run/submission_cuts/deputy_hedge/attack.py \\
         --predicate CONFUSED_DEPUTY --min-severity 3
 
@@ -40,7 +40,7 @@ def main() -> None:
     out = build_permodel(gpt_pool, gemma_pool, OUT_DIR)
     print(f"wrote {out} ({out.stat().st_size // 1024}K)")
     print(
-        f"next: uv run python scripts/verify_cut.py {out} "
+        f"next: uv run python -m jed_attack.scripts.verify_cut {out} "
         "--predicate CONFUSED_DEPUTY --min-severity 3"
     )
 

@@ -47,7 +47,8 @@ MODEL_GPU: dict[str, int] = {"gpt_oss": 0, "gemma_4": 1}
 # JED_ARTIFACT_SCORE=0): it GPU-locks the lane for the full budget and, firing on every
 # champion reship, stalled the search for ~20-100 min at a time — yet it feeds only the
 # wandb lb_est telemetry, not the search objective. Artifact scoring is now a deliberate
-# PRE-SUBMIT check instead: `scripts/score_artifact.py` runs it once at the full budget.
+# PRE-SUBMIT check instead: `python -m jed_attack.scripts.score_artifact` runs it once
+# at the full budget.
 ARTIFACT_SCORE_ENABLED = os.getenv("JED_ARTIFACT_SCORE", "1") != "0"
 # Full Kaggle-equivalent per-model budget for the pre-submit artifact score.
 ARTIFACT_SCORE_BUDGET_S = float(os.getenv("JED_ARTIFACT_SCORE_BUDGET_S", "9000"))
@@ -117,8 +118,9 @@ def team_proposers_from_env(
 # NOTE: when JED_TEAM_PROPOSERS is UNSET the CI lane tracks the full live /v1/models
 # response (this default is only the offline fallback); the roster is restricted to a
 # subset ONLY by pinning JED_TEAM_PROPOSERS, which intersects the pin with live models.
-# scripts/run_optimizer.sh sets that pin to the measured-clean roster below. A per-model
-# drop-rate measurement (batch_dropped telemetry) dropped three CI lanes: glm-5.2 (~80%
+# src/jed_attack/scripts/run_optimizer.sh sets that pin to the measured-clean roster
+# below. A per-model drop-rate measurement (batch_dropped telemetry) dropped three CI
+# lanes: glm-5.2 (~80%
 # refusals), deepseek-v4-flash (~50% malformed batches), and kimi-k2.7 (the agentic lane
 # authored batches as text, not submit_batch tool calls). mimo-v2.5 and minimax-m3 both
 # authored clean batches (0% drop), so they are the roster.

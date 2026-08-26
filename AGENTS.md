@@ -31,7 +31,7 @@ repeat confirmed-firing candidates to fill the ~200–300 replay-budget ceiling)
 ## Setup: two local model APIs (run once, keep resident)
 
 > **Superseded for scoring:** the live optimizer scores **in-process** (loads the GGUFs itself via
-> llama-cpp-python; see `campaign/submission_score.py` and `scripts/run_optimizer.sh`), so the
+> llama-cpp-python; see `campaign/submission_score.py` and `src/jed_attack/scripts/run_optimizer.sh`), so the
 > served `llama-server` endpoints below are no longer needed for scoring. They still back the
 > optimizer's victim-introspection feedback (`campaign/victim_feedback.py`); `docs/serving.md` has
 > the details.
@@ -57,7 +57,7 @@ export GEMMA_BASE_URL=http://localhost:8081/v1
 uv run python -m pytest -q
 ```
 
-The live loop is the in-process optimizer (`scripts/run_optimizer.sh` →
+The live loop is the in-process optimizer (`src/jed_attack/scripts/run_optimizer.sh` →
 `campaign/optimize_prompts.py`), which authors submissions, scores them in-process against the local
 GGUFs, and reships `run/build_next/attack.py` via `campaign/assemble.py`. Change the attack through
 `assemble.py`'s `_TEMPLATE` and the optimizer's proposer prompts.
@@ -101,7 +101,7 @@ GGUFs, and reships `run/build_next/attack.py` via `campaign/assemble.py`. Change
 - Shipped artifact: `run/build_next/attack.py`, rendered from `assemble.py`'s `_TEMPLATE`
   (self-contained; imports only `aicomp_sdk` + stdlib). This is what is submitted.
 - Scoring: **in-process** against local GGUFs via `src/jed_attack/campaign/submission_score.py`
-  (no served endpoints; see `scripts/run_optimizer.sh`).
+  (no served endpoints; see `src/jed_attack/scripts/run_optimizer.sh`).
 - Submission: the `submit-kernel` skill (`.claude/skills/submit-kernel/{build_kernel,submit}.py`),
   which embeds `run/build_next/attack.py`.
 - Objective & design: `docs/strategy.md`, `docs/campaign.md`, `docs/superpowers/specs/`.

@@ -272,7 +272,11 @@ def is_verified(attack_path: Path) -> tuple[bool, str]:
     attack_path = Path(attack_path)
     manifest_path = attack_path.parent / MANIFEST_NAME
     if not manifest_path.exists():
-        return False, f"no {MANIFEST_NAME} beside the cut -- run scripts/verify_cut.py"
+        return (
+            False,
+            f"no {MANIFEST_NAME} beside the cut -- "
+            "run python -m jed_attack.scripts.verify_cut",
+        )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if manifest.get("attack_sha256") != cut_digest(attack_path):
         return False, f"{MANIFEST_NAME} hash != attack.py -- cut changed since verify"

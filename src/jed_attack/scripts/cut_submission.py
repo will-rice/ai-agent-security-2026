@@ -10,8 +10,8 @@ push is gated behind the flag because it is an externally visible action that ca
 a competition slot on rerun.
 
 Usage:
-    uv run python scripts/cut_submission.py            # build + inject notebook only
-    uv run python scripts/cut_submission.py --push     # ...and push the kernel
+    uv run python -m jed_attack.scripts.cut_submission          # build + inject only
+    uv run python -m jed_attack.scripts.cut_submission --push   # ...and push the kernel
 """
 
 import argparse
@@ -22,7 +22,12 @@ import subprocess
 import sys
 
 from jed_attack.campaign import config
-from jed_attack.campaign.blackboard import Blackboard, Record, _champion_map, _ship_pools
+from jed_attack.campaign.blackboard import (
+    Blackboard,
+    Record,
+    _champion_map,
+    _ship_pools,
+)
 
 KERNEL_DIR = config.CAMPAIGN_ROOT / "submission_kernel" / "jed-attack-submission"
 NOTEBOOK = KERNEL_DIR / "jed-attack-submission.ipynb"
@@ -44,9 +49,10 @@ def main() -> None:
         help=(
             "Ship the champion with the MOST distinct shapes whose objective is within "
             "this fractional band of the best (e.g. 0.1 = within 10%%). Default 0.1: "
-            "maximize distinct shapes for robustness -- diversity never hurts the public "
-            "board (throughput is shape-count-insensitive) and hedges the stricter "
-            "private re-scoring. Pass 0.0 to ship the strict-objective champion instead."
+            "maximize distinct shapes for robustness -- diversity never hurts the "
+            "public board (throughput is shape-count-insensitive) and hedges the "
+            "stricter private re-scoring. Pass 0.0 to ship the strict-objective "
+            "champion instead."
         ),
     )
     args = parser.parse_args()

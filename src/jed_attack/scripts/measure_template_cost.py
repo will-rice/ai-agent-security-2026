@@ -11,7 +11,7 @@ templates by generated chars therefore optimizes T4 throughput entirely locally.
 gpt_oss is the throughput bottleneck, so measure it. Run pinned to the idle GPU so it
 does not disturb the live optimizer on GPU 0:
 
-    CUDA_VISIBLE_DEVICES=1 uv run python scripts/measure_template_cost.py
+    CUDA_VISIBLE_DEVICES=1 uv run python -m jed_attack.scripts.measure_template_cost
 
 A small n_ctx keeps the KV cache tiny so this gpt_oss fits alongside the optimizer's
 resident gemma on the same card; the short prompts make the generated output identical

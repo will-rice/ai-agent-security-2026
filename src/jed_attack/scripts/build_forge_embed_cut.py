@@ -5,7 +5,7 @@ Identical to ``build_urllast_cut.py`` except the gpt_oss pool embeds the host in
 forge (host truly last) so the ~15-token forge tail no longer re-prefills per candidate.
 The gemma pool is unchanged (plain url-last), so a board score isolates the gpt-column
 effect. Firing is NOT checked here (needs the GPU backend); run
-``scripts/verify_cut.py``
+``python -m jed_attack.scripts.verify_cut``
 on the written cut to drop non-firing hosts and stamp the gate manifest.
 """
 
@@ -35,7 +35,7 @@ def main() -> None:
     gpt_pool, gemma_pool = build_forge_embed_pools(gpt_hosts, gemma_hosts)
     out = build_permodel(gpt_pool, gemma_pool, OUT_DIR)
     print(f"wrote {out} ({out.stat().st_size // 1024}K)")
-    print(f"next: uv run python scripts/verify_cut.py {out}")
+    print(f"next: uv run python -m jed_attack.scripts.verify_cut {out}")
 
 
 if __name__ == "__main__":

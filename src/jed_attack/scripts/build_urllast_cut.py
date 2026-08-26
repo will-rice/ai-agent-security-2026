@@ -5,9 +5,9 @@ Settings are ALL-CAPS CONSTANTS (no CLI flags): the shape is solved, so there is
 to tune per run. Enumerates single-token hosts from each model's GGUF vocab, builds the
 url-last per-model pools, and writes the router ``attack.py``. Firing is NOT checked
 (it needs the GPU-resident backend); run this, then run the firing gate
-(``scripts/verify_cut.py``) on the written cut: it drops non-firing hosts and stamps
-the hash-bound manifest the submit gate requires. ~99.8% of single-token hosts fire, so
-the shipped pool is essentially the full enumeration.
+(``python -m jed_attack.scripts.verify_cut``) on the written cut: it drops non-firing
+hosts and stamps the hash-bound manifest the submit gate requires. ~99.8% of
+single-token hosts fire, so the shipped pool is essentially the full enumeration.
 """
 
 from jed_attack.campaign import config
@@ -36,7 +36,7 @@ def main() -> None:
     gpt_pool, gemma_pool = build_urllast_pools(gpt_hosts, gemma_hosts)
     out = build_permodel(gpt_pool, gemma_pool, OUT_DIR)
     print(f"wrote {out} ({out.stat().st_size // 1024}K)")
-    print(f"next: uv run python scripts/verify_cut.py {out}")
+    print(f"next: uv run python -m jed_attack.scripts.verify_cut {out}")
 
 
 if __name__ == "__main__":

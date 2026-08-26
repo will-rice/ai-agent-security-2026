@@ -12,7 +12,7 @@ Both the local re-lock and the CI ``Rebuild vendored SDK wheel`` step call this,
 there is one source of truth for the wheel bytes.
 
 Usage:
-    uv run python scripts/build_vendor_wheel.py <bundle_dir> <out_whl>
+    uv run python src/jed_attack/scripts/build_vendor_wheel.py <bundle_dir> <out_whl>
 
 ``bundle_dir`` contains ``aicomp_sdk/`` and ``aicomp_sdk-3.1.2.dist-info/``.
 """

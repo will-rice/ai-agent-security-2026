@@ -7,7 +7,7 @@ before submitting to get the leaderboard-estimate metrics for the shipped artifa
 Loads its own resident GGUF backends, so stop the optimizer first (or expect GPU
 contention). Usage::
 
-    uv run python scripts/score_artifact.py [attack_path] [--budget-s 9000]
+    uv run python -m jed_attack.scripts.score_artifact [attack_path] [--budget-s 9000]
 """
 
 import argparse
