@@ -23,9 +23,15 @@ import build_kernel
 NVIDIA_KAGGLE_SCRIPTS = Path("/home/will/.agents/skills/nvidia-kaggle-skill/scripts")
 ENV_FILE = build_kernel.REPO_ROOT / ".env"  # supplies KAGGLE_API_TOKEN
 SUBMISSION_FILE = "submission.csv"  # the output the competition rerun scores
-MESSAGE = "Single-token url-last EXFIL (pick-1): prefix-cache champion, every candidate input differs by one trailing single-token host."
+MESSAGE = "Relaxed-gate LEAN cut: optimizer (fill-fraction robustness gate) banked lean shapes -- gpt no-constrain render ~25 tok total (vs champion 28), gemma partial-unquoted ~27 (vs 29), 100pct firing url-last, gated. First real-board test of the leaner decode transferring to completions."
 POLL_INTERVAL_S = 30
 POLL_TIMEOUT_S = 6 * 60 * 60  # 6h covers the push run plus the rerun eval
+# Never ship an under-filled pool. A pool below the budget-completable count leaves grader
+# time idle before its deadline: champion_gated shipped ~994 firing and scored 89.5, vs the
+# full 2000-candidate champion's 104.4. Require at least this many FIRING candidates per
+# model pool so the grader never runs out of candidates. Raising fire-rate/host-count to
+# clear this is the point -- a tightly-gated small pool loses to a big one.
+MIN_SHIP_CANDIDATES = 1900
 # ------------------------------------------------------
 
 
@@ -61,6 +67,22 @@ def main() -> None:
     if not ok:
         sys.exit(f"FIRING GATE: refusing to submit -- {reason}")
     print(f"firing gate: {reason} ({build_kernel.ATTACK_PY})")
+
+    # SIZE GATE: never ship a pool below the budget-completable count -- it leaves grader
+    # time idle and scores less than a bigger pool (996 gpt / champion_gated 89.5 both
+    # under-filled). Refuse before the push; the fix is more hosts / higher fire-rate.
+    from jed_attack.campaign.verify import _extract_pool
+
+    _src = attack_path.read_text(encoding="utf-8")
+    for _var, _model in (("_FORGE", "gpt_oss"), ("_PLAIN", "gemma_4")):
+        _n = len(_extract_pool(_src, _var))
+        if _n < MIN_SHIP_CANDIDATES:
+            sys.exit(
+                f"SIZE GATE: refusing to submit -- {_model} pool has {_n} firing "
+                f"candidates < {MIN_SHIP_CANDIDATES} (under-fills the budget; build "
+                f"more hosts / a higher fire-rate shape)"
+            )
+        print(f"size gate: {_model} {_n} firing candidates (>= {MIN_SHIP_CANDIDATES})")
 
     sys.path.insert(0, str(NVIDIA_KAGGLE_SCRIPTS))
     import submit_kernel as sk

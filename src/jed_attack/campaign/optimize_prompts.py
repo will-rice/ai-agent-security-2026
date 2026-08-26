@@ -296,14 +296,15 @@ def _shape_elites(
         for (_model, message), message_score in zip(
             submission.all_messages(), score.per_message, strict=True
         ):
-            # url-last structural gate: never bank a host-in-the-middle EXFIL shape (its
-            # divergent suffix re-prefills per candidate -> ~40% loss on the grader). It
-            # is dropped here rather than merely down-ranked, so the search can't make
-            # it
-            # the incumbent. shape_index still advances to keep the diagnosis alignment.
-            if (
-                message.type is MessageType.EXFIL
-                and url_suffix_chars(message.text) > config.URL_LAST_MAX_SUFFIX_CHARS
+            # url-last + novelty gate: drop an EXFIL shape with the host MID-message
+            # (its divergent suffix re-prefills per candidate -> ~40% grader loss) OR
+            # with NO ``{u}`` (a literal host shares ONE novelty cell across the pool
+            # -> collapse, though one message looks lean+firing alone). Dropped, not
+            # down-ranked, so the search can't bank either defect (the objective sees
+            # neither). shape_index still advances to keep the diagnosis alignment.
+            if message.type is MessageType.EXFIL and (
+                "{u}" not in message.text
+                or url_suffix_chars(message.text) > config.URL_LAST_MAX_SUFFIX_CHARS
             ):
                 shape_index += 1
                 continue
@@ -327,25 +328,30 @@ def _shape_elites(
                 for model in config.MODELS
             }
             fires = {model: gate_severity[model] > 0.0 for model in config.MODELS}
-            # Throughput is TOKEN-based (replay time = one forward pass per token); the
-            # gen_char bucket stays char-based -- only a MAP-Elites diversity axis. The
-            # gateway caches the shared prompt prefix and re-prefills ONLY the divergent
-            # suffix after the per-candidate host, so charge that suffix
-            # (:func:`url_suffix_chars` -- the text between '{u}' and the forge), NOT
-            # the
-            # whole input: a url-LAST shape pays ~0, a host-in-the-middle shape pays its
-            # trailing text on every candidate (the prefill cost that sank the
-            # commentary
-            # shape). Firing branch only (a non-firing model stays inf -> 0.0).
-            suffix_tokens = {
-                model: url_suffix_chars(message.text) / config.CHARS_PER_TOKEN[model]
+            # BOARD-CALIBRATED input cost (see config.PREFIX_WEIGHT/TRAILING_WEIGHT).
+            # Split the candidate at the host '{u}': the PREFIX (before it) is shared
+            # prompt the gateway CACHES, so it costs only decode-attention (~0.5 of a
+            # decode token each); the TRAILING text (after the host, e.g. a forge) RE-
+            # PREFILLS every candidate (full weight). Now the objective SEES the board
+            # proved: a long inducer prefix sinks a shape (lean-big lost) and moving the
+            # forge BEFORE the host wins (url-after-end). The old code charged only
+            # url_suffix at 0.022 -> blind to both. Firing branch only (else -> 0.0).
+            _split = message.text.split("{u}", 1)
+            _prefix_chars = len(_split[0])
+            _trailing_chars = len(_split[1]) if len(_split) > 1 else 0
+            input_cost = {
+                model: (
+                    config.PREFIX_WEIGHT * _prefix_chars
+                    + config.TRAILING_WEIGHT * _trailing_chars
+                )
+                / config.CHARS_PER_TOKEN[model]
                 for model in config.MODELS
             }
             throughputs = {
                 model: throughput(
                     gen_tokens[model] if fires[model] else float("inf"),
                     model,
-                    input_tokens=suffix_tokens[model] if fires[model] else 0.0,
+                    input_tokens=input_cost[model] if fires[model] else 0.0,
                 )
                 for model in config.MODELS
             }

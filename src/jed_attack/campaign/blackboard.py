@@ -32,9 +32,9 @@ _log = logging.getLogger(__name__)
 # Tag stamped on every record scored under the CURRENT optimizer objective. Bump this
 # whenever the shipping/objective scheme changes: champion selection prefers rows
 # carrying the current tag so a prior scheme's incomparable magnitudes cannot freeze
-# the logged champion (see _objective_key). ``v20`` marks the switch from a single
-# MIN-scalar champion to MAP-Elites + Pareto shipping -- the frontier ships, the MIN
-# objective is logging-only. NOTE: ROBUSTNESS_LAMBDA is currently UN-WIRED -- the score
+# the logged champion (see _objective_key). The current tag is ``v21`` (board-calibrated
+# prefill cost model, see docstring); ``v20`` was Pareto shipping with a flat
+# suffix-prefill weight. NOTE: ROBUSTNESS_LAMBDA is currently UN-WIRED -- the score
 # never reads it, so a non-zero value only changes the tag/pool below, not the score.
 def objective_scheme_name(
     robustness_lambda: float,
@@ -43,9 +43,14 @@ def objective_scheme_name(
 ) -> str:
     """Scheme tag for the current objective weights.
 
-    ``v20`` marks the MAP-Elites + Pareto shipping scheme: the shipped pool is the
-    archive's Pareto frontier over the two raw per-model throughput columns (see
-    :mod:`jed_attack.campaign.archive`), NOT a single MIN-scalar champion. The MIN
+    ``v21`` marks the board-calibrated prefill cost model: throughput charges input as
+    PREFIX_WEIGHT*(tokens before the host) + TRAILING_WEIGHT*(tokens after it), which
+    reproduced url-after-end(108.9) > champion(104.4) > lean-big(98.9) on the board.
+    It replaces v20's flat suffix-prefill weight, so the denominator scale changed and
+    v20 rows are stale-scheme (discarded on rank). ``v20`` was the MAP-Elites + Pareto
+    shipping scheme: the shipped pool is the archive's Pareto frontier over the two raw
+    per-model throughput columns (see :mod:`jed_attack.campaign.archive`), NOT a single
+    MIN-scalar champion. The MIN
     objective helpers (:func:`_objective_key`, :meth:`Blackboard.best_objective`) are
     RETAINED for logging/telemetry only -- they no longer decide what ships. The scheme
     encodes the gate guardrail (``config.GATE_GUARDRAIL_NAME``) so switching guardrails
@@ -54,9 +59,9 @@ def objective_scheme_name(
     below, never the score itself); threaded through only so a future robustness-aware
     objective has its own pool ready.
     """
-    base = f"{gate}_pareto_v20"
+    base = f"{gate}_pareto_v21"
     if robustness_lambda != 0.0:
-        base = f"robust{robustness_lambda:g}_{gate}_pareto_v20"
+        base = f"robust{robustness_lambda:g}_{gate}_pareto_v21"
     if portfolio_lambda != 0.0:
         base = f"portfolio{portfolio_lambda:g}_{base}"
     return base

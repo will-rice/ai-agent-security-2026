@@ -298,7 +298,24 @@ FILL_BUDGET_CHARS: dict[str, float] = {
 # effect (cross-candidate cache reuse), enforced as a hard gate in _shape_elites
 # (url_suffix_chars must be ~0), not a competing weight. This term stays small so decode
 # dominates; the gate keeps every banked shape url-last.
-INPUT_PREFILL_WEIGHT = 0.022
+# BOARD-CALIBRATED per-candidate replay cost (2026-08-26, from the public scores of
+# champion 104.4 / url-after-end 108.9 / lean-big 98.9). The cost that reproduces that
+# ranking is: PREFIX_WEIGHT*(tokens BEFORE the host) + TRAILING_WEIGHT*(tokens AFTER
+# the host, incl. the forge) + gen_tokens. Physics: the shared prefix is CACHED so it
+# costs only decode-attention (~half a decode token each); tokens AFTER the host
+# re-prefill every candidate (full cost); decode is full. This is why lean-big LOST:
+# its long inducer prefix (39 vs 25 tok) cost more than its 1-token decode saving, and
+# why url-after-end WON -- it moved the forge BEFORE the host (0 trailing). The old
+# objective charged ONLY url_suffix at 0.022 -> blind to both -> banked the lean shape.
+PREFIX_WEIGHT = float(
+    os.getenv("JED_PREFIX_WEIGHT", "0.5")
+)  # cached input: decode-attention
+TRAILING_WEIGHT = float(
+    os.getenv("JED_TRAILING_WEIGHT", "1.0")
+)  # after host: re-prefilled
+# ``throughput`` charges the pre-weighted input cost at weight 1.0 (the PREFIX/TRAILING
+# weights are already applied when building the input-cost term in _shape_elites).
+INPUT_PREFILL_WEIGHT = 1.0
 
 # url-last structural gate: an EXFIL shape whose divergent suffix (chars between {u} and
 # the forge; submission.url_suffix_chars) exceeds this is host-in-the-middle -- it loses
@@ -368,6 +385,18 @@ ARCHIVE_FRONTIER_CAP = int(os.getenv("JED_ARCHIVE_FRONTIER_CAP", "36"))
 # non-firing and the search cannot converge to it (the terse-but-duddy shape the
 # single-benign-host objective used to prefer). EXFIL only. Empty tuple disables it.
 ROBUSTNESS_PROBE_INDICES = (13, 19, 50, 213)
+
+# Fill-ability gate (replaces the old MIN-over-word-hosts severity gate). We HOST-FILTER
+# at build (``verify_and_filter_cut`` drops every non-firing candidate), so a shape need
+# NOT fire on every host -- only on enough distinct single-token hosts to fill the
+# ~2000 pool. An EXFIL shape keeps its primary severity iff it fires on at least this
+# FRACTION of {primary + ROBUSTNESS_PROBE_INDICES}; below it, it is too fragile to fill
+# and scores 0. 0.4 = primary + >=1 of the 4 word-host probes; a lean render whose
+# induction misses one word-host we would never ship is no longer zeroed (the old
+# all-word-hosts MIN gate blocked exactly that).
+FILL_FIRE_FRACTION = float(os.getenv("JED_FILL_FIRE_FRACTION", "0.4"))
+if not 0.0 <= FILL_FIRE_FRACTION <= 1.0:
+    raise ValueError("JED_FILL_FIRE_FRACTION must be in [0.0, 1.0]")
 
 # Extra benign host indices sampled to estimate a template's SHIPPED (host-filtered)
 # gen_tokens. Scoring on the single primary host (index 0) let a host-DEPENDENT lean

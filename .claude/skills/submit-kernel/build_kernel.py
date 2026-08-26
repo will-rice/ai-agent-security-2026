@@ -23,11 +23,11 @@ from pathlib import Path
 # --- Fixed submission config (constants, not flags, so they can't be misset) ---
 KAGGLE_USER = "willrice"
 COMPETITION = "ai-agent-security-multi-step-tool-attacks"
-TITLE = "JED lever frontier champion"  # the kernel slug is DERIVED from this (see _slugify)
+TITLE = "JED lean big pool"  # unique slug per submission so the push never collides with a still-evaluating kernel (see _slugify)
 MACHINE_SHAPE = "NvidiaTeslaT4"  # this competition rejects P100 (400 FAILED_PRECONDITION)
 ENABLE_GPU = True
 ENABLE_INTERNET = False  # rerun env is offline; attack imports only aicomp_sdk + stdlib
-ATTACK_PY = "run/submission_cuts/urllast_single_token/attack.py"  # PICK-1 default: single-token url-last EXFIL (best public ~104). Regenerate with scripts/build_urllast_cut.py; the deputy hedge (pick-2) is scripts/build_deputy_cut.py.
+ATTACK_PY = "run/submission_cuts/lean_big/attack.py"  # LARGE lean cut: 4200 gpt / 3200 gemma pre-gate so >=1900 fire after host-filtering (no under-fill).
 OUT_ROOT = "run/submission_kernel"  # kernel folders are written under here, one per slug
 # -------------------------------------------------------------------------------
 
@@ -49,8 +49,17 @@ def _repo_path(rel: str) -> Path:
 
 def build() -> Path:
     """Render the notebook + kernel-metadata.json from the constants. Returns the folder."""
-    slug = _slugify(TITLE)
     attack_src = _repo_path(ATTACK_PY).read_text(encoding="utf-8")
+    # AUTO-UNIQUE SLUG: append a short content hash to the TITLE so every DISTINCT attack.py
+    # gets its own kernel (no push collision with a still-evaluating cut; re-pushing the SAME
+    # cut updates the same kernel). CRITICAL: Kaggle derives the slug from the TITLE, not the
+    # metadata id -- so the hash MUST live in the title, and slug == slugify(title) == id, or
+    # the poll hunts a slug the push never created (verified failure 2026-08-26).
+    import hashlib
+
+    digest = hashlib.sha256(attack_src.encode("utf-8")).hexdigest()[:8]
+    titled = f"{TITLE} {digest}"
+    slug = _slugify(titled)
 
     # Fail loudly here rather than ship a kernel whose attack.py won't import.
     # TemporaryDirectory cleans the probe .py and its .pyc rather than leaking them.
@@ -100,7 +109,7 @@ def build() -> Path:
 
     notebook = {
         "cells": [
-            {"cell_type": "markdown", "metadata": {}, "source": [f"# {TITLE}\n"]},
+            {"cell_type": "markdown", "metadata": {}, "source": [f"# {titled}\n"]},
             code(setup), code(write_attack), code(verify), code(serve),
         ],
         "metadata": {
@@ -114,7 +123,7 @@ def build() -> Path:
 
     metadata = {
         "id": f"{KAGGLE_USER}/{slug}",
-        "title": TITLE,
+        "title": titled,
         "code_file": nb_name,
         "language": "python",
         "kernel_type": "notebook",
