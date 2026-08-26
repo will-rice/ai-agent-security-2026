@@ -52,6 +52,7 @@ from openai.types.chat import ChatCompletionMessageParam
 from openai.types.shared_params import ResponseFormatJSONSchema
 
 from jed_attack.campaign import (
+    ablate,
     agentic_proposer,
     archive,
     artifact_score,
@@ -465,6 +466,80 @@ async def _seed_archive(board: blackboard.Blackboard, out_dir: Path) -> None:
             )
 
 
+# Shapes already driven to their token floor, so the post-pass never re-minimises an
+# idempotent result (which would append the same shape every champion cycle forever).
+_ablated_texts: set[str] = set()
+
+
+async def _minimize_pool(pool: list[Message], model: str) -> tuple[list[Message], bool]:
+    """Minimise each fresh EXFIL shape in a pool off-thread; skip already-floored ones.
+
+    Returns the (possibly leaner) pool and whether any shape shrank.
+    """
+    kept: list[Message] = []
+    changed = False
+    for msg in pool:
+        skip = (
+            msg.type is not MessageType.EXFIL
+            or "{u}" not in msg.text
+            or msg.text in _ablated_texts
+        )
+        if skip:
+            kept.append(msg)
+            continue
+        _ablated_texts.add(msg.text)
+        try:
+            lean, _gen, _inp = await asyncio.to_thread(
+                ablate.minimize_shape, msg.text, msg.url_scheme, model
+            )
+        except ValueError:  # seed no longer fires single-post -- leave it
+            kept.append(msg)
+            continue
+        _ablated_texts.add(lean)
+        kept.append(msg if lean == msg.text else msg.model_copy(update={"text": lean}))
+        changed = changed or lean != msg.text
+    return kept, changed
+
+
+async def _ablate_champion(
+    board: blackboard.Blackboard, out_dir: Path, worker_id: int
+) -> bool:
+    """Post-pass: shrink the current champion's EXFIL shapes to their token floor.
+
+    Runs only after a champion change. Each shape is minimised at most once
+    (:func:`ablate.minimize_shape` -- greedy exact-reward deletion, robust-gated);
+    shrank, the minimised submission is scored through the normal path and its elites
+    inserted, so a leaner floor becomes the champion and reships. The proposer
+    approximates this by hand; the post-pass guarantees the incumbent it refines sits at
+    its local token floor. Returns ``True`` if it reshipped a leaner frontier.
+    """
+    champ = board.best_objective()
+    if champ is None:
+        return False
+    pools: dict[str, list[Message]] = {}
+    changed = False
+    for model in config.MODELS:
+        pools[model], pool_changed = await _minimize_pool(
+            champ.submission.pool(model), model
+        )
+        changed = changed or pool_changed
+    if not changed:
+        return False
+    minimized = Submission(gpt_oss=pools["gpt_oss"], gemma_4=pools["gemma_4"])
+    scores = await _score_batch([minimized])
+    await board.append(
+        make_record(minimized, scores[0], "ablation post-pass", "ablate", worker_id),
+        out_dir,
+        reship=False,
+    )
+    reshipped = False
+    for elite in _shape_elites([minimized], scores, []):
+        reshipped = board.archive.insert(elite) or reshipped
+    if reshipped:
+        await board.reship_frontier(out_dir)
+    return reshipped
+
+
 async def worker_loop(
     worker_id: int,
     providers_cycle: list[providers.Provider],
@@ -640,6 +715,10 @@ async def worker_loop(
             if frontier_changed:
                 await board.reship_frontier(out_dir)
                 artifact_reshipped = True
+                # Post-pass: squeeze the (possibly new) champion to its token floor.
+                # Only on a frontier change, so the extra replays are rare and bounded.
+                # It reships internally if a leaner floor wins; result unused.
+                await _ablate_champion(board, out_dir, worker_id)
 
             objective_best = board.best_objective()
             assert objective_best is not None  # just appended -> the board is non-empty
