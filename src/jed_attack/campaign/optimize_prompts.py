@@ -791,8 +791,14 @@ async def worker_loop(
                 )
                 artifact_reshipped = artifact_reshipped or reshipped
 
-            # Grow THIS island's archive from the kept batch's scored shapes (the worker
-            # owns its island alone -> no lock needed for its own inserts).
+            # Grow THIS island's archive from the kept batch's scored shapes, un-locked.
+            # Safe NOT because the worker owns its island alone (migration in
+            # _evolve_island DOES write another worker's quality island) but because
+            # IslandSet/Archive mutations are fully SYNCHRONOUS: with no await inside
+            # them asyncio's cooperative scheduling makes each atomic against every
+            # other coroutine, migration included. This holds ONLY while those mutation
+            # methods never become async/awaiting -- the sole cross-island writer
+            # (migration) then takes board._lock, and this insert stays interleave-free.
             for elite in _shape_elites(local_batch, local_scores, diagnoses):
                 board.islands.insert(island, elite)
             # Stagnation-reset this island and, on migration ticks, spread the best
