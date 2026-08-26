@@ -138,9 +138,28 @@ than to jailbreak-ASR search. Two consequences drive everything:
   restart): the proposer now stacks named token-savers (short scheme, host-last, reply-suppression,
   forge, punctuation/space trims) onto the incumbent and applies the *delta* between two elites,
   instead of paraphrasing the champion — the fix for savings not stacking / monoculture.
-- **#2 reachability probe** — next: sample the victims at temp>0, best-of-N, to decide whether any
-  sub-28/29-token firing render is reachable at all (settles the "are we at the floor" question).
-  Needs a GPU window (temp sampling of the resident models).
+- **#2 temp-sampling probe — RUN, but it tested the WRONG variable (2026-08-26).** It sampled the
+  OUTPUT distribution of ONE FIXED input (the champion) at temperature 1.0, 300 samples/victim:
+  fire rate 1.00, min firing gen = 28 (gpt) / 29 (gemma), zero sub-floor, max 32. This ONLY shows
+  the *champion's* output distribution is tightly peaked at 28/29 -- it varied the output, not the
+  input. It does NOT test reachability, because a DIFFERENT input can have a completely different
+  greedy output; absence from one input's samples proves nothing about the global floor. **Retract
+  the "output floor proven" claim.** The correct reachability question -- "is there an INPUT whose
+  GREEDY output fires in < 28/29 tokens" -- is a search/priming over INPUTS, not sampling one
+  input's outputs. The right instruments (Cluster 5.3): assistant-turn PREFILL toward the sub-floor
+  render + greedy-complete (does it finish firing without the scaffold token?), few-shot format
+  exemplars, and the structural input search (#3/#4). The temp probe is retired as mis-specified.
+- **Prefill probe (the correct input-varying test) — RUN, clean NEGATIVE (2026-08-26).** Injected
+  the assistant TOOL-CALL scaffold into the input (harmony commentary header + JSON up to the host)
+  so the victim would only generate the close. It FAILED both victims: gpt went into analysis (gen
+  212, no fire), gemma refused (gen 45, no fire). STRUCTURAL reason: the SDK appends its OWN
+  `<|start|>assistant` generation prompt after our user message, so a partial tool call in the input
+  is user content the model reasons about, not an assistant turn it continues -- and the SDK only
+  parses/executes tool calls the model GENERATES, never ones we inject. The forge works only because
+  it is a COMPLETE prior turn continued as a fresh turn. CONCLUSION: we cannot move the tool call
+  into the input. Combined with the ablation (deletion search floored at 28/29), TWO input-varying
+  levers now both fail to get the generated output below 28/29 -- strong (not exhaustive) evidence
+  the output is floored for the http.post mechanism. The remaining movable lever is INPUT tokens.
 - **#3 structural descriptors, #4 islands** — not yet built; ranked as above. #3 cold-starts the
   archive (descriptor change), so hold it until the pending board tests report.
 
