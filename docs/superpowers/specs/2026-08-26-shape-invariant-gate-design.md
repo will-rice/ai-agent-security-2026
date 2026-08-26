@@ -105,11 +105,34 @@ Operate on the **rendered** pools (concrete hosts, no `{u}`). Per pool, before w
 - Hosts sharing a trailing char inflate the common suffix by ≤ host length; the threshold
   (2) tolerates it, and a forge tail (~48 chars) is unambiguously over.
 
+## Script relocation (foundational)
+
+Per the package convention (`src/{package}/scripts/`), relocate the top-level `scripts/`
+tree into the existing `src/jed_attack/scripts/` package (which already has `__init__.py`),
+so the new `gen_single_token_hosts.py` has a convention-consistent home alongside the rest.
+
+- `git mv scripts/*.py scripts/*.sh src/jed_attack/scripts/` (preserve history). The
+  scripts already use absolute `from jed_attack…` imports, so imports are unaffected.
+- Invocation changes from `uv run python scripts/X.py` to `uv run python -m
+  jed_attack.scripts.X` (`.py`) — update the **live** call-sites only: `run_optimizer.sh`,
+  `kaggle_research_pass.sh`, the submit-kernel skill (`submit.py`/`build_kernel.py`),
+  `config.py`/`verify.py`/`AGENTS.md`/`CLAUDE.md` prose, and the shell scripts' own
+  self-references. Shell scripts (`*.sh`) stay path-invoked at their new location.
+- **Cron:** repoint the `*/30` crontab entry from
+  `…/ai-agent-security-2026/scripts/kaggle_research_pass.sh` to the new path.
+- **Memory:** update `run_optimizer.sh` path references in the auto-memory.
+- Historical `docs/superpowers/{specs,plans}/…` references are records — leave them.
+- Verify: `uv run pre-commit run -a` green; `python -m jed_attack.scripts.verify_cut --help`
+  resolves; the running optimizer is unaffected (already launched; picks up the new path
+  only on its next restart).
+
 ## Persistence & rollout
 
 - Generate + commit `single_token_hosts.json` from the current GGUFs.
 - Re-render + re-verify the 108 champion under the new `host()` (hosts change → re-ship),
-  and board-test the single-token champion against the 108.920 baseline.
+  and **recut a submission**: build the single-token champion cut, run
+  `verify_cut` (100% firing + the new url-last/single-token gate), and submit it as the
+  board A/B against the 108.920 baseline.
 - The live optimizer picks up the `host()` + `url_suffix_chars` fixes on its next restart.
 
 ## Testing
@@ -133,4 +156,6 @@ Operate on the **rendered** pools (concrete hosts, no `{u}`). Per pool, before w
 ## Decisions (locked)
 
 Single-token under BOTH tokenizers · generate (not reject-gate) · hard-fail on verify
-violation · committed + regenerable host set · url-last via all-after-`{u}`.
+violation · committed + regenerable host set · url-last via all-after-`{u}` · relocate
+`scripts/` under `src/jed_attack/scripts/` (invoke via `python -m jed_attack.scripts.X`) ·
+recut + submit the single-token champion.
