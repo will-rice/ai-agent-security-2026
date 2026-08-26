@@ -218,6 +218,12 @@ MAX_SCORE_BATCH = 1
 # bonus (submission_score.py).
 NOVELTY_PER_CELL = 2.0
 
+# FunSearch islands: the novelty island (islands.IslandSet island 0) keeps a contested
+# cell's structurally-DISTINCT elite over its higher-throughput rival, ranking distance
+# to the k nearest neighbors in the rest of the island (islands.novelty). k, not a
+# fraction/ratio, so it stays an int knob alongside the other campaign constants.
+NOVELTY_NEIGHBORS = int(os.getenv("JED_NOVELTY_K", "3"))
+
 # TOKENS-PER-POST OBJECTIVE: a candidate's board value is CAPPED at one EXFIL fire (16)
 # in the optimizer's density. Multipost (K http.post -> severity 16*K) was proven
 # token-neutral-to-negative on 2026-08-22: one AttackCandidate is one grader finding

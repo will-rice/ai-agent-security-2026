@@ -3,16 +3,63 @@
 Wraps N independent :class:`archive.Archive` instances so N proposer workers
 can explore in isolation (avoiding premature convergence on a single shared
 frontier), while still exposing a global best across all islands for
-reporting/shipping. Island 0 is reserved as the "novelty" island (its
-insert rule is extended in a later task); for now every island delegates
-plainly to its own :meth:`archive.Archive.insert`.
+reporting/shipping. Island 0 is the "novelty" island: it keeps
+structurally-DISTINCT elites over higher-throughput ones (see
+:meth:`IslandSet._novelty_insert`); every other island delegates plainly to
+its own :meth:`archive.Archive.insert`.
 """
 
 from dataclasses import dataclass
 from pathlib import Path
 
-from jed_attack.campaign import archive
+from jed_attack.campaign import archive, config
 from jed_attack.campaign.archive import Archive, Elite, elite_board_density
+
+
+def descriptor(elite: Elite) -> tuple[str, int]:
+    """The behavioral descriptor ``(family, bucket)`` used for novelty distance.
+
+    Args:
+        elite: The elite to describe.
+
+    Returns:
+        Its ``(family, bucket)`` MAP-Elites cell key.
+    """
+    return (elite.family, elite.bucket)
+
+
+def novelty(elite: Elite, others: list[Elite]) -> float:
+    """Mean distance from ``elite``'s descriptor to its k nearest in ``others``.
+
+    k is ``config.NOVELTY_NEIGHBORS``. Distance between two descriptors is
+    family-mismatch (0 same / 1 different) plus
+    ``abs(bucket_a - bucket_b)``. An ``elite`` with no neighbors (``others`` empty) is
+    maximally novel.
+
+    Args:
+        elite: The elite to score.
+        others: Candidate neighbor pool (typically an island's frontier).
+
+    Returns:
+        The mean distance to the k nearest neighbors, or ``float("inf")`` when
+        ``others`` is empty.
+    """
+    if not others:
+        return float("inf")
+    family, bucket = descriptor(elite)
+    distances = sorted(
+        (family != other.family) + abs(bucket - other.bucket) for other in others
+    )
+    nearest = distances[: config.NOVELTY_NEIGHBORS]
+    return sum(nearest) / len(nearest)
+
+
+def _fires(elite: Elite) -> bool:
+    """Whether ``elite`` fires on >=1 model (matches ``archive.model_density``)."""
+    return any(
+        elite.throughput.get(m, 0.0) > 0.0 and elite.severity.get(m, 0.0) > 0.0
+        for m in config.MODELS
+    )
 
 
 @dataclass
@@ -58,9 +105,50 @@ class IslandSet:
             Whether the elite entered island ``i``'s frontier.
         """
         if i == 0:
-            # novelty rule added in Task 2
-            return self.archives[0].insert(elite)
+            return self._novelty_insert(elite)
         return self.archives[i].insert(elite)
+
+    def _novelty_insert(self, elite: Elite) -> bool:
+        """Insert ``elite`` into island 0, the novelty island.
+
+        Matches :meth:`archive.Archive.insert`'s firing requirement, but a contested
+        elite -- one that shares ``elite``'s ``(family, bucket)`` cell, or that
+        Pareto-dominates ``elite`` (so it would otherwise keep ``elite`` off the
+        island's :meth:`archive.Archive.frontier` forever) -- is resolved by
+        :func:`novelty` against the rest of island 0, not by throughput/severity
+        dominance. When ``elite`` is the more novel of the two, every blocker is
+        evicted from the underlying archive and ``elite`` is inserted; otherwise
+        island 0 is left unchanged.
+
+        Args:
+            elite: The scored shape to insert.
+
+        Returns:
+            Whether ``elite`` entered island 0's frontier.
+        """
+        if not _fires(elite):
+            return False
+        archive0 = self.archives[0]
+        frontier = archive0.frontier()
+        cell = descriptor(elite)
+        blockers = [
+            other
+            for other in frontier
+            if descriptor(other) == cell or archive.dominates(other, elite)
+        ]
+        if blockers:
+            elite_novelty = novelty(elite, frontier)
+            blocker_novelty = max(
+                novelty(blocker, [o for o in frontier if o is not blocker])
+                for blocker in blockers
+            )
+            if elite_novelty <= blocker_novelty:
+                return False
+            for blocker in blockers:
+                blocker_cell = archive0._cells.get(descriptor(blocker))
+                if blocker_cell is not None and blocker in blocker_cell:
+                    blocker_cell.remove(blocker)
+        return archive0.insert(elite)
 
     def local_best_density(self, i: int) -> float:
         """Max :func:`archive.elite_board_density` over island ``i``'s frontier.
