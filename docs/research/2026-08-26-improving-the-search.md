@@ -134,8 +134,15 @@ than to jailbreak-ASR search. Two consequences drive everything:
   First run on the champions: gpt 53→51 tok, gemma 51→48 tok — **all input-token savings; gen stayed
   pinned at 28/29**, an independent confirmation of the decode floor. Whether the input savings move
   the board is the open decode-vs-prefill question (queued as a real-board test).
-- **#2 reachability probe, #3 structural descriptors, #4 islands, #5 lever library** — not yet built;
-  ranked as above.
+- **#5 lever library + DE-difference operator — IMPLEMENTED** in `prompts.toml` (hot-reloads, no
+  restart): the proposer now stacks named token-savers (short scheme, host-last, reply-suppression,
+  forge, punctuation/space trims) onto the incumbent and applies the *delta* between two elites,
+  instead of paraphrasing the champion — the fix for savings not stacking / monoculture.
+- **#2 reachability probe** — next: sample the victims at temp>0, best-of-N, to decide whether any
+  sub-28/29-token firing render is reachable at all (settles the "are we at the floor" question).
+  Needs a GPU window (temp sampling of the resident models).
+- **#3 structural descriptors, #4 islands** — not yet built; ranked as above. #3 cold-starts the
+  archive (descriptor change), so hold it until the pending board tests report.
 
 ## Key sources
 EvoPrompt 2309.08532 · OPRO 2309.03409 · PromptBreeder 2309.16797 · CAPO 2504.16005 · APO survey
