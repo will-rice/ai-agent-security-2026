@@ -153,7 +153,7 @@ def test_novelty_insert_purges_a_stale_same_cell_residue_on_a_win() -> None:
 def test_stall_triggers_reset_and_migration_cadence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """3 flat generations stall the island; reset clears it; migration is periodic."""
+    """Flat generations after the priming call stall; reset clears; migration ticks."""
     from jed_attack.campaign import config
     from jed_attack.campaign import islands as isl
 
@@ -162,8 +162,29 @@ def test_stall_triggers_reset_and_migration_cadence(
     islands = IslandSet.for_count(2)
     islands.insert(1, _elite("plain", 0.05))
     d = islands.local_best_density(1)
+    assert islands.note_generation(1, d) is False  # priming call: baseline only
     flags = [islands.note_generation(1, d) for _ in range(3)]  # flat density
-    assert flags == [False, False, True]  # 3rd flat generation stalls
+    assert flags == [False, False, True]  # 3rd flat generation after baseline stalls
     islands.reset_island(1, _elite("forge", 0.02))
     assert islands.stall[1] == 0 and len(islands.archives[1].frontier()) == 1
     assert not isl.should_migrate(3) and isl.should_migrate(4)
+
+
+def test_improving_island_never_stalls() -> None:
+    """An island that improves every generation must never register a stall.
+
+    Regression guard for a design where ``insert()`` pre-applies the exact
+    ``best_seen`` bump ``note_generation`` exists to detect: that makes
+    ``note_generation``'s improvement branch unreachable in a real interleaved
+    insert -> note_generation loop, so an island improving every generation would
+    still stall and get hard-reset. ``note_generation`` must be the SOLE owner of
+    ``best_seen`` for this to pass.
+    """
+    islands = IslandSet.for_count(2)
+    for gen in range(5):
+        # each insert strictly Pareto-dominates the last (same cell, higher gpt
+        # throughput) -> local_best_density genuinely improves every generation.
+        islands.insert(1, _elite("plain", 0.01 * (gen + 1)))
+        flagged = islands.note_generation(1, islands.local_best_density(1))
+        assert flagged is False
+    assert islands.stall[1] == 0

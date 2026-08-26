@@ -68,18 +68,27 @@ class IslandSet:
 
     Attributes:
         archives: One archive per island.
-        stall: Per-island count of consecutive :meth:`note_generation` calls whose
-            reported density did not exceed :attr:`best_seen` -- the stagnation clock
+        stall: Per-island count of consecutive :meth:`note_generation` calls (since
+            the last improvement or reset/seed) whose reported density did not
+            exceed :attr:`best_seen` -- the stagnation clock
             :data:`config.ISLAND_STAGNATION_GENERATIONS` resets against.
-        best_seen: Per-island best :func:`archive.elite_board_density` ever inserted
-            into that island's frontier -- kept current by both :meth:`insert` (on
-            every elite that enters the frontier) and :meth:`note_generation` (on
-            every generation whose reported density is a new high).
+        best_seen: Per-island best density :meth:`note_generation` has observed since
+            that island's last reset/seed. :meth:`note_generation` is its SOLE owner
+            (``insert`` never touches it): a bump belongs to the generation that
+            *reports* it, not the insert that made it possible, so an island that
+            improves every generation is never mistaken for a stalled one.
+        primed: Per-island flag: whether :meth:`note_generation` has been called at
+            least once since the island's last reset/seed. The first post-reset call
+            only establishes the :attr:`best_seen` baseline (neither an improvement
+            nor a stall) -- without this, a fresh island's zero-initialized
+            ``best_seen`` would make that first call register as a spurious
+            "improvement".
     """
 
     archives: list[Archive]
     stall: list[int]
     best_seen: list[float]
+    primed: list[bool]
 
     @classmethod
     def for_count(cls, n: int) -> "IslandSet":
@@ -95,6 +104,7 @@ class IslandSet:
             archives=[Archive() for _ in range(n)],
             stall=[0] * n,
             best_seen=[0.0] * n,
+            primed=[False] * n,
         )
 
     def insert(self, i: int, elite: Elite) -> bool:
@@ -107,12 +117,9 @@ class IslandSet:
         Returns:
             Whether the elite entered island ``i``'s frontier.
         """
-        entered = (
-            self._novelty_insert(elite) if i == 0 else self.archives[i].insert(elite)
-        )
-        if entered:
-            self.best_seen[i] = max(self.best_seen[i], elite_board_density(elite))
-        return entered
+        if i == 0:
+            return self._novelty_insert(elite)
+        return self.archives[i].insert(elite)
 
     def _novelty_insert(self, elite: Elite) -> bool:
         """Insert ``elite`` into island 0, the novelty island.
@@ -169,8 +176,10 @@ class IslandSet:
     def note_generation(self, i: int, density: float) -> bool:
         """Record one generation's local-best density for island ``i``.
 
-        A generation whose ``density`` exceeds :attr:`best_seen` resets island ``i``'s
-        stall clock; otherwise the clock advances by one.
+        The FIRST call after island ``i``'s creation/last reset only primes
+        :attr:`best_seen` (see :attr:`primed`) -- it is neither an improvement nor a
+        stall. Every call after that: a ``density`` exceeding :attr:`best_seen` is an
+        improvement (resets the stall clock); otherwise the clock advances by one.
 
         Args:
             i: Island index.
@@ -180,14 +189,18 @@ class IslandSet:
         Returns:
             Whether island ``i`` has now stalled for
             :data:`config.ISLAND_STAGNATION_GENERATIONS` consecutive generations
-            without exceeding :attr:`best_seen`. Always ``False`` when that threshold
-            is <= 0 (disabled).
+            without exceeding :attr:`best_seen`. Always ``False`` on the priming call
+            or when that threshold is <= 0 (disabled).
         """
+        if not self.primed[i]:
+            self.primed[i] = True
+            self.best_seen[i] = density
+            return False
         if density > self.best_seen[i]:
             self.best_seen[i] = density
             self.stall[i] = 0
-        else:
-            self.stall[i] += 1
+            return False
+        self.stall[i] += 1
         threshold = config.ISLAND_STAGNATION_GENERATIONS
         return threshold > 0 and self.stall[i] >= threshold
 
@@ -205,6 +218,7 @@ class IslandSet:
             self.insert(i, seed)
         self.stall[i] = 0
         self.best_seen[i] = 0.0
+        self.primed[i] = False  # next note_generation re-baselines from scratch
 
     def local_best_density(self, i: int) -> float:
         """Max :func:`archive.elite_board_density` over island ``i``'s frontier.
@@ -279,7 +293,9 @@ class IslandSet:
             archive.Archive.from_jsonl(directory / f"island_{i}.jsonl")
             for i in range(n)
         ]
-        return cls(archives=archives, stall=[0] * n, best_seen=[0.0] * n)
+        return cls(
+            archives=archives, stall=[0] * n, best_seen=[0.0] * n, primed=[False] * n
+        )
 
 
 def should_migrate(generation: int) -> bool:
