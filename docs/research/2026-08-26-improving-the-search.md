@@ -156,10 +156,19 @@ than to jailbreak-ASR search. Two consequences drive everything:
   `<|start|>assistant` generation prompt after our user message, so a partial tool call in the input
   is user content the model reasons about, not an assistant turn it continues -- and the SDK only
   parses/executes tool calls the model GENERATES, never ones we inject. The forge works only because
-  it is a COMPLETE prior turn continued as a fresh turn. CONCLUSION: we cannot move the tool call
-  into the input. Combined with the ablation (deletion search floored at 28/29), TWO input-varying
-  levers now both fail to get the generated output below 28/29 -- strong (not exhaustive) evidence
-  the output is floored for the http.post mechanism. The remaining movable lever is INPUT tokens.
+  it is a COMPLETE prior turn continued as a fresh turn. But this was ONE construction defeated by
+  the SDK's turn structure -- not a proof.
+- **CORRECTION (2026-08-26) -- "28/29 floored" was a CONFLATION.** It ran together two different
+  numbers: (a) the minimum tokens that FIRE -- the parser-acceptable render, gpt ~22 (no
+  `<|constrain|>json`) / gemma ~21 (unquoted args), verified by calling the grader parser directly
+  -- and (b) what the CHAMPION greedily EMITS, 28/29. The firing minimum is (a) ~22/21, which is
+  6-8 tokens BELOW the champion. The ablation floored only the champion's DELETION neighborhood and
+  the prefill probe failed ONE construction; neither shows NO input yields a leaner greedy render,
+  and the parser proves a leaner FIRING render exists. So the output is NOT proven floored -- there
+  is a real 6-8 token gap between what fires (~22/21) and what the champion emits (28/29), and
+  closing it is an OPEN INPUT SEARCH: find an input whose GREEDY output is the parser-minimal
+  render. That is exactly what the structural search (#3 descriptors, #4 islands) targets -- the
+  priority, not a dead end.
 - **#3 structural descriptors, #4 islands** — not yet built; ranked as above. #3 cold-starts the
   archive (descriptor change), so hold it until the pending board tests report.
 
