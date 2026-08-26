@@ -53,6 +53,10 @@ sleep 1
 # the PERSONAL ChatGPT Pro quota per generation and the token expires (~days, then needs
 # `codex login`); as the SOLE lane it burns quota faster and a lapsed token stalls the
 # whole roster -- watch for 401s / quota 429s.
+# JED_PROPOSER_REPLICAS=4 matches config.ISLAND_COUNT: worker_loop pins
+# island = worker_id % ISLAND_COUNT, so 4 replicas on the sole codex lane gives every
+# island its own worker (optimize_prompts._build_worker_cycles warns if this lane ever
+# falls short of ISLAND_COUNT).
 #
 # JED_JUDGE_MODE=off drops the dylan robustness/mechanism judge entirely (_assess_batch
 # returns all-None, zero HTTP calls to DYLAN_JUDGE_URL). The public-board objective is
@@ -63,7 +67,7 @@ tmux new-session -d -s "$SESSION" -c "$REPO" \
     export JED_CAMPAIGN_ROOT=\"$REPO/run\" JED_WANDB=1 \
       JED_ARTIFACT_SCORE=0 \
       JED_TEAM_PROPOSERS=\"codex-gpt55\" \
-      JED_PROPOSER_REPLICAS=1 \
+      JED_PROPOSER_REPLICAS=4 \
       JED_JUDGE_MODE=off \
       CUDA_DEVICE_ORDER=PCI_BUS_ID \
       LD_LIBRARY_PATH=\"/usr/local/cuda-12.8/lib64:\${LD_LIBRARY_PATH:-}\"; \

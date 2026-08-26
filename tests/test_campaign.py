@@ -3584,6 +3584,51 @@ def test_optimize_team_uses_live_cheapest_model_list(
     assert cycles == [["brand-new-ci-model", "glm-5.2"]]
 
 
+def test_build_worker_cycles_fans_codex_lane_to_island_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Replicas == ISLAND_COUNT gives the keyless codex lane one worker per island."""
+    from jed_attack.campaign import config, providers
+    from jed_attack.campaign import optimize_prompts as op
+
+    monkeypatch.setattr(config, "ISLAND_COUNT", 4, raising=False)
+    codex = providers.get("codex-gpt55")
+    cycles = op._build_worker_cycles({"": [codex]}, replicas=4)
+
+    assert len(cycles) == 4
+    assert all(cycle == [codex] for cycle in cycles)
+
+
+def test_build_worker_cycles_warns_when_codex_lane_is_short(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Fewer codex replicas than ISLAND_COUNT logs a warning (islands go workerless)."""
+    from jed_attack.campaign import config, providers
+    from jed_attack.campaign import optimize_prompts as op
+
+    monkeypatch.setattr(config, "ISLAND_COUNT", 4, raising=False)
+    codex = providers.get("codex-gpt55")
+    cycles = op._build_worker_cycles({"": [codex]}, replicas=1)
+
+    assert len(cycles) == 1
+    assert "ISLAND_COUNT" in caplog.text
+
+
+def test_build_worker_cycles_non_codex_lane_short_of_islands_is_silent(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The codex-only warning does not fire for lanes with no codex provider."""
+    from jed_attack.campaign import config, providers
+    from jed_attack.campaign import optimize_prompts as op
+
+    monkeypatch.setattr(config, "ISLAND_COUNT", 4, raising=False)
+    zai = providers.get("zai-glm5")
+    cycles = op._build_worker_cycles({"ZAI_API_KEY": [zai]}, replicas=1)
+
+    assert len(cycles) == 1
+    assert "ISLAND_COUNT" not in caplog.text
+
+
 def test_team_proposers_env_override_parses_csv() -> None:
     """Operators can pin a different single CI model without editing source."""
     from jed_attack.campaign import config

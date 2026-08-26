@@ -1284,6 +1284,53 @@ def _resolve_cheapest_cycle(
     ]
 
 
+def _build_worker_cycles(
+    lanes: dict[str, list[providers.Provider]], replicas: int
+) -> list[list[providers.Provider]]:
+    """Fan each lane's key into ``replicas`` concurrent same-key workers.
+
+    ``JED_PROPOSER_REPLICAS>1`` fans a lane's key into N concurrent same-key workers
+    that author + score in parallel against the shared blackboard. The cheapest lane
+    stays single (its per-key cap 429s parallel requests -- confirmed); other keys
+    (codex/z.ai) tolerate concurrency, so N replicas = N-way parallel authoring on one
+    key. Watch the log for 429s and back off ``JED_PROPOSER_REPLICAS`` if a key caps
+    low.
+
+    Islands need one worker each (:func:`worker_loop` pins
+    ``island = worker_id % config.ISLAND_COUNT``), so this also warns when the codex
+    Responses lane -- the one that fans via replicas -- comes up short of
+    ``config.ISLAND_COUNT`` workers.
+
+    Args:
+        lanes: Provider cycles keyed by ``key_env`` (``""`` for keyless lanes such as
+            the codex Responses backend).
+        replicas: Same-key worker fan-out applied to every lane except the cheapest
+            one.
+
+    Returns:
+        One provider cycle per worker.
+    """
+    cycles = [
+        cycle
+        for key_env, cycle in lanes.items()
+        for _ in range(1 if key_env == providers.CHEAPEST_KEY_ENV else replicas)
+    ]
+    codex_workers = sum(
+        1 if key_env == providers.CHEAPEST_KEY_ENV else replicas
+        for key_env, cycle in lanes.items()
+        if any(p.kind == providers.CODEX_RESPONSES_KIND for p in cycle)
+    )
+    if codex_workers and codex_workers < config.ISLAND_COUNT:
+        _log.warning(
+            "codex lane has %d worker(s), fewer than ISLAND_COUNT=%d; each island "
+            "needs its own worker -- set JED_PROPOSER_REPLICAS>=%d",
+            codex_workers,
+            config.ISLAND_COUNT,
+            config.ISLAND_COUNT,
+        )
+    return cycles
+
+
 async def optimize_team(
     board: blackboard.Blackboard,
     out_dir: Path,
@@ -1322,17 +1369,8 @@ async def optimize_team(
         raise SystemExit(
             "no usable proposer lanes; set CHEAPEST_API_KEY and/or ZAI_API_KEY"
         )
-    # JED_PROPOSER_REPLICAS>1 fans a lane's key into N concurrent same-key workers that
-    # author + score in parallel against the shared blackboard. The cheapest lane stays
-    # single (its per-key cap 429s parallel requests -- confirmed); other keys
-    # (codex/z.ai) tolerate concurrency, so N replicas = N-way parallel authoring on one
-    # key. Watch the log for 429s and back off JED_PROPOSER_REPLICAS if a key caps low.
     replicas = max(1, int(os.getenv("JED_PROPOSER_REPLICAS", "1")))
-    cycles = [
-        cycle
-        for key_env, cycle in lanes.items()
-        for _ in range(1 if key_env == providers.CHEAPEST_KEY_ENV else replicas)
-    ]
+    cycles = _build_worker_cycles(lanes, replicas)
     _log.info(
         "team: %d workers over %d keys (replicas=%d) -> %s",
         len(cycles),
