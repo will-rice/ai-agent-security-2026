@@ -34,9 +34,10 @@ _log = logging.getLogger(__name__)
 # Tag stamped on every record scored under the CURRENT optimizer objective. Bump this
 # whenever the shipping/objective scheme changes: champion selection prefers rows
 # carrying the current tag so a prior scheme's incomparable magnitudes cannot freeze
-# the logged champion (see _objective_key). The current tag is ``v23`` (input-length
-# diversity axis + reply-suppression structural flag; same v22 total-token cost, see
-# docstring). NOTE: ROBUSTNESS_LAMBDA is currently UN-WIRED -- the score
+# the logged champion (see _objective_key). The current tag is ``v24`` (the islands
+# scheme: the shipped pool is now the GLOBAL best across the island archives --
+# per-island lineages + migration + stagnation reset + a novelty island -- same v22/v23
+# cost model, see docstring). NOTE: ROBUSTNESS_LAMBDA is currently UN-WIRED -- the score
 # never reads it, so a non-zero value only changes the tag/pool below, not the score.
 def objective_scheme_name(
     robustness_lambda: float,
@@ -45,15 +46,20 @@ def objective_scheme_name(
 ) -> str:
     """Scheme tag for the current objective weights.
 
-    ``v23`` re-keys the archive's diversity axis from generated length to INPUT
-    length (``input_char_bucket``) and adds a reply-suppression flag to shape_family:
-    generated output is floored (28/29 on every firing shape), so the old gen-char
-    axis illuminated nothing and the search collapsed to one cell; input length is the
-    axis that varies and that the objective minimises. The cost model is unchanged from
-    ``v22`` (throughput = value / (input_tokens + gen_tokens), input and output weighted
-    equally -- lean-big LOST on a longer input, forge-embed FLAT at the same count).
-    The descriptor change re-keys every cell, so v22/earlier rows are stale (discarded
-    on rank). ``v20`` was the MAP-Elites + Pareto
+    ``v24`` moves shipping from a single Pareto archive to an island model
+    (:mod:`jed_attack.campaign.islands`): N parallel per-island archives with their own
+    lineages, periodic migration between islands, stagnation reset for islands that stop
+    improving, and a dedicated novelty island. The shipped pool is the GLOBAL best
+    elite across all island archives, not one archive's frontier. The cost model and
+    diversity axes are UNCHANGED from ``v23``/``v22`` (throughput = value /
+    (input_tokens + gen_tokens); diversity keyed on input-length + reply-suppression
+    shape_family) -- only the archive topology changed, so this is a pure re-key: v23
+    and earlier rows are stale (discarded on rank). ``v23`` re-keyed the archive's
+    diversity axis from generated length to INPUT length (``input_char_bucket``) and
+    added a reply-suppression flag to shape_family: generated output is floored (28/29
+    on every firing shape), so the old gen-char axis illuminated nothing and the search
+    collapsed to one cell; input length is the axis that varies and that the objective
+    minimises. ``v20`` was the MAP-Elites + Pareto
     shipping scheme: the shipped pool is the archive's Pareto frontier over the two raw
     per-model throughput columns (see :mod:`jed_attack.campaign.archive`), NOT a single
     MIN-scalar champion. The MIN
@@ -65,9 +71,9 @@ def objective_scheme_name(
     below, never the score itself); threaded through only so a future robustness-aware
     objective has its own pool ready.
     """
-    base = f"{gate}_pareto_v23"
+    base = f"{gate}_pareto_v24"
     if robustness_lambda != 0.0:
-        base = f"robust{robustness_lambda:g}_{gate}_pareto_v23"
+        base = f"robust{robustness_lambda:g}_{gate}_pareto_v24"
     if portfolio_lambda != 0.0:
         base = f"portfolio{portfolio_lambda:g}_{base}"
     return base

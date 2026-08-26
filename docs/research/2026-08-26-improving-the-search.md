@@ -116,6 +116,7 @@ than to jailbreak-ASR search. Two consequences drive everything:
    proposer cycles on unreachable formats.
 3. **Structural MAP-Elites descriptors** + multi-elite-per-cell — the real monoculture cure.
 4. **FunSearch islands + stagnation resets + a pure-novelty island** — reset to *random* elites.
+   **DONE (2026-08-26).**
 5. **Lever library + DE-difference proposer operator** — make independent savings stack.
 - Runner-up: operator/seed bandits to auto-balance explore vs exploit.
 
@@ -169,8 +170,15 @@ than to jailbreak-ASR search. Two consequences drive everything:
   closing it is an OPEN INPUT SEARCH: find an input whose GREEDY output is the parser-minimal
   render. That is exactly what the structural search (#3 descriptors, #4 islands) targets -- the
   priority, not a dead end.
-- **#3 structural descriptors, #4 islands** — not yet built; ranked as above. #3 cold-starts the
-  archive (descriptor change), so hold it until the pending board tests report.
+- **#4 FunSearch islands — IMPLEMENTED (2026-08-26)**, scheme `v24`: N parallel per-island
+  archives (`jed_attack.campaign.islands.IslandSet`, `JED_ISLANDS` workers) each with their own
+  lineage, periodic migration between islands, a stagnation reset (seeds a stalled island from a
+  random elite of the best island, not the global champion) once an island stops improving for
+  `JED_ISLAND_STALL` generations, and a dedicated novelty island (island 0, distinct-over-dense
+  inserts) alongside plain quality islands. The shipped pool is the GLOBAL best across every
+  island's archive, not one shared frontier's.
+- **#3 structural descriptors** — not yet built; ranked as above. Cold-starts the archive
+  (descriptor change), so hold it until the pending board tests report.
 
 ## Key sources
 EvoPrompt 2309.08532 · OPRO 2309.03409 · PromptBreeder 2309.16797 · CAPO 2504.16005 · APO survey
