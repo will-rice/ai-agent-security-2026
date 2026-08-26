@@ -19,7 +19,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from jed_attack.campaign import archive, assemble, config, fill
-from jed_attack.campaign.archive import Archive, Elite
+from jed_attack.campaign.archive import Elite
 from jed_attack.campaign.islands import IslandSet
 from jed_attack.campaign.judge_policy import (
     CandidateObjective,
@@ -223,19 +223,10 @@ def _ship_pools(pools: dict[str, list[list[str]]], out_dir: Path) -> Path:
     return assemble.build_permodel(pools["gpt_oss"], pools["gemma_4"], out_dir)
 
 
-def _archive_path(board_path: Path) -> Path:
-    """The archive JSONL persisted alongside the blackboard JSONL.
-
-    Mirrors the ``blackboard.jsonl`` idiom: the Pareto archive lives in a sibling file
-    (``<stem>.archive.jsonl``) so a warm start reloads both from the same directory.
-    """
-    return board_path.with_name(board_path.stem + ".archive.jsonl")
-
-
 def _islands_dir(board_path: Path) -> Path:
     """The directory of per-island archive JSONLs persisted alongside the blackboard.
 
-    Mirrors the ``blackboard.jsonl``/``_archive_path`` idiom: each island's frontier
+    Mirrors the ``blackboard.jsonl`` idiom: each island's frontier
     lives in its own file (``island_<i>.jsonl``, see :meth:`islands.IslandSet.to_jsonl`)
     under a sibling directory (``<stem>.islands/``) so a warm start reloads every
     island from the same directory.
@@ -362,22 +353,6 @@ class Blackboard:
         )
         self._lock = asyncio.Lock()
 
-    @property
-    def archive(self) -> Archive:
-        """Island 0's archive -- temporary bridge, removed in Task 5.
-
-        Keeps every pre-islands ``board.archive.*`` caller (``reship_frontier``,
-        ``champion_by_board_density``, the existing optimizer/test call sites) working
-        unmodified by reading/writing island 0 directly. Task 5 migrates each caller to
-        an explicit island and deletes this property. NOTE: annotated with the bare
-        ``Archive``/``Elite`` symbols (imported directly), not ``archive.Archive`` --
-        a property named ``archive`` shadows the ``archive`` MODULE inside this class's
-        own namespace for any annotation that bareword-references it (Python's deferred
-        annotation evaluation resolves against the class's final namespace, not
-        definition order), so ``archive.Whatever`` in a signature here would crash.
-        """
-        return self.islands.archives[0]
-
     @classmethod
     def load(cls, path: Path) -> "Blackboard":
         """Warm-start: replay the JSONL into memory (skips malformed lines)."""
@@ -409,12 +384,10 @@ class Blackboard:
                 path,
                 malformed_lines[:5],
             )
-        # Reads the per-island archives (_islands_dir), NOT the legacy single-file
-        # archive (_archive_path) that reship_frontier still WRITES pre-Task-5: until
-        # Task 5 migrates that write path to reship_islands/_islands_dir, this warm
-        # start will NOT see a prior run's frontier persisted via reship_frontier --
-        # DO NOT restart the live campaign against a mid-plan (Task-4-only) commit, or
-        # its Pareto frontier is silently discarded (self-healing once Task 5 lands).
+        # Warm-starts every island's frontier from the per-island archives under
+        # _islands_dir -- the SAME directory :meth:`reship_islands` persists to -- so
+        # load and the live write path agree (a restart reloads exactly what last
+        # shipped; there is no longer a separate archive to fall out of sync).
         return cls(
             path, records, IslandSet.from_jsonl(_islands_dir(path), config.ISLAND_COUNT)
         )
@@ -652,22 +625,6 @@ class Blackboard:
         if best is not None:
             _ship_pools(_champion_map(best), out_dir)
 
-    async def reship_frontier(self, out_dir: Path) -> None:
-        """Ship the archive's Pareto frontier and persist the archive alongside.
-
-        Fills every frontier shape into its firing model's pool (see
-        :func:`_frontier_map`) and rewrites ``attack.py`` via the per-model router
-        (:func:`assemble.build_permodel`) -- the WHOLE frontier ships, not a single MIN
-        champion. Persists the archive to its sibling JSONL under the same lock so the
-        shipped artifact and the on-disk archive never disagree.
-
-        Args:
-            out_dir: Where :func:`assemble.build_permodel` writes ``attack.py``.
-        """
-        async with self._lock:
-            _ship_pools(_frontier_map(self.archive), out_dir)
-            self.archive.to_jsonl(_archive_path(self._path))
-
     async def reship_islands(self, out_dir: Path) -> None:
         """Ship the union of every island's frontier, and persist all islands.
 
@@ -675,7 +632,7 @@ class Blackboard:
         :class:`archive.Archive` via :meth:`archive.Archive.insert` -- re-establishing
         Pareto dominance ACROSS islands (an elite from one island can dominate one from
         another) -- so :func:`_frontier_map`/:func:`_ship_pools` rank and ship the
-        resulting union exactly the way :meth:`reship_frontier` ships a single archive.
+        resulting cross-island union the same way a single archive's frontier ships.
         Persists every island to its own sibling JSONL via
         :meth:`islands.IslandSet.to_jsonl` under the same lock so the shipped artifact
         and the on-disk islands never disagree.
@@ -689,24 +646,25 @@ class Blackboard:
                 for elite in island_archive.frontier():
                     union.insert(elite)
             _ship_pools(_frontier_map(union), out_dir)
-            self.islands.to_jsonl(_islands_dir(self._path))
+            islands_dir = _islands_dir(self._path)
+            islands_dir.mkdir(parents=True, exist_ok=True)
+            self.islands.to_jsonl(islands_dir)
 
     def champion_by_board_density(self) -> Elite | None:
-        """Frontier point maximizing :func:`archive.elite_board_density` (logging).
+        """Board-density leader across every island's frontier (logging only).
 
-        The whole frontier ships; this is only the single representative surfaced in
-        logs/telemetry -- the same ranking :meth:`archive.Archive.ship_set` uses to
-        order the shipped frontier, so the reported champion matches what actually
-        ships first, never a selection gate.
+        The whole cross-island union ships (:meth:`reship_islands`); this is only the
+        single representative surfaced in logs/telemetry.
+        :meth:`islands.IslandSet.global_best_elite` returns exactly the
+        :func:`archive.elite_board_density` leader over all island frontiers -- the same
+        shape the shipped union leads with -- so the reported champion matches what
+        actually ships first, never a selection gate.
 
         Returns:
-            The board-density-leading frontier elite, or ``None`` if the archive is
-            empty.
+            The board-density-leading elite across all islands, or ``None`` if every
+            island is empty.
         """
-        frontier = self.archive.frontier()
-        if not frontier:
-            return None
-        return max(frontier, key=archive.elite_board_density)
+        return self.islands.global_best_elite()
 
     def reship_champions(self, public_out_dir: Path, robust_out_dir: Path) -> None:
         """Rewrite exact-public and robust champion artifacts independently."""

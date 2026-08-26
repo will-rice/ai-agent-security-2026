@@ -35,6 +35,7 @@ import json
 import logging
 import math
 import os
+import random
 import shutil
 import signal
 import time
@@ -60,6 +61,7 @@ from jed_attack.campaign import (
     codex_proposer,
     config,
     fill,
+    islands,
     private_proxy,
     providers,
 )
@@ -180,6 +182,7 @@ def make_record(
     model: str,
     worker: int,
     assessment: JudgeAssessment | None = None,
+    island: int = 0,
 ) -> blackboard.Record:
     """Build a :class:`~jed_attack.campaign.blackboard.Record` from a scored submission.
 
@@ -191,6 +194,10 @@ def make_record(
         model: The lane's model id (the record's provenance tag).
         worker: The lane's worker id.
         assessment: Optional replay-gated judge assessment to persist with the record.
+        island: The FunSearch island (:class:`islands.IslandSet` index) that authored
+            and scored this record, so :meth:`Blackboard.island_best` /
+            :meth:`Blackboard.global_champion` can re-derive per-island rankings from
+            flat JSONL. Defaults to 0 (island 0 / a transient refine-prompt record).
 
     Returns:
         The blackboard record ready to append.
@@ -242,6 +249,7 @@ def make_record(
         objective_name=_PUBLIC_THROUGHPUT_OBJECTIVE,
         gen_chars=_gen_chars_cost(score),
         public_by_model=dict(score.public_by_model),
+        island=island,
     )
 
 
@@ -383,12 +391,13 @@ def _shape_elites(
 def _ship_min_fallback(board: blackboard.Blackboard) -> bool:
     """MIN champion ships to ``attack.py`` only as a cold-start fallback.
 
-    True while the archive's Pareto frontier is empty (nothing better to ship yet);
-    False once the frontier is non-empty, so a later objective record whose elite
-    does NOT itself change the frontier can never clobber the superior frontier
-    artifact already shipped -- the frontier below always supersedes it.
+    True while EVERY island's frontier is empty (nothing better to ship yet); False once
+    any island holds a firing elite (:meth:`islands.IslandSet.global_best_elite` is not
+    ``None``), so a later objective record whose elite does NOT itself change a frontier
+    can never clobber the superior island-union artifact already shipped -- the union
+    reship below always supersedes it.
     """
-    return not board.archive.frontier()
+    return board.islands.global_best_elite() is None
 
 
 _seed_lock: asyncio.Lock | None = None
@@ -396,12 +405,12 @@ _seed_lock_loop: asyncio.AbstractEventLoop | None = None
 
 
 def _seed_gate() -> asyncio.Lock:
-    """One lock serializing cold-start archive seeding across every lane on this loop.
+    """One lock serializing cold-start island seeding across every lane on this loop.
 
     Mirrors :func:`_judge_gate`: an ``asyncio.Lock`` bound to the running loop and
-    reused across lanes, so the FIRST lane to start seeds the empty archive while the
-    others block on the lock, then find the frontier non-empty and skip. The archive is
-    thus never double-seeded even when all lanes start concurrently. Rebinds when the
+    reused across lanes, so the FIRST lane to start seeds the quality island while the
+    others block on the lock, then find an island non-empty and skip. The islands
+    are never double-seeded even when all lanes start concurrently. Rebinds when the
     running loop changes (a lock binds to the loop that first awaits it), so a cache
     reused across a fresh ``asyncio.run`` loop stays correct.
     """
@@ -413,41 +422,54 @@ def _seed_gate() -> asyncio.Lock:
     return _seed_lock
 
 
-async def _seed_archive(board: blackboard.Blackboard, out_dir: Path) -> None:
-    """Cold-start: seed the empty Pareto archive from the incumbent's scored shapes.
+def _quality_island() -> int:
+    """The QUALITY island the cold-start seed lands in (island 1, or 0 if only one).
 
-    On a fresh run the archive frontier is empty, so only the MIN cold-start fallback
-    ships until the loop discovers Pareto shapes. This seeds the frontier ONCE from the
-    accumulated incumbent (:meth:`Blackboard.best_objective`): its two-pool
-    ``Submission`` already lives on the record (:attr:`blackboard.Record.submission`, a
-    validated pydantic object -- no reconstruction needed), so it is scored directly
-    through the SAME real replay path as a normal generation (:func:`_score_batch` ->
+    Island 0 is the novelty island (distinct-over-dense inserts), so the seed goes into
+    a plain quality island -- island 1 whenever there is more than one island, else the
+    lone island 0.
+    """
+    return 1 if config.ISLAND_COUNT > 1 else 0
+
+
+async def _seed_islands(board: blackboard.Blackboard, out_dir: Path) -> None:
+    """Cold-start: seed a QUALITY island from the incumbent's scored shapes.
+
+    On a fresh run every island frontier is empty, so only the MIN cold-start fallback
+    ships until the loop discovers Pareto shapes. This seeds ONE quality island
+    (:func:`_quality_island`, island 1) ONCE from the accumulated incumbent
+    (:meth:`Blackboard.best_objective`): its two-pool ``Submission`` already lives on
+    the record (:attr:`blackboard.Record.submission`, a validated pydantic object -- no
+    reconstruction needed), so it is scored through the SAME real replay path as
+    a normal generation (:func:`_score_batch` ->
     :func:`~jed_attack.campaign.submission_score.score_pools`, so every seed elite
-    carries its true per-model ``gen_chars`` -- never a fabricated throughput),
-    converted to elites (:func:`_shape_elites`), inserted each, and -- if the frontier
-    became non-empty -- reshipped so a strong artifact ships immediately instead of
-    waiting for the loop to rediscover the incumbent's shapes.
+    carries its per-model ``gen_chars`` -- never a fabricated throughput), converted
+    to elites (:func:`_shape_elites`), inserted, and -- if any island now holds a firing
+    elite -- reshipped (:meth:`Blackboard.reship_islands` ships the union) so
+    a strong artifact ships instead of waiting for the loop to rediscover the
+    incumbent's shapes. Other islands start empty for the workers to explore from
+    scratch.
 
-    Guarded so it runs exactly once and never corrupts a live frontier: the loop-scoped
+    Guarded so it runs exactly once and never corrupts a live island: the loop-scoped
     lock (:func:`_seed_gate`) serializes concurrent lanes; a missing incumbent (a truly
     cold board) is a no-op.
 
-    When the frontier is ALREADY non-empty at entry -- a warm restart from a persisted
-    archive, or a lane after the first this loop -- there is nothing to seed, but the
-    frontier is still reshipped so ``attack.py`` reflects the authoritative Pareto pool
-    immediately (``main`` only writes the MIN champion when the frontier is empty, so a
-    warm restart would otherwise lag on the MIN champion until some later generation
-    changed the frontier). The reship is idempotent (the frontier is unchanged).
+    When some island is ALREADY non-empty at entry -- a warm restart from persisted
+    islands, or a lane after the first this loop -- there is nothing to seed, but the
+    union is still reshipped so ``attack.py`` reflects the authoritative pool
+    (``main`` only writes the MIN champion when every island is empty, so a warm restart
+    would otherwise lag on the MIN champion until some later generation changed a
+    frontier). The reship is idempotent (the islands are unchanged).
 
     Args:
-        board: The shared team blackboard; its archive is seeded in place.
-        out_dir: Where :meth:`Blackboard.reship_frontier` writes ``attack.py``.
+        board: The shared team blackboard; a quality island is seeded in place.
+        out_dir: Where :meth:`Blackboard.reship_islands` writes ``attack.py``.
     """
     async with _seed_gate():
-        if board.archive.frontier():
-            # Warm restart / a later lane: nothing to seed, but reship the frontier so
-            # the authoritative Pareto pool ships, not main()'s cold-start MIN fallback.
-            await board.reship_frontier(out_dir)
+        if board.islands.global_best_elite() is not None:
+            # Warm restart / a later lane: nothing to seed, but reship the island union
+            # so the authoritative pool ships, not main()'s cold-start MIN fallback.
+            await board.reship_islands(out_dir)
             return
         incumbent = board.best_objective()
         if incumbent is None:
@@ -455,14 +477,13 @@ async def _seed_archive(board: blackboard.Blackboard, out_dir: Path) -> None:
         submission = incumbent.submission
         scores = await _score_batch([submission])
         for elite in _shape_elites([submission], scores, []):
-            board.archive.insert(elite)
-        frontier = board.archive.frontier()
-        if frontier:
-            await board.reship_frontier(out_dir)
+            board.islands.insert(_quality_island(), elite)
+        if board.islands.global_best_elite() is not None:
+            await board.reship_islands(out_dir)
             _log.info(
-                "cold-start seed: archive frontier seeded with %d shape(s) from the "
-                "incumbent; the frontier now ships",
-                len(frontier),
+                "cold-start seed: island %d seeded from the incumbent; the union "
+                "now ships",
+                _quality_island(),
             )
 
 
@@ -504,18 +525,22 @@ async def _minimize_pool(pool: list[Message], model: str) -> tuple[list[Message]
 async def _ablate_champion(
     board: blackboard.Blackboard, out_dir: Path, worker_id: int
 ) -> bool:
-    """Post-pass: shrink the current champion's EXFIL shapes to their token floor.
+    """Post-pass: shrink the GLOBAL champion's EXFIL shapes to their token floor.
 
-    Runs only after a champion change. Each shape is minimised at most once
-    (:func:`ablate.minimize_shape` -- greedy exact-reward deletion, robust-gated);
-    shrank, the minimised submission is scored through the normal path and its elites
-    inserted, so a leaner floor becomes the champion and reships. The proposer
-    approximates this by hand; the post-pass guarantees the incumbent it refines sits at
-    its local token floor. Returns ``True`` if it reshipped a leaner frontier.
+    Runs only after a global-champion change. Operates on
+    :meth:`Blackboard.global_champion` (the best across every island), not a single
+    island. Each shape is minimised once (:func:`ablate.minimize_shape` -- greedy
+    exact-reward deletion, robust-gated); if any shrank, the minimised submission is
+    scored through the normal path and its elites inserted into THIS worker's own island
+    (single-writer: a worker only ever writes its own island), so a leaner floor can
+    become the next champion and reship the island union. The proposer approximates this
+    by hand; the post-pass guarantees the incumbent it refines sits at its local token
+    floor. Returns ``True`` if it reshipped a leaner union.
     """
-    champ = board.best_objective()
+    champ = board.global_champion()
     if champ is None:
         return False
+    island = worker_id % config.ISLAND_COUNT
     pools: dict[str, list[Message]] = {}
     changed = False
     for model in config.MODELS:
@@ -528,16 +553,63 @@ async def _ablate_champion(
     minimized = Submission(gpt_oss=pools["gpt_oss"], gemma_4=pools["gemma_4"])
     scores = await _score_batch([minimized])
     await board.append(
-        make_record(minimized, scores[0], "ablation post-pass", "ablate", worker_id),
+        make_record(
+            minimized,
+            scores[0],
+            "ablation post-pass",
+            "ablate",
+            worker_id,
+            island=island,
+        ),
         out_dir,
         reship=False,
     )
     reshipped = False
     for elite in _shape_elites([minimized], scores, []):
-        reshipped = board.archive.insert(elite) or reshipped
+        reshipped = board.islands.insert(island, elite) or reshipped
     if reshipped:
-        await board.reship_frontier(out_dir)
+        await board.reship_islands(out_dir)
     return reshipped
+
+
+async def _evolve_island(
+    board: blackboard.Blackboard, island: int, gen: int, worker_id: int
+) -> None:
+    """Advance island ``island``'s stall clock; hard-reset it, and migrate on ticks.
+
+    The whole block runs under ``board._lock`` and never awaits, so it is atomic against
+    every other lane's locked section (reship/persist/another worker's migration). It
+    reads shared state (the reset seed, the migrant) and can write ANOTHER worker's
+    quality island (migration), which is why it takes the shared lock even though
+    a worker otherwise owns its island alone.
+
+    - :meth:`islands.IslandSet.note_generation` advances island ``island``'s stagnation
+      clock on its local-best density; when it reports a stall, the island is hard-reset
+      (:meth:`islands.IslandSet.reset_island`) reseeded from a random elite of the BEST
+      island's frontier (``None`` -> empty reset when that frontier is empty).
+    - Every :func:`islands.should_migrate` generation the FIRST worker copies the
+      global-best elite into a QUALITY island (index ``1..N-1``, never the novelty
+      island 0), spreading a strong shape across lineages.
+
+    Args:
+        board: The shared team blackboard.
+        island: This worker's island index (the one it evolves).
+        gen: This worker's generation counter (migration-cadence input).
+        worker_id: This lane's worker id (only worker 0 migrates).
+    """
+    async with board._lock:
+        stalled = board.islands.note_generation(
+            island, board.islands.local_best_density(island)
+        )
+        if stalled:
+            best = board.islands.best_island()
+            best_frontier = board.islands.archives[best].frontier()
+            seed = random.choice(best_frontier) if best_frontier else None
+            board.islands.reset_island(island, seed)
+        if worker_id == 0 and config.ISLAND_COUNT > 1 and islands.should_migrate(gen):
+            migrant = board.islands.global_best_elite()
+            if migrant is not None:
+                board.islands.insert(random.randrange(1, config.ISLAND_COUNT), migrant)
 
 
 async def worker_loop(
@@ -578,11 +650,16 @@ async def worker_loop(
         timeout_s: Per-generation proposer timeout.
         run: The shared W&B run to log to, or ``None``.
     """
-    # Cold-start: seed the empty archive from the incumbent's scored shapes so the
-    # Pareto frontier is non-empty (and a strong artifact ships) on the first run,
-    # instead of only the MIN fallback shipping until the loop rediscovers those shapes.
-    # One-time + lock-guarded, so a warm archive and every lane after the first skip it.
-    await _seed_archive(board, out_dir)
+    # This lane evolves exactly ONE island (FunSearch islands): its own lineage, that it
+    # alone writes. Worker 0 -> the novelty island 0; every other worker -> a quality
+    # island. Several workers on the same island index share it (single-writer still
+    # holds per running lane because only one request per key is in flight).
+    island = worker_id % config.ISLAND_COUNT
+    # Cold-start: seed a quality island from the incumbent's shapes so some island
+    # frontier is non-empty (and a strong artifact ships) on the first run, instead of
+    # only the MIN fallback shipping until the loop rediscovers those shapes. One-time +
+    # lock-guarded, so warm islands and every lane after the first skip it.
+    await _seed_islands(board, out_dir)
     gen = 0
     # Per-model [valid, dropped] tally so a lane's log/wandb shows which models author a
     # parseable batch and which drop out (validation failure or refusal). Drop-prone
@@ -599,22 +676,26 @@ async def worker_loop(
             )
             model = provider.model or provider.kind
 
-            # Round 0: author a BATCH from the GLOBAL incumbent; score every submission.
+            # Round 0: author a BATCH from THIS island's incumbent; score every
+            # submission. Each worker climbs its own lineage's best, not one shared
+            # global -- that isolation is what keeps the islands from collapsing onto a
+            # single frontier.
             incumbent = (
                 board.best_robust()
                 if config.JUDGE_MODE == "active"
-                else board.best_objective()
+                else board.island_best(island)
             )
-            # Sample archive parents (EvoPrompt material) and render the OPRO trajectory
-            # from the current Pareto frontier; both are DATA the proposer recombines.
-            parents = board.archive.parents(_ARCHIVE_PARENTS_K)
+            # Sample THIS island's archive parents (EvoPrompt material) and render the
+            # OPRO trajectory from its Pareto frontier; both are DATA the proposer
+            # recombines.
+            parents = board.islands.archives[island].parents(_ARCHIVE_PARENTS_K)
             prompt = submission_prompt(
                 incumbent,
                 incumbent.feedback if incumbent else [],
                 {},
                 top_messages=team,
                 reasoning=reasoning_digest,
-                opro=board.archive.frontier(),
+                opro=board.islands.archives[island].frontier(),
                 parents=parents,
             )
             # Agentic lanes live-test candidates via a tool loop before submitting; all
@@ -676,14 +757,20 @@ async def worker_loop(
             )
             batch_objective = _batch_refine_objective(local_scores)
 
+            # The GLOBAL champion (across all islands) heading into this generation --
+            # the reship trigger below compares against it to decide whether this
+            # generation moved the shipped pool.
+            prior_global = board.global_champion()
+
             # Store EVERY submission of the kept batch as its own candidate in the
-            # flat-file blackboard. The archive's Pareto frontier is the authoritative
+            # blackboard, tagged with THIS island so island_best/global_champion
+            # can re-derive per-island rankings. The island union is the authoritative
             # shipped pool (design spec); the MIN champion pool may write ``attack.py``
-            # ONLY as a cold-start fallback while the frontier is still empty. Otherwise
-            # a later MIN-best whose elite does NOT enter the frontier would clobber the
-            # superior frontier artifact across generations. ``append`` always records
-            # the row + updates the logging champion regardless of ``reship``; only its
-            # artifact write is gated here. The frontier below then supersedes it.
+            # ONLY as a fallback while every island is empty. Otherwise a later
+            # MIN-best whose elite does NOT change the global best would clobber the
+            # superior union artifact across generations. ``append`` always records the
+            # row + updates the logging champion regardless of ``reship``; only its
+            # artifact write is gated here. The union reship below then supersedes it.
             ship_min_fallback = _ship_min_fallback(board)
             artifact_reshipped = False
             for submission, score, assessment in zip(
@@ -697,27 +784,29 @@ async def worker_loop(
                         model,
                         worker_id,
                         assessment=assessment,
+                        island=island,
                     ),
                     out_dir,
                     reship=ship_min_fallback,
                 )
                 artifact_reshipped = artifact_reshipped or reshipped
 
-            # Grow the MAP-Elites + Pareto archive from the kept batch's scored shapes,
-            # then reship the frontier whenever it changed -- the frontier is what ships
-            # (reship_frontier also persists the archive to its sibling JSONL, so
-            # nothing is lost on restart). A changed frontier wins the artifact for this
-            # generation; an unchanged frontier leaves the prior frontier artifact
-            # intact (the gated MIN append above never overwrites it).
-            frontier_changed = False
+            # Grow THIS island's archive from the kept batch's scored shapes (the worker
+            # owns its island alone -> no lock needed for its own inserts).
             for elite in _shape_elites(local_batch, local_scores, diagnoses):
-                frontier_changed = board.archive.insert(elite) or frontier_changed
-            if frontier_changed:
-                await board.reship_frontier(out_dir)
+                board.islands.insert(island, elite)
+            # Stagnation-reset this island and, on migration ticks, spread the best
+            # across quality islands -- all shared-state mutation under board._lock.
+            await _evolve_island(board, island, gen, worker_id)
+
+            # Reship the cross-island union whenever this generation moved the GLOBAL
+            # best; a purely local island gain waits for a later global change (the
+            # union is idempotent, so nothing is lost). On a new champion, squeeze
+            # it to its token floor (bounded replays; reships internally on a win).
+            new_global = board.global_champion()
+            if new_global is not None and new_global is not prior_global:
+                await board.reship_islands(out_dir)
                 artifact_reshipped = True
-                # Post-pass: squeeze the (possibly new) champion to its token floor.
-                # Only on a frontier change, so the extra replays are rare and bounded.
-                # It reships internally if a leaner floor wins; result unused.
                 await _ablate_champion(board, out_dir, worker_id)
 
             objective_best = board.best_objective()
@@ -1847,7 +1936,8 @@ def _generation_wandb_metrics(
         local_scores: The kept batch's scores (for :func:`_batch_score_metrics`).
         local_assessments: The kept batch's judge assessments, one per submission.
         shadow_decision: The refine loop's shadow-judge comparison outcome.
-        board: The shared team blackboard (its ``archive`` sources the frontier gauges).
+        board: The shared team blackboard (THIS worker's island sources the frontier
+            gauges, so each lane reports its own lineage's frontier).
         model: The lane's model id.
         worker_id: The lane's worker id.
 
@@ -1855,7 +1945,7 @@ def _generation_wandb_metrics(
         The per-generation metrics dict, ready for ``run.log``.
     """
     boards = _project_boards(best_score)
-    frontier = board.archive.frontier()
+    frontier = board.islands.archives[worker_id % config.ISLAND_COUNT].frontier()
     return {
         "batch_n": batch_n,
         # Board metrics below are the char-PROJECTED objective (fill walked to the T4
@@ -2324,22 +2414,22 @@ def _setup_logging() -> None:
 
 
 def _ship_startup_fallback(board: blackboard.Blackboard, out_dir: Path) -> None:
-    """Ship the MIN champion at startup ONLY as the cold-start fallback (no frontier).
+    """Ship the MIN champion at startup ONLY as the cold-start fallback (no islands).
 
     Reship the best-so-far immediately so ``attack.py`` never lags a warm restart:
     reship-on-new-best only fires when a future generation beats the champion. But the
-    Pareto frontier is the authoritative shipped pool (design spec), so the MIN champion
-    ships only while the frontier is empty. On a warm restart a persisted archive
-    already carries a non-empty frontier, which :func:`_seed_archive` reships at
-    worker_loop startup, so writing the MIN champion here would transiently clobber that
-    superior artifact. Gating the startup MIN write to an empty frontier holds the same
-    invariant steady state enforces (ship MIN only when the frontier is empty).
+    island union is the authoritative shipped pool (design spec), so the MIN champion
+    ships only while every island is empty. On a warm restart the persisted islands
+    already carry a frontier, which :func:`_seed_islands` reships at worker_loop
+    startup, so writing the MIN champion here would transiently clobber that superior
+    artifact. Gating the startup MIN write to empty islands holds the same invariant
+    steady state enforces (ship MIN only when no island has a firing elite).
 
     Args:
         board: The loaded team blackboard.
         out_dir: Where :meth:`Blackboard.reship_best` writes ``attack.py``.
     """
-    if not board.archive.frontier():
+    if board.islands.global_best_elite() is None:
         board.reship_best(out_dir)
 
 
