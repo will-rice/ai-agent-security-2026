@@ -1297,9 +1297,9 @@ def _build_worker_cycles(
     low.
 
     Islands need one worker each (:func:`worker_loop` pins
-    ``island = worker_id % config.ISLAND_COUNT``), so this also warns when the codex
-    Responses lane -- the one that fans via replicas -- comes up short of
-    ``config.ISLAND_COUNT`` workers.
+    ``island = worker_id % config.ISLAND_COUNT`` over every cycle, across all lanes),
+    so this warns when the total worker count is short of ``config.ISLAND_COUNT`` --
+    islands beyond that count never get a proposing worker.
 
     Args:
         lanes: Provider cycles keyed by ``key_env`` (``""`` for keyless lanes such as
@@ -1315,17 +1315,12 @@ def _build_worker_cycles(
         for key_env, cycle in lanes.items()
         for _ in range(1 if key_env == providers.CHEAPEST_KEY_ENV else replicas)
     ]
-    codex_workers = sum(
-        1 if key_env == providers.CHEAPEST_KEY_ENV else replicas
-        for key_env, cycle in lanes.items()
-        if any(p.kind == providers.CODEX_RESPONSES_KIND for p in cycle)
-    )
-    if codex_workers and codex_workers < config.ISLAND_COUNT:
+    if len(cycles) < config.ISLAND_COUNT:
         _log.warning(
-            "codex lane has %d worker(s), fewer than ISLAND_COUNT=%d; each island "
-            "needs its own worker -- set JED_PROPOSER_REPLICAS>=%d",
-            codex_workers,
-            config.ISLAND_COUNT,
+            "%d worker(s) across all lanes, fewer than ISLAND_COUNT=%d; islands "
+            "beyond the worker count never evolve -- raise JED_PROPOSER_REPLICAS "
+            "or lower JED_ISLANDS",
+            len(cycles),
             config.ISLAND_COUNT,
         )
     return cycles

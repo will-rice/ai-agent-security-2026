@@ -439,10 +439,11 @@ class Blackboard:
         """The best current-scheme record across every island, or ``None``.
 
         The ship/telemetry champion for the islands search: the max of
-        :meth:`island_best` over every island in :attr:`islands`. Replaces
-        :meth:`best_objective` at SHIP call sites (:meth:`reship_islands`); telemetry
-        call sites that report the flat-board champion regardless of scheme keep using
-        :meth:`best_objective`.
+        :meth:`island_best` over every island in :attr:`islands`. It is the reship
+        *trigger* (:func:`worker_loop` reships when it advances) and the ablate target,
+        not itself a ship call site -- :meth:`reship_islands` ships the union of every
+        island's frontier. Telemetry call sites that report the flat-board champion
+        regardless of scheme keep using :meth:`best_objective`.
 
         Returns:
             The best-objective record across all islands, or ``None`` if none exist

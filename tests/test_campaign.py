@@ -3291,7 +3291,7 @@ def test_objective_scheme_encodes_gate_guardrail_v24() -> None:
 
     assert bb.objective_scheme_name(0.0, 0.0) == "optimal_pareto_v24"
     # OBJECTIVE_NAME carries the live weights (portfolio diversity is on by default),
-    # but its base always encodes the gate guardrail + v21.
+    # but its base always encodes the gate guardrail + v24.
     assert bb.OBJECTIVE_NAME == bb.objective_scheme_name(
         config.ROBUSTNESS_LAMBDA, config.PORTFOLIO_LAMBDA
     )
@@ -3614,10 +3614,15 @@ def test_build_worker_cycles_warns_when_codex_lane_is_short(
     assert "ISLAND_COUNT" in caplog.text
 
 
-def test_build_worker_cycles_non_codex_lane_short_of_islands_is_silent(
+def test_build_worker_cycles_warns_on_any_short_lane(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """The codex-only warning does not fire for lanes with no codex provider."""
+    """Coverage is total workers, not codex-only: a short non-codex lane warns too.
+
+    Island ownership is ``worker_id % ISLAND_COUNT`` over every cycle across all
+    lanes, so under-coverage is a function of the total worker count regardless of
+    which lane supplies the workers.
+    """
     from jed_attack.campaign import config, providers
     from jed_attack.campaign import optimize_prompts as op
 
@@ -3626,6 +3631,21 @@ def test_build_worker_cycles_non_codex_lane_short_of_islands_is_silent(
     cycles = op._build_worker_cycles({"ZAI_API_KEY": [zai]}, replicas=1)
 
     assert len(cycles) == 1
+    assert "ISLAND_COUNT" in caplog.text
+
+
+def test_build_worker_cycles_silent_when_workers_meet_island_count(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """No warning when the total worker count reaches ISLAND_COUNT (any lane)."""
+    from jed_attack.campaign import config, providers
+    from jed_attack.campaign import optimize_prompts as op
+
+    monkeypatch.setattr(config, "ISLAND_COUNT", 4, raising=False)
+    zai = providers.get("zai-glm5")
+    cycles = op._build_worker_cycles({"ZAI_API_KEY": [zai]}, replicas=4)
+
+    assert len(cycles) == 4
     assert "ISLAND_COUNT" not in caplog.text
 
 
