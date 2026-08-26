@@ -409,6 +409,12 @@ class Blackboard:
                 path,
                 malformed_lines[:5],
             )
+        # Reads the per-island archives (_islands_dir), NOT the legacy single-file
+        # archive (_archive_path) that reship_frontier still WRITES pre-Task-5: until
+        # Task 5 migrates that write path to reship_islands/_islands_dir, this warm
+        # start will NOT see a prior run's frontier persisted via reship_frontier --
+        # DO NOT restart the live campaign against a mid-plan (Task-4-only) commit, or
+        # its Pareto frontier is silently discarded (self-healing once Task 5 lands).
         return cls(
             path, records, IslandSet.from_jsonl(_islands_dir(path), config.ISLAND_COUNT)
         )
