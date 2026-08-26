@@ -144,10 +144,20 @@ class IslandSet:
             )
             if elite_novelty <= blocker_novelty:
                 return False
+            # ``elite`` wins its own cell outright: purge it wholesale rather than
+            # only removing the FRONTIER blockers found above. ``Archive.insert``
+            # only prunes a cell of members its newcomer dominates -- it never
+            # retroactively prunes a member some OTHER cell's elite later came to
+            # dominate, so a stale off-frontier straggler can otherwise survive in
+            # ``cell`` and veto the re-insert below even though it already lost the
+            # novelty contest (it was never even a candidate; it just squats the cell).
+            archive0._cells[cell] = []
             for blocker in blockers:
-                blocker_cell = archive0._cells.get(descriptor(blocker))
-                if blocker_cell is not None and blocker in blocker_cell:
-                    blocker_cell.remove(blocker)
+                if descriptor(blocker) == cell:
+                    continue  # already cleared above
+                other_cell = archive0._cells.get(descriptor(blocker))
+                if other_cell is not None and blocker in other_cell:
+                    other_cell.remove(blocker)
         return archive0.insert(elite)
 
     def local_best_density(self, i: int) -> float:

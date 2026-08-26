@@ -84,3 +84,65 @@ def test_novelty_insert_still_requires_firing() -> None:
     )
     assert islands.insert(0, dud) is False
     assert islands.archives[0].frontier() == []
+
+
+def _elite_2d(
+    family: str,
+    bucket: int,
+    gpt_throughput: float = 0.0,
+    gemma_throughput: float = 0.0,
+) -> archive.Elite:
+    """A firing elite whose severity is fixed at 16 on whichever model has throughput.
+
+    Lets a test build genuinely Pareto-INCOMPARABLE elites (one strong on gpt_oss,
+    another strong on gemma_4), unlike ``_elite`` (gemma_4 always 0), which is needed
+    to grow island 0's frontier past a single member.
+    """
+    return archive.Elite(
+        text=f"http.post data=SECRET_MARKER url={{u}} {family}{bucket}",
+        mtype="exfil",
+        throughput={"gpt_oss": gpt_throughput, "gemma_4": gemma_throughput},
+        severity={
+            "gpt_oss": 16.0 if gpt_throughput > 0.0 else 0.0,
+            "gemma_4": 16.0 if gemma_throughput > 0.0 else 0.0,
+        },
+        diagnosis="",
+        family=family,
+        bucket=bucket,
+    )
+
+
+def test_novelty_insert_purges_a_stale_same_cell_residue_on_a_win() -> None:
+    """A novelty win must not be silently vetoed by a stale off-frontier cellmate.
+
+    Regression for: ``_novelty_insert`` computed its ``blockers`` from
+    ``archive0.frontier()`` only, then evicted just those blockers before delegating to
+    ``archive0.insert(elite)``. But ``Archive.insert`` also rejects on ANY same-cell
+    member that dominates the newcomer -- including a member that fell off the
+    frontier earlier (dominated by a THIRD, cross-cell elite) and was therefore never
+    even considered a blocker. That stale residue silently vetoed a legitimate novelty
+    winner. Repro: seed a same-cell elite (``incumbent``) that a cross-cell elite
+    (``dominator``) later pushes off the frontier (so it becomes invisible residue),
+    plus an unrelated Pareto-incomparable elite (``rival``) so the archive has >1
+    frontier member. A same-cell newcomer (``winner``) that legitimately out-novels
+    ``dominator`` (island 0's only real frontier blocker) must still be kept, with the
+    stale ``incumbent`` purged from the cell rather than vetoing it.
+    """
+    islands = IslandSet.for_count(1)
+    incumbent = _elite_2d("f", 10, gpt_throughput=0.05)
+    dominator = _elite_2d("g", 1, gpt_throughput=0.09)  # dominates incumbent
+    rival = _elite_2d("g", 3, gemma_throughput=0.05)  # Pareto-incomparable to dominator
+    winner = _elite_2d("f", 10, gpt_throughput=0.001)  # incumbent's cell; wins novelty
+
+    assert islands.insert(0, incumbent) is True
+    assert islands.insert(0, dominator) is True
+    assert islands.insert(0, rival) is True
+    # incumbent is now dominated (off-frontier) but still squats its (family, bucket)
+    # cell -- exactly the invisible-residue setup the bug needs.
+    assert incumbent not in islands.archives[0].frontier()
+
+    assert islands.insert(0, winner) is True
+    families = {(e.family, e.bucket) for e in islands.archives[0].frontier()}
+    assert ("f", 10) in families  # winner kept, not silently dropped
+    assert ("g", 3) in families  # rival untouched
+    assert ("g", 1) not in families  # dominator lost the novelty contest to winner
