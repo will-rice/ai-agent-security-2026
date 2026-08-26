@@ -328,23 +328,14 @@ def _shape_elites(
                 for model in config.MODELS
             }
             fires = {model: gate_severity[model] > 0.0 for model in config.MODELS}
-            # BOARD-CALIBRATED input cost (see config.PREFIX_WEIGHT/TRAILING_WEIGHT).
-            # Split the candidate at the host '{u}': the PREFIX (before it) is shared
-            # prompt the gateway CACHES, so it costs only decode-attention (~0.5 of a
-            # decode token each); the TRAILING text (after the host, e.g. a forge) RE-
-            # PREFILLS every candidate (full weight). Now the objective SEES the board
-            # proved: a long inducer prefix sinks a shape (lean-big lost) and moving the
-            # forge BEFORE the host wins (url-after-end). The old code charged only
-            # url_suffix at 0.022 -> blind to both. Firing branch only (else -> 0.0).
-            _split = message.text.split("{u}", 1)
-            _prefix_chars = len(_split[0])
-            _trailing_chars = len(_split[1]) if len(_split) > 1 else 0
+            # Input cost = the WHOLE message's token count (no position split). Both
+            # input and output tokens cost, weighted equally: throughput charges
+            # input_tokens + gen_tokens. The board proved input tokens matter (lean-big
+            # LOST on a longer inducer despite fewer decode) but position does NOT
+            # (forge-embed FLAT at the same count), so count every input token once and
+            # let the search minimise input + output together. Firing branch only.
             input_cost = {
-                model: (
-                    config.PREFIX_WEIGHT * _prefix_chars
-                    + config.TRAILING_WEIGHT * _trailing_chars
-                )
-                / config.CHARS_PER_TOKEN[model]
+                model: len(message.text) / config.CHARS_PER_TOKEN[model]
                 for model in config.MODELS
             }
             throughputs = {

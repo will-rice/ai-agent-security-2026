@@ -3128,28 +3128,28 @@ def test_robustness_lambda_stamps_distinct_objective_scheme() -> None:
     """A non-zero robustness or portfolio weight earns its own scheme tag/pool."""
     from jed_attack.campaign import blackboard, config
 
-    assert blackboard.objective_scheme_name(0.0) == "optimal_pareto_v21"
-    assert blackboard.objective_scheme_name(0.5) == "robust0.5_optimal_pareto_v21"
-    assert blackboard.objective_scheme_name(1.0) == "robust1_optimal_pareto_v21"
-    assert blackboard.objective_scheme_name(0.0, 2.0) == "portfolio2_optimal_pareto_v21"
+    assert blackboard.objective_scheme_name(0.0) == "optimal_pareto_v22"
+    assert blackboard.objective_scheme_name(0.5) == "robust0.5_optimal_pareto_v22"
+    assert blackboard.objective_scheme_name(1.0) == "robust1_optimal_pareto_v22"
+    assert blackboard.objective_scheme_name(0.0, 2.0) == "portfolio2_optimal_pareto_v22"
     # OBJECTIVE_NAME reflects the live weights (portfolio diversity is on by default).
     assert blackboard.OBJECTIVE_NAME == blackboard.objective_scheme_name(
         config.ROBUSTNESS_LAMBDA, config.PORTFOLIO_LAMBDA
     )
 
 
-def test_objective_scheme_encodes_gate_guardrail_v21() -> None:
-    """The scheme tag encodes the gate guardrail and bumps to v21 (prefill cost)."""
+def test_objective_scheme_encodes_gate_guardrail_v22() -> None:
+    """The scheme tag encodes the gate guardrail and bumps to v22 (token cost)."""
     from jed_attack.campaign import blackboard as bb
     from jed_attack.campaign import config
 
-    assert bb.objective_scheme_name(0.0, 0.0) == "optimal_pareto_v21"
+    assert bb.objective_scheme_name(0.0, 0.0) == "optimal_pareto_v22"
     # OBJECTIVE_NAME carries the live weights (portfolio diversity is on by default),
     # but its base always encodes the gate guardrail + v21.
     assert bb.OBJECTIVE_NAME == bb.objective_scheme_name(
         config.ROBUSTNESS_LAMBDA, config.PORTFOLIO_LAMBDA
     )
-    assert bb.OBJECTIVE_NAME.endswith(config.GATE_GUARDRAIL_NAME + "_pareto_v21")
+    assert bb.OBJECTIVE_NAME.endswith(config.GATE_GUARDRAIL_NAME + "_pareto_v22")
 
 
 def test_raw_gen_meter_counts_full_raw_generation() -> None:
@@ -5376,7 +5376,7 @@ def test_blackboard_ships_champion_as_filled_json(tmp_path: Path) -> None:
     assert src.count("http.post") > 5
     assert "SECRET_MARKER" in src
     assert not hasattr(board, "top_distinct_shapes")
-    assert "_v21" in bb.OBJECTIVE_NAME
+    assert "_v22" in bb.OBJECTIVE_NAME
 
 
 def test_blackboard_ships_pareto_frontier(tmp_path: Path) -> None:
@@ -8575,13 +8575,13 @@ def test_throughput_from_gen_chars() -> None:
 
 
 def test_throughput_charges_input_at_board_weight() -> None:
-    """Input tokens are charged at full weight now (board-calibrated 2026-08-26).
+    """Input and output tokens are charged equally (simple total-token cost).
 
-    ``input_tokens`` carries the PRE-WEIGHTED input cost (_shape_elites applies
-    PREFIX_WEIGHT/TRAILING_WEIGHT), so ``throughput`` charges at weight 1.0. The board
-    proved input matters: lean-big lost because its +14-token inducer input outweighed a
-    1-token decode saving. So a +10-token input is NOT beaten by saving ONE decode token
-    (the old 0.022 premise, now retired).
+    ``throughput`` denom = ``input_tokens + gen_tokens`` (INPUT_PREFILL_WEIGHT = 1.0);
+    ``_shape_elites`` passes the whole message's token count as ``input_tokens``. The
+    board proved input matters: lean-big lost because its +14-token inducer input
+    outweighed a 1-token decode saving. So a +10-token input is NOT beaten by saving ONE
+    decode token (the old 0.022 premise, now retired).
     """
     from jed_attack.campaign.submission_score import throughput
 

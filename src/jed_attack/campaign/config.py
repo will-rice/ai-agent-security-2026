@@ -298,23 +298,14 @@ FILL_BUDGET_CHARS: dict[str, float] = {
 # effect (cross-candidate cache reuse), enforced as a hard gate in _shape_elites
 # (url_suffix_chars must be ~0), not a competing weight. This term stays small so decode
 # dominates; the gate keeps every banked shape url-last.
-# BOARD-CALIBRATED per-candidate replay cost (2026-08-26, from the public scores of
-# champion 104.4 / url-after-end 108.9 / lean-big 98.9). The cost that reproduces that
-# ranking is: PREFIX_WEIGHT*(tokens BEFORE the host) + TRAILING_WEIGHT*(tokens AFTER
-# the host, incl. the forge) + gen_tokens. Physics: the shared prefix is CACHED so it
-# costs only decode-attention (~half a decode token each); tokens AFTER the host
-# re-prefill every candidate (full cost); decode is full. This is why lean-big LOST:
-# its long inducer prefix (39 vs 25 tok) cost more than its 1-token decode saving, and
-# why url-after-end WON -- it moved the forge BEFORE the host (0 trailing). The old
-# objective charged ONLY url_suffix at 0.022 -> blind to both -> banked the lean shape.
-PREFIX_WEIGHT = float(
-    os.getenv("JED_PREFIX_WEIGHT", "0.5")
-)  # cached input: decode-attention
-TRAILING_WEIGHT = float(
-    os.getenv("JED_TRAILING_WEIGHT", "1.0")
-)  # after host: re-prefilled
-# ``throughput`` charges the pre-weighted input cost at weight 1.0 (the PREFIX/TRAILING
-# weights are already applied when building the input-cost term in _shape_elites).
+# Per-candidate replay cost = the total token count, input + output, weighted equally.
+# The board evidence pins this exactly: lean-big LOST (98.9) despite fewer decode tokens
+# because its longer input inducer (39 vs 25 tok) added tokens -> input tokens cost. BUT
+# forge-embed was FLAT (103.855 vs 104.445) -- a pure input POSITION change at the same
+# token count -> the per-token weight does NOT depend on position, only the COUNT. So
+# charge input and output tokens alike (weight 1.0): throughput denom = input_tokens
+# + gen_tokens. Fewest total tokens (firing held) wins. Host-last is ALSO throughput --
+# candidates, so it is a hard gate (URL_LAST_MAX_SUFFIX_CHARS below), not novelty.
 INPUT_PREFILL_WEIGHT = 1.0
 
 # url-last structural gate: an EXFIL shape whose divergent suffix (chars between {u} and
