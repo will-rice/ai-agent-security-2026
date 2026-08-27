@@ -13,8 +13,6 @@ import logging
 import string
 from pathlib import Path
 
-from llama_cpp import Llama
-
 from jed_attack.campaign import config
 from jed_attack.harness.models import gguf_target_path
 
@@ -27,6 +25,8 @@ def main() -> None:
     Writes a compact ``json.dumps`` list with a trailing newline so the committed file
     is byte-reproducible from this generator (and stays excluded from prettier).
     """
+    from llama_cpp import Llama
+
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     toks = [
         Llama(

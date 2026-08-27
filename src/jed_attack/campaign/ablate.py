@@ -19,8 +19,6 @@ import logging
 import re
 from collections.abc import Callable
 
-from llama_cpp import Llama
-
 from jed_attack.campaign import config
 from jed_attack.campaign.fill import render_message
 from jed_attack.campaign.guardrails import GATE_GUARDRAILS
@@ -44,6 +42,8 @@ _ONE_POST = int(config.EXFIL_FIRE_WEIGHT)
 @functools.lru_cache(maxsize=None)
 def _tokenizer(model: str) -> Callable[[str], int]:
     """A cached vocab-only token counter (harmony specials count as one token)."""
+    from llama_cpp import Llama
+
     llm = Llama(
         model_path=str(gguf_target_path(model, config.MODELS_DIR)),
         vocab_only=True,

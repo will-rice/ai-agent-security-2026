@@ -24,8 +24,6 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from llama_cpp import Llama
-
 from jed_attack.campaign import config
 from jed_attack.campaign.assemble import build_permodel
 from jed_attack.campaign.guardrails import GATE_GUARDRAILS
@@ -191,6 +189,8 @@ def _victim_tokenizers() -> tuple[Any, ...]:
     minutes) so :func:`assert_pool_shape` can check a divergent host is a single token
     under the grader's exact vocab without a full resident model load.
     """
+    from llama_cpp import Llama
+
     return tuple(
         Llama(
             model_path=str(gguf_target_path(model, config.MODELS_DIR)),
