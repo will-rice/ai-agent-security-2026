@@ -287,49 +287,18 @@ DIVERSITY_SHAPE_CAP = MAX_SHIP_MESSAGES
 # is REFUTED. So the fixed floor is SMALL and LEANNESS (fewer generated tokens) is the
 # lever -- the reply-suppression single-post cuts (v6 95.9, v7 94.6) beat the champion.
 #
-# TOKENS are the cost unit (format markers are 1 token / many chars, so a char objective
-# mis-ranks). The objective is HONEST LEANNESS: board_density = value/(input*WEIGHT +
-# gen_tokens), so the search rewards the leanest firing single-post shape.
-CHARS_PER_TOKEN: dict[str, float] = {"gpt_oss": 4.70, "gemma_4": 3.84}
-# NO assumed per-candidate floor (0). A nonzero FIXED acts like a KNOWN floor cost, but
-# we do NOT know the grader's per-candidate overhead -- the multipost back-out gave
-# contradictory estimates (negative from the post-count slope, large-positive from the
-# noisy single-post pair). For fixed-severity single-post the term CANCELS in the
-# ranking anyway (board_density is invariant to an additive constant), so 0 is both
-# honest and ranking-neutral.
+# v26: the objective is the RAW total-token count (``input_tokens + gen_tokens +
+# FIXED_TOKENS[model]``), MINIMIZED directly among firing shapes -- no ratio, no
+# board/fill-budget projection, no chars-per-token conversion (tokens are measured
+# exactly by the victim's own tokenizer, see ``submission_score.MessageScore``). The
+# board evidence pins the token model itself: lean-big LOST (98.9) despite fewer decode
+# tokens because its longer input inducer (39 vs 25 tok) added tokens -> input tokens
+# cost; forge-embed was FLAT (103.855 vs 104.445) -- a pure input POSITION change at the
+# same token count -> the cost does NOT depend on position, only the COUNT. So input and
+# output tokens are charged equally. Host-last is a STRUCTURAL effect (cross-candidate
+# cache reuse), not a per-token cost -- enforced as the hard gate below
+# (URL_LAST_MAX_SUFFIX_CHARS), not folded into the token count.
 FIXED_TOKENS: dict[str, float] = {"gpt_oss": 0.0, "gemma_4": 0.0}
-# Replay budget in token-equivalents, back-calibrated to the real scores: single-post
-# (~30 gen tokens) completed ~1043 candidates -> budget = 1043 * gen. Telemetry only
-# for the lb_est projection (nothing in the ship/rank path reads it).
-FILL_BUDGET_TOKENS: dict[str, float] = {"gpt_oss": 31_290.0, "gemma_4": 32_333.0}
-# Parallel CHAR constants for the reporting projection ONLY (project_public_board /
-# lb_est reads raw_gen_chars). Derived from the token constants so the projection stays
-# consistent with the objective automatically: chars = tokens x CHARS_PER_TOKEN.
-FIXED_CHARS: dict[str, float] = {
-    model: FIXED_TOKENS[model] * CHARS_PER_TOKEN[model] for model in MODELS
-}
-FILL_BUDGET_CHARS: dict[str, float] = {
-    model: FILL_BUDGET_TOKENS[model] * CHARS_PER_TOKEN[model] for model in MODELS
-}
-
-# Per-token cost of the divergent prefill suffix relative to a GENERATED token. OUTPUT
-# (decode) DOMINATES the per-candidate cost -- a generated token is far more expensive
-# than a prefill token (local GPU measured 0.022; 2026-08-18). url-last is NOT modelled
-# as a per-token cost here: the board showed a host-in-the-middle shape loses ~40%
-# (2026-08-25 lean27/gate-cut), far more than a per-token weight can explain --
-# STRUCTURAL
-# effect (cross-candidate cache reuse), enforced as a hard gate in _shape_elites
-# (url_suffix_chars must be ~0), not a competing weight. This term stays small so decode
-# dominates; the gate keeps every banked shape url-last.
-# Per-candidate replay cost = the total token count, input + output, weighted equally.
-# The board evidence pins this exactly: lean-big LOST (98.9) despite fewer decode tokens
-# because its longer input inducer (39 vs 25 tok) added tokens -> input tokens cost. BUT
-# forge-embed was FLAT (103.855 vs 104.445) -- a pure input POSITION change at the same
-# token count -> the per-token weight does NOT depend on position, only the COUNT. So
-# charge input and output tokens alike (weight 1.0): throughput denom = input_tokens
-# + gen_tokens. Fewest total tokens (firing held) wins. Host-last is ALSO throughput --
-# candidates, so it is a hard gate (URL_LAST_MAX_SUFFIX_CHARS below), not novelty.
-INPUT_PREFILL_WEIGHT = 1.0
 
 # url-last structural gate: an EXFIL shape whose divergent suffix (chars between {u} and
 # the forge; submission.url_suffix_chars) exceeds this is host-in-the-middle -- it loses
@@ -386,8 +355,7 @@ SHAPE_FAMILIES: tuple[str, ...] = (
     "injection_variant",
     "deputy",
 )
-GEN_CHAR_BUCKET_S = 25.0  # quantization bin (chars) for the (legacy) gen-cost axis
-# The archive's diversity axis is now INPUT length, not generated length. Generated
+# The archive's diversity axis is INPUT length, not generated length. Generated
 # output is floored (28/29 tokens on every firing shape -- ablation + prefill probes),
 # so a gen-char bucket is ~constant and illuminates nothing -> the search collapsed to
 # one cell (monoculture). INPUT length varies and is what the objective minimises, so

@@ -1,6 +1,6 @@
 """Oracle-guided structural GA (TEMPLATEFUZZ M4/M5 mutations), gradient-free.
 
-Fitness = board_density gated on fires; evolution keeps the leanest firing shapes and
+Fitness = token_cost gated on fires; evolution keeps the leanest firing shapes and
 mutates around them. Deterministic (index-seeded) so runs are reproducible.
 """
 
@@ -45,10 +45,10 @@ def mutate(message: str, model: str, rng_index: int) -> str:
 def evolve(
     seeds: list[str], model: str, rounds: int = 5, pop: int = 24
 ) -> list[Individual]:
-    """Evolve ``seeds`` under the oracle; return survivors best board_density first.
+    """Evolve ``seeds`` under the oracle; survivors are sorted leanest-first.
 
     Each round: evaluate the population, keep the firing elites, spawn mutated children
-    around them. Non-firing individuals score board_density 0 and are dropped.
+    around them. Non-firing individuals cost ``+inf`` tokens and are dropped.
     """
     population = [Individual(s) for s in seeds]
     survivors: list[Individual] = []
@@ -57,20 +57,20 @@ def evolve(
             if ind.result is None:
                 ind.result = evaluate(ind.message, model)
         firing = [i for i in population if i.result and i.result.fires]
-        firing.sort(key=lambda i: i.result.board_density, reverse=True)
+        firing.sort(key=lambda i: i.result.token_cost)
         survivors = firing[:pop]
-        best_board = survivors[0].result.board_density if survivors else 0.0
+        best_tokens = survivors[0].result.token_cost if survivors else float("inf")
         _log.info(
-            "GA %s round %d: %d firing, best board=%.2f",
+            "GA %s round %d: %d firing, best tokens=%.2f",
             model,
             round_idx,
             len(firing),
-            best_board,
+            best_tokens,
         )
         telemetry.log(
             {
                 "ga/round": round_idx,
-                "ga/best_board": best_board,
+                "ga/best_tokens": best_tokens,
                 "ga/n_firing": len(firing),
             }
         )

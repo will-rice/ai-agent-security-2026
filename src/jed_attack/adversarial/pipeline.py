@@ -1,6 +1,6 @@
 """Hybrid search: GCG proposes -> oracle validates -> GA together; stop on plateau.
 
-The oracle decides everything scored. A negative result (nothing beats ``floor_board``)
+The oracle decides everything scored. A negative result (nothing beats ``floor_tokens``)
 is returned as ``None`` and logged -- proof the message space is tapped, not hidden.
 """
 
@@ -23,12 +23,12 @@ class Best:
     result: OracleResult
 
 
-def beats_floor(board: float, floor: float) -> bool:
-    """True only when ``board`` STRICTLY exceeds the champion ``floor``.
+def beats_floor(tokens: float, floor: float) -> bool:
+    """True only when ``tokens`` STRICTLY UNDERCUTS the champion ``floor``.
 
-    A tie is not a win -- it avoids shipping a lateral (no-better) shape.
+    A tie is not a win -- it avoids shipping a lateral (no-leaner) shape.
     """
-    return board > floor
+    return tokens < floor
 
 
 def search(
@@ -36,7 +36,7 @@ def search(
     model: str,
     gcg_steps: int = 250,
     ga_rounds: int = 5,
-    floor_board: float = 0.0,
+    floor_tokens: float = float("inf"),
 ) -> Best | None:
     """Run GCG (gpt only) -> oracle-validate -> GA; return the best firing shape.
 
@@ -46,20 +46,20 @@ def search(
         model: ``"gpt_oss"`` or ``"gemma_4"``.
         gcg_steps: GCG optimization steps (gpt_oss only).
         ga_rounds: Number of GA evolution rounds.
-        floor_board: The champion's board_density; the result must strictly beat it.
+        floor_tokens: The champion's token_cost; the result must strictly undercut it.
 
     Returns:
-        The best firing :class:`Best` if it strictly beats ``floor_board``, else
+        The best firing :class:`Best` if it strictly undercuts ``floor_tokens``, else
         ``None`` (logged as a negative result).
     """
     seeds: list[str] = []
     if model == "gpt_oss":
         for cand in run_gcg(base_template, num_steps=gcg_steps):
             res = evaluate(cand.message, model)  # oracle is the judge, not GCG loss
-            _log.info("GCG candidate fires=%s board=%.2f", res.fires, res.board_density)
+            _log.info("GCG candidate fires=%s tokens=%.2f", res.fires, res.token_cost)
             telemetry.log(
                 {
-                    "gcg_candidate/board": res.board_density,
+                    "gcg_candidate/tokens": res.token_cost,
                     "gcg_candidate/fires": float(res.fires),
                 }
             )
@@ -75,25 +75,25 @@ def search(
     ]
     if not firing:
         _log.warning("search(%s): no firing shape found", model)
-        telemetry.log({"result/best_board": 0.0, "result/beats_floor": 0.0})
+        telemetry.log({"result/best_tokens": float("inf"), "result/beats_floor": 0.0})
         return None
-    best_message, best_result = max(firing, key=lambda pair: pair[1].board_density)
-    if not beats_floor(best_result.board_density, floor_board):
+    best_message, best_result = min(firing, key=lambda pair: pair[1].token_cost)
+    if not beats_floor(best_result.token_cost, floor_tokens):
         _log.warning(
-            "search(%s): best board %.2f did not beat floor %.2f -- "
+            "search(%s): best tokens %.2f did not undercut floor %.2f -- "
             "message space tapped",
             model,
-            best_result.board_density,
-            floor_board,
+            best_result.token_cost,
+            floor_tokens,
         )
         telemetry.log(
             {
-                "result/best_board": best_result.board_density,
+                "result/best_tokens": best_result.token_cost,
                 "result/beats_floor": 0.0,
             }
         )
         return None
     telemetry.log(
-        {"result/best_board": best_result.board_density, "result/beats_floor": 1.0}
+        {"result/best_tokens": best_result.token_cost, "result/beats_floor": 1.0}
     )
     return Best(message=best_message, result=best_result)

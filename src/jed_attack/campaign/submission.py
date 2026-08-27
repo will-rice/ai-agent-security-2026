@@ -383,17 +383,12 @@ def _validate_deputy(text: str) -> tuple[bool, str]:
     return True, ""
 
 
-def gen_char_bucket(gen_chars: float) -> int:
-    """Quantize a shape's generation cost into a cost-axis bin index (legacy)."""
-    return int(math.ceil(gen_chars / config.GEN_CHAR_BUCKET_S))
-
-
 def input_char_bucket(input_chars: float) -> int:
     """Quantize a shape's INPUT length into the archive's diversity-axis bin index.
 
-    Replaces :func:`gen_char_bucket` as the archive's second descriptor axis: generated
-    output is floored, so it gave no diversity; input length is the axis that varies,
-    so binning on it illuminates the leaner-input frontier.
+    The archive's second descriptor axis: generated output is floored (no diversity
+    there), so input length -- the axis that varies -- is what binning on illuminates
+    the leaner-input frontier.
     """
     return int(math.ceil(input_chars / config.INPUT_CHAR_BUCKET_S))
 

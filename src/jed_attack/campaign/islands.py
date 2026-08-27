@@ -4,7 +4,7 @@ Wraps N independent :class:`archive.Archive` instances so N proposer workers
 can explore in isolation (avoiding premature convergence on a single shared
 frontier), while still exposing a global best across all islands for
 reporting/shipping. Island 0 is the "novelty" island: it keeps
-structurally-DISTINCT elites over higher-throughput ones (see
+structurally-DISTINCT elites over leaner-token ones (see
 :meth:`IslandSet._novelty_insert`); every other island delegates plainly to
 its own :meth:`archive.Archive.insert`.
 """
@@ -57,7 +57,8 @@ def novelty(elite: Elite, others: list[Elite]) -> float:
 def _fires(elite: Elite) -> bool:
     """Whether ``elite`` fires on >=1 model (matches ``archive.model_density``)."""
     return any(
-        elite.throughput.get(m, 0.0) > 0.0 and elite.severity.get(m, 0.0) > 0.0
+        elite.tokens.get(m, float("inf")) < float("inf")
+        and elite.severity.get(m, 0.0) > 0.0
         for m in config.MODELS
     )
 
@@ -103,7 +104,7 @@ class IslandSet:
         return cls(
             archives=[Archive() for _ in range(n)],
             stall=[0] * n,
-            best_seen=[0.0] * n,
+            best_seen=[float("inf")] * n,
             primed=[False] * n,
         )
 
@@ -128,7 +129,7 @@ class IslandSet:
         elite -- one that shares ``elite``'s ``(family, bucket)`` cell, or that
         Pareto-dominates ``elite`` (so it would otherwise keep ``elite`` off the
         island's :meth:`archive.Archive.frontier` forever) -- is resolved by
-        :func:`novelty` against the rest of island 0, not by throughput/severity
+        :func:`novelty` against the rest of island 0, not by tokens/severity
         dominance. When ``elite`` is the more novel of the two, every blocker is
         evicted from the underlying archive and ``elite`` is inserted; otherwise
         island 0 is left unchanged.
@@ -174,29 +175,30 @@ class IslandSet:
         return archive0.insert(elite)
 
     def note_generation(self, i: int, density: float) -> bool:
-        """Record one generation's local-best density for island ``i``.
+        """Record one generation's local-best token cost for island ``i``.
 
         The FIRST call after island ``i``'s creation/last reset only primes
         :attr:`best_seen` (see :attr:`primed`) -- it is neither an improvement nor a
-        stall. Every call after that: a ``density`` exceeding :attr:`best_seen` is an
-        improvement (resets the stall clock); otherwise the clock advances by one.
+        stall. Every call after that: a ``density`` BELOW :attr:`best_seen` is an
+        improvement (fewer tokens; resets the stall clock); otherwise the clock
+        advances by one.
 
         Args:
             i: Island index.
-            density: This generation's local-best board-density for island ``i`` (see
-                :meth:`local_best_density`).
+            density: This generation's local-best token cost for island ``i`` (see
+                :meth:`local_best_density`). MINIMIZE.
 
         Returns:
             Whether island ``i`` has now stalled for
             :data:`config.ISLAND_STAGNATION_GENERATIONS` consecutive generations
-            without exceeding :attr:`best_seen`. Always ``False`` on the priming call
+            without going below :attr:`best_seen`. Always ``False`` on the priming call
             or when that threshold is <= 0 (disabled).
         """
         if not self.primed[i]:
             self.primed[i] = True
             self.best_seen[i] = density
             return False
-        if density > self.best_seen[i]:
+        if density < self.best_seen[i]:
             self.best_seen[i] = density
             self.stall[i] = 0
             return False
@@ -217,38 +219,39 @@ class IslandSet:
         if seed is not None:
             self.insert(i, seed)
         self.stall[i] = 0
-        self.best_seen[i] = 0.0
+        self.best_seen[i] = float("inf")
         self.primed[i] = False  # next note_generation re-baselines from scratch
 
     def local_best_density(self, i: int) -> float:
-        """Max :func:`archive.elite_board_density` over island ``i``'s frontier.
+        """Min :func:`archive.elite_board_density` (token cost) over island ``i``.
 
         Args:
             i: Island index.
 
         Returns:
-            The best board-density on island ``i``, or 0.0 if its frontier is
-            empty.
+            The lowest token cost on island ``i``, or ``float("inf")`` if its frontier
+            is empty (worst possible -- so a later real elite always registers as an
+            improvement in :meth:`note_generation`).
         """
         frontier = self.archives[i].frontier()
         if not frontier:
-            return 0.0
-        return max(elite_board_density(e) for e in frontier)
+            return float("inf")
+        return min(elite_board_density(e) for e in frontier)
 
     def global_best_elite(self) -> Elite | None:
-        """The single best elite across all islands' frontiers.
+        """The single best (fewest-token) elite across all islands' frontiers.
 
         Returns:
-            The elite with the highest :func:`archive.elite_board_density`
+            The elite with the lowest :func:`archive.elite_board_density`
             across every island's frontier, or ``None`` if all are empty.
         """
         all_elites = [e for a in self.archives for e in a.frontier()]
         if not all_elites:
             return None
-        return max(all_elites, key=elite_board_density)
+        return min(all_elites, key=elite_board_density)
 
     def best_island(self) -> int:
-        """Index of the island with the highest :meth:`local_best_density`.
+        """Index of the island with the lowest (fewest-token) local_best_density.
 
         Ties break toward the lowest index. Island 0 (novelty) is excluded
         unless it is the only non-empty island.
@@ -264,7 +267,7 @@ class IslandSet:
             if non_empty == [0]
             else range(1, len(self.archives))
         )
-        return max(candidates, key=self.local_best_density)
+        return min(candidates, key=self.local_best_density)
 
     def to_jsonl(self, directory: Path) -> None:
         """Persist each island's frontier to ``directory/island_<i>.jsonl``.
@@ -294,7 +297,10 @@ class IslandSet:
             for i in range(n)
         ]
         return cls(
-            archives=archives, stall=[0] * n, best_seen=[0.0] * n, primed=[False] * n
+            archives=archives,
+            stall=[0] * n,
+            best_seen=[float("inf")] * n,
+            primed=[False] * n,
         )
 
 

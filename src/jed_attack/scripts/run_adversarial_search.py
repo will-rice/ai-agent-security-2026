@@ -21,7 +21,7 @@ _CHAMPION = {
 
 
 def main() -> None:
-    """Search one model; the champion's board is the floor to beat."""
+    """Search one model; the champion's token cost is the floor to undercut."""
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("model", choices=("gpt_oss", "gemma_4"))
@@ -32,7 +32,9 @@ def main() -> None:
     floor_message = _CHAMPION[args.model].replace("{optim_str}", "").strip()
     floor = evaluate(floor_message, args.model)
     logging.info(
-        "floor (champion) board=%.2f tokens=%d", floor.board_density, floor.gen_tokens
+        "floor (champion) tokens=%.2f gen_tokens=%d",
+        floor.token_cost,
+        floor.gen_tokens,
     )
     telemetry.init(
         f"adv-{args.model}",
@@ -40,7 +42,7 @@ def main() -> None:
             "model": args.model,
             "gcg_steps": args.gcg_steps,
             "ga_rounds": args.ga_rounds,
-            "floor_board": floor.board_density,
+            "floor_tokens": floor.token_cost,
         },
     )
     try:
@@ -49,18 +51,18 @@ def main() -> None:
             args.model,
             args.gcg_steps,
             args.ga_rounds,
-            floor.board_density,
+            floor.token_cost,
         )
         if best is None:
             logging.info(
-                "RESULT: nothing beat the floor -- message space tapped for %s",
+                "RESULT: nothing undercut the floor -- message space tapped for %s",
                 args.model,
             )
             return
         logging.info(
-            "RESULT %s: board=%.2f tokens=%d\n  message=%r",
+            "RESULT %s: tokens=%.2f gen_tokens=%d\n  message=%r",
             args.model,
-            best.result.board_density,
+            best.result.token_cost,
             best.result.gen_tokens,
             best.message,
         )

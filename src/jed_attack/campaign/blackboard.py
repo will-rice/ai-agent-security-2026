@@ -34,11 +34,11 @@ _log = logging.getLogger(__name__)
 # Tag stamped on every record scored under the CURRENT optimizer objective. Bump this
 # whenever the shipping/objective scheme changes: champion selection prefers rows
 # carrying the current tag so a prior scheme's incomparable magnitudes cannot freeze
-# the logged champion (see _objective_key). The current tag is ``v24`` (the islands
-# scheme: the shipped pool is now the GLOBAL best across the island archives --
-# per-island lineages + migration + stagnation reset + a novelty island -- same v22/v23
-# cost model, see docstring). NOTE: ROBUSTNESS_LAMBDA is currently UN-WIRED -- the score
-# never reads it, so a non-zero value only changes the tag/pool below, not the score.
+# the logged champion (see _objective_key). The current tag is ``v26``: the objective is
+# now a DIRECT total-token MINIMIZATION (input_tokens + gen_tokens of the leanest firing
+# shape per model, meaned over models) -- no board/fill-budget projection, no ratio.
+# NOTE: ROBUSTNESS_LAMBDA is currently UN-WIRED -- the score never reads it, so a
+# non-zero value only changes the tag/pool below, not the score.
 def objective_scheme_name(
     robustness_lambda: float,
     portfolio_lambda: float = 0.0,
@@ -46,34 +46,31 @@ def objective_scheme_name(
 ) -> str:
     """Scheme tag for the current objective weights.
 
-    ``v24`` moves shipping from a single Pareto archive to an island model
-    (:mod:`jed_attack.campaign.islands`): N parallel per-island archives with their own
-    lineages, periodic migration between islands, stagnation reset for islands that stop
-    improving, and a dedicated novelty island. The shipped pool is the GLOBAL best
-    elite across all island archives, not one archive's frontier. The cost model and
-    diversity axes are UNCHANGED from ``v23``/``v22`` (throughput = value /
-    (input_tokens + gen_tokens); diversity keyed on input-length + reply-suppression
-    shape_family) -- only the archive topology changed, so this is a pure re-key: v23
-    and earlier rows are stale (discarded on rank). ``v23`` re-keyed the archive's
-    diversity axis from generated length to INPUT length (``input_char_bucket``) and
-    added a reply-suppression flag to shape_family: generated output is floored (28/29
-    on every firing shape), so the old gen-char axis illuminated nothing and the search
-    collapsed to one cell; input length is the axis that varies and that the objective
-    minimises. ``v20`` was the MAP-Elites + Pareto
-    shipping scheme: the shipped pool is the archive's Pareto frontier over the two raw
-    per-model throughput columns (see :mod:`jed_attack.campaign.archive`), NOT a single
-    MIN-scalar champion. The MIN
-    objective helpers (:func:`_objective_key`, :meth:`Blackboard.best_objective`) are
-    RETAINED for logging/telemetry only -- they no longer decide what ships. The scheme
-    encodes the gate guardrail (``config.GATE_GUARDRAIL_NAME``) so switching guardrails
-    auto-starts a clean pool; a non-zero portfolio weight tags diversity-on, its own
-    pool. NOTE: ``robustness_lambda`` is currently UN-WIRED (only affects the tag/pool
-    below, never the score itself); threaded through only so a future robustness-aware
-    objective has its own pool ready.
+    ``v26`` drops the board/fill-budget PROJECTION entirely: earlier schemes ranked a
+    submission by walking a round-robin fill to a per-model token/char budget and
+    summing the resulting projected board. That machinery -- and the inverted
+    "throughput" framing it required -- is gone. The objective is now the raw
+    :func:`jed_attack.campaign.optimize_prompts._score_total_tokens`: the mean, over
+    models, of the CHEAPEST firing message's ``input_tokens + gen_tokens`` (both
+    measured with the victim's own tokenizer); a model no message fires on makes that
+    column ``+inf``. This is a value to MINIMIZE (see :func:`_objective_key`'s
+    negation). The archive/Elite cost is analogous but per-SHAPE, not per-submission:
+    one elite is authored for exactly one model's pool, so its aggregate cost is its
+    BEST (not mean) firing column
+    (:func:`jed_attack.campaign.archive.elite_board_density`). ``v24``/``v25`` moved
+    shipping to the island model (:mod:`jed_attack.campaign.islands`: N per-island
+    archives, migration, stagnation reset, a novelty island) and, in v25 only, started
+    charging input tokens inside the projection -- both are pre-v26 history, kept here
+    for the reasoning trail. The scheme encodes the gate guardrail
+    (``config.GATE_GUARDRAIL_NAME``) so switching guardrails auto-starts a clean pool; a
+    non-zero portfolio weight tags diversity-on, its own pool. NOTE:
+    ``robustness_lambda`` is currently UN-WIRED (only affects the tag/pool below, never
+    the score itself); threaded through only so a future robustness-aware objective has
+    its own pool ready.
     """
-    base = f"{gate}_pareto_v25"
+    base = f"{gate}_pareto_v26"
     if robustness_lambda != 0.0:
-        base = f"robust{robustness_lambda:g}_{gate}_pareto_v25"
+        base = f"robust{robustness_lambda:g}_{gate}_pareto_v26"
     if portfolio_lambda != 0.0:
         base = f"portfolio{portfolio_lambda:g}_{base}"
     return base
@@ -107,15 +104,12 @@ class Record(BaseModel):
     invalid_reason: str | None = None
     fires: bool = False
     assessment: dict[str, Any] | None = None
-    objective: float = 0.0
-    objective_sum: float = (
-        0.0  # lexicographic 2nd key: total board (headroom above min)
-    )
+    # Mean over models of the firing shape's total token cost (input + gen tokens);
+    # see optimize_prompts._score_total_tokens. MINIMIZE -- +inf when invalid or when
+    # any model doesn't fire (so a partial-firing/dead record never ranks as champion).
+    objective: float = float("inf")
     objective_tiebreaker: float = 0.0
     objective_name: str = "legacy_public"
-    gen_chars: float = (
-        0.0  # bottleneck-model generated chars to fire (the objective's cost)
-    )
     # Per-model public board {model: board}; the mean of these is ``public``. Persisted
     # so the robustness objective and the incumbent block can see per-victim spread.
     public_by_model: dict[str, float] = Field(default_factory=dict)
@@ -243,26 +237,24 @@ def _islands_dir(board_path: Path) -> Path:
 def _frontier_map(arch: archive.Archive) -> dict[str, list[list[str]]]:
     """Per-model filled candidate chains for the archive's Pareto ship-set.
 
-    Ranks and caps EACH pool by its OWN victim's board-density
-    (:func:`archive.model_density`): a global summed-density truncation (the old
-    :meth:`Archive.ship_set`) let the denser model monopolize every
-    ``ARCHIVE_FRONTIER_CAP`` slot -- gemma-plain shapes are uniformly denser than
+    Ranks and caps EACH pool by its OWN victim's token cost (:func:`archive.
+    model_density`, MINIMIZE): a global summed-cost truncation (the old
+    :meth:`Archive.ship_set`) let the leaner model monopolize every
+    ``ARCHIVE_FRONTIER_CAP`` slot -- gemma-plain shapes are uniformly leaner than
     gpt-forge, so the top-N were 100% gemma and gpt shipped an EMPTY pool (gpt column
-    scored 0). Filtering per model here (``throughput[model] > 0``) keeps a gpt-only
-    elite out of gemma's pool and vice versa, and the per-model cap guarantees BOTH
-    victims get their densest firing shapes. Ties on density break toward the SHORTER
-    input (``-input_chars``): input prefill is a real but small replay cost (measured
-    ~1/45 of a generated token, folded into throughput at INPUT_PREFILL_WEIGHT), so it
-    never overrides density but does decide equal-density shapes toward less prefill.
+    scored 0). Filtering per model here (``model_density(e, model) < inf``) keeps a
+    gpt-only elite out of gemma's pool and vice versa, and the per-model cap guarantees
+    BOTH victims get their leanest firing shapes. Ties break toward the SHORTER input
+    (``input_chars``, ascending): input prefill is a real but small replay cost, so it
+    never overrides token cost but does decide equal-cost shapes toward less prefill.
     Feeds :func:`assemble.build_permodel` via :func:`_ship_pools`.
     """
     frontier = arch.frontier()
     out: dict[str, list[list[str]]] = {}
     for model in config.MODELS:
         firing = sorted(
-            (e for e in frontier if archive.model_density(e, model) > 0.0),
-            key=lambda e: (archive.model_density(e, model), -e.input_chars),
-            reverse=True,
+            (e for e in frontier if archive.model_density(e, model) < float("inf")),
+            key=lambda e: (archive.model_density(e, model), e.input_chars),
         )[: config.ARCHIVE_FRONTIER_CAP]
         out[model] = _fill_chains(
             [(e.text, e.mtype, e.url_scheme) for e in firing],
@@ -308,31 +300,29 @@ def _more_robust_record(left: Record, right: Record) -> Record:
 
 def _objective_key(
     record: Record,
-) -> tuple[bool, bool, float, float, float, float]:
-    """Ranking key for campaign objective champions.
+) -> tuple[bool, bool, float, float, float]:
+    """Ranking key for campaign objective champions -- consumed by ``max()``.
 
     Firing dominates: a valid firing record always outranks a non-firing one. Among
     firing records, CURRENT-scheme rows (``objective_name == OBJECTIVE_NAME``) outrank
-    older-scheme rows regardless of magnitude, because a change of objective denominator
+    older-scheme rows regardless of magnitude, because a change of objective units
     changes the scale — the persisted ``objective`` of a stale-scheme row is not
-    comparable to a current one (e.g. a per-hop objective of 18 dwarfs an equivalent
-    per-generated-char objective, which would otherwise freeze the champion forever).
-    Only within one scheme is the numeric ``objective`` a valid comparison.
+    comparable to a current one. Only within one scheme is the numeric ``objective`` a
+    valid comparison.
 
-    The comparison is LEXICOGRAPHIC: the MEAN ``objective`` (average of the two
-    per-model columns — the actual LB metric) is primary; ties break on
-    ``objective_sum`` (total board across models — numerically redundant with the mean
-    primary for two models, but kept as a defensive tiebreak for legacy/partial rows),
-    then ``objective_tiebreaker`` (distinct both-model shapes, a private hedge), then
-    ``public``. Records predating a field default it to 0.0, so a new row with the same
-    mean but a real sum outranks an old sum-less row without a bump. Legacy rows have no
-    objective and only win by public score when no scored records exist.
+    ``record.objective`` is a total-TOKEN COST to MINIMIZE (see
+    :func:`jed_attack.campaign.optimize_prompts._score_total_tokens`), so it is negated
+    here (``-record.objective``) to fit the shared ``max()`` convention -- fewer tokens
+    -> a larger (less negative) key -> ranks first. The comparison is LEXICOGRAPHIC:
+    the negated mean token cost is primary; ties break on ``objective_tiebreaker``
+    (distinct both-model shapes, a private hedge), then ``public``. Legacy rows have no
+    objective (``float("inf")`` -> ``-inf``) and only win by public score when no scored
+    records exist.
     """
     return (
         record.valid and record.fires,
         record.objective_name == OBJECTIVE_NAME,
-        record.objective,
-        record.objective_sum,
+        -record.objective,
         record.objective_tiebreaker,
         record.public,
     )
@@ -463,15 +453,17 @@ class Blackboard:
 
         For a private-board hedge: shape-TEXT diversity is what survives a stricter
         private guardrail (a blocked phrasing kills all URL-variants of that one shape
-        at once), but the public-throughput objective is nearly flat across shape count
+        at once), but the token-cost objective is nearly flat across shape count
         (``fill`` expands any shape count to the same candidate cap), so a strict
-        :meth:`best_objective` selects a lean low-shape build. This keeps the objective
-        within ``band`` (a fractional drop, e.g. 0.1 = 10%) of the best while maximizing
-        distinct shapes. ``band=0.0`` reduces to the strict champion. Falls back to
-        :meth:`best_objective` when no current-scheme firing record exists.
+        :meth:`best_objective` selects a lean low-shape build. ``objective`` is
+        MINIMIZED (fewer tokens), so this keeps every record within ``band`` (a
+        fractional INCREASE over the minimum, e.g. 0.1 = 10% more tokens) of the best
+        while maximizing distinct shapes. ``band=0.0`` reduces to the strict champion.
+        Falls back to :meth:`best_objective` when no current-scheme firing record
+        exists.
 
         Args:
-            band: Max fractional objective drop from the best to still be eligible.
+            band: Max fractional objective increase from the minimum to stay eligible.
 
         Returns:
             The most-diverse eligible record, or ``None`` if the board is empty.
@@ -483,9 +475,9 @@ class Blackboard:
         ]
         if not firing:
             return self.best_objective()
-        floor = max(record.objective for record in firing) * (1.0 - band)
-        within = [record for record in firing if record.objective >= floor]
-        return max(within, key=lambda record: (len(record.messages), record.objective))
+        ceiling = min(record.objective for record in firing) * (1.0 + band)
+        within = [record for record in firing if record.objective <= ceiling]
+        return max(within, key=lambda record: (len(record.messages), -record.objective))
 
     def best(self) -> Record | None:
         """Compatibility alias for the exact-public champion."""

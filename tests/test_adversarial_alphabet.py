@@ -36,5 +36,5 @@ def test_differential_sweep_finds_a_firing_forge_at_least_as_good_as_baseline() 
     best_forge, best_res = scored[0]
     assert best_res.fires
     baseline = next(r for f, r in scored if f.name == "baseline")
-    # a forge never scores worse than raw
-    assert best_res.board_density >= baseline.board_density
+    # a forge never costs more tokens than raw
+    assert best_res.token_cost <= baseline.token_cost
