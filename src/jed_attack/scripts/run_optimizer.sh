@@ -53,10 +53,13 @@ sleep 1
 # the PERSONAL ChatGPT Pro quota per generation and the token expires (~days, then needs
 # `codex login`); as the SOLE lane it burns quota faster and a lapsed token stalls the
 # whole roster -- watch for 401s / quota 429s.
-# JED_PROPOSER_REPLICAS=4 matches config.ISLAND_COUNT: worker_loop pins
-# island = worker_id % ISLAND_COUNT, so 4 replicas on the sole codex lane gives every
-# island its own worker (optimize_prompts._build_worker_cycles warns if this lane ever
-# falls short of ISLAND_COUNT).
+# WORKERS=ISLANDS=2 (not 4): scoring is the bottleneck and SERIALIZES on the per-model
+# llama.cpp lock (submission_score._model_locks) -- score_pools already replays both
+# victims concurrently across the two GPUs for ONE candidate, so a single worker
+# saturates both GPUs and the rest just BLOCK on the locks. Only 1 scorer + 1 worker
+# proposing ahead (hiding codex latency) does real work; more workers are pure lock
+# contention + wasted codex quota. So 2 replicas / 2 islands (JED_ISLANDS=2), both
+# seeded from the champion (island_best -> global_champion fallback).
 #
 # The public-board objective is scored in-process from the gpt_oss/gemma GGUFs alone --
 # no judge fleet involved.
@@ -64,7 +67,7 @@ tmux new-session -d -s "$SESSION" -c "$REPO" \
   "exec bash -lc 'mkdir -p run/logs; \
     export JED_CAMPAIGN_ROOT=\"$REPO/run\" JED_WANDB=1 \
       JED_TEAM_PROPOSERS=\"codex-gpt55\" \
-      JED_PROPOSER_REPLICAS=4 \
+      JED_PROPOSER_REPLICAS=2 JED_ISLANDS=2 \
       CUDA_DEVICE_ORDER=PCI_BUS_ID \
       LD_LIBRARY_PATH=\"/usr/local/cuda-12.8/lib64:\${LD_LIBRARY_PATH:-}\"; \
     uv run python -m jed_attack.campaign.optimize_prompts 2>&1 \
