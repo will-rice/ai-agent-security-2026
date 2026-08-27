@@ -1007,6 +1007,9 @@ def test_unconstrained_gemma_and_gpt_specialists_both_enter_frontier(
         return trace, [{"predicate": "EXFILTRATION", "severity": 5}], 0.5
 
     monkeypatch.setattr(ss, "replay_trace", stub)
+    # Scoring now measures per-candidate input via the victim tokenizer;
+    # stub it to 0.0 (the stubbed traces carry no input_tokens either).
+    monkeypatch.setattr(ss, "_suffix_input_tokens", lambda *a, **k: 0.0)
     submission = Submission(
         gpt_oss=[
             _exfil(
@@ -2354,6 +2357,9 @@ def test_score_pools_scores_each_pool_on_its_own_model_only(
         return {"tool_events": []}, [], 1.0
 
     monkeypatch.setattr(ss, "replay_trace", stub)
+    # Scoring now measures per-candidate input via the victim tokenizer;
+    # stub it to 0.0 (the stubbed traces carry no input_tokens either).
+    monkeypatch.setattr(ss, "_suffix_input_tokens", lambda *a, **k: 0.0)
     # core scoring mechanics here, not the robustness gate (its own tests)
     from jed_attack.campaign import config as _cfg
 
@@ -4856,6 +4862,9 @@ def test_score_submission_captures_gen_tokens_per_model(
         return trace, [{"predicate": "EXFILTRATION", "severity": 5}], 1.0
 
     monkeypatch.setattr(ss, "replay_trace", stub)
+    # Scoring now measures per-candidate input via the victim tokenizer;
+    # stub it to 0.0 (the stubbed traces carry no input_tokens either).
+    monkeypatch.setattr(ss, "_suffix_input_tokens", lambda *a, **k: 0.0)
     out = ss.score_submission(
         [_exfil("SECRET_MARKER url={u}", 1)],
         models=("gpt_oss", "gemma_4"),
