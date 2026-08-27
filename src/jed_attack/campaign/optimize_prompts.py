@@ -623,10 +623,13 @@ async def worker_loop(
             model = provider.model or provider.kind
 
             # Round 0: author a BATCH from THIS island's incumbent; score every
-            # submission. Each worker climbs its own lineage's best, not one shared
-            # global -- that isolation is what keeps the islands from collapsing onto a
-            # single frontier.
-            incumbent = board.island_best(island)
+            # submission. A worker climbs its own island's best once it has one; until
+            # then it falls back to the GLOBAL champion, so every worker starts from the
+            # lean champion and mutates it DOWN toward fewer firing tokens (the v26
+            # objective) instead of exploring heavy shapes from scratch. The champion is
+            # NOT a token floor (the parser fires below it), so shaving from it is the
+            # productive direction; islands still diverge as each accrues its own best.
+            incumbent = board.island_best(island) or board.global_champion()
             # Sample THIS island's archive parents (EvoPrompt material) and render the
             # OPRO trajectory from its Pareto frontier; both are DATA the proposer
             # recombines.
