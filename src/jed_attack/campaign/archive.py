@@ -240,5 +240,17 @@ class Archive:
                     data = json.loads(line)
                     if "severity" not in data or "tokens" not in data:
                         return cls()
-                    arch.insert(Elite(**data))
+                    # Filter to the current Elite fields so a schema change that DROPS
+                    # a field (e.g. a removed diagnostic) never crashes board load on an
+                    # older-scheme island row -- unknown keys are ignored, matching
+                    # Record.from_json's tolerance on the flat blackboard.
+                    arch.insert(
+                        Elite(
+                            **{
+                                k: v
+                                for k, v in data.items()
+                                if k in Elite.__dataclass_fields__
+                            }
+                        )
+                    )
         return arch

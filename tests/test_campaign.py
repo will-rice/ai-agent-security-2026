@@ -5798,6 +5798,33 @@ def test_from_jsonl_discards_stale_schema_archive(tmp_path: Path) -> None:
     assert back.frontier() == []
 
 
+def test_from_jsonl_ignores_since_removed_fields(tmp_path: Path) -> None:
+    """A persisted Elite row carrying a REMOVED field still loads (key ignored).
+
+    Regression: dropping ``Elite.turns`` in a cleanup made ``Elite(**data)`` crash on
+    older island JSONL that still had ``turns`` -- board load must tolerate unknown keys
+    (like ``Record.from_json`` does), never crash on a schema that lost a field.
+    """
+    from jed_attack.campaign import archive as ar
+
+    row = {
+        "text": "t",
+        "mtype": "exfil",
+        "tokens": {"gpt_oss": 50.0, "gemma_4": 50.0},
+        "severity": {"gpt_oss": 16.0, "gemma_4": 16.0},
+        "diagnosis": "",
+        "family": "plain",
+        "bucket": 5,
+        "input_chars": 10,
+        "turns": {"gpt_oss": 2.0, "gemma_4": 2.0},  # removed field -- must be ignored
+    }
+    path = tmp_path / "with_removed_field.jsonl"
+    path.write_text(json.dumps(row), encoding="utf-8")
+
+    back = ar.Archive.from_jsonl(path)
+    assert {x.text for x in back.frontier()} == {"t"}
+
+
 def test_elite_4d_dominance_uses_throughput_and_severity() -> None:
     """Dominates is Pareto over throughput AND severity, not throughput alone."""
     from jed_attack.campaign import archive as ar
