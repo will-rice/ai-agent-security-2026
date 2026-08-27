@@ -22,7 +22,7 @@
 set -euo pipefail
 
 SESSION=optimizer
-REPO="$(cd "$(dirname "$0")/.." && pwd)"
+REPO="$(cd "$(dirname "$0")" && git rev-parse --show-toplevel)"
 
 # Graceful stop, THEN kill the session. The worker catches SIGTERM/SIGINT to cancel
 # cleanly and wandb.finish() its run; `tmux kill-session` sends SIGHUP, which it does

@@ -12,7 +12,7 @@
 # Idempotent: re-running tears down the tmux sessions and restarts.
 set -euo pipefail
 
-REPO="$(cd "$(dirname "$0")/.." && pwd)"
+REPO="$(cd "$(dirname "$0")" && git rev-parse --show-toplevel)"
 VLLM_VENV="$HOME/vllm-venv"
 MODEL="${VLLM_MODEL:-bullerwins/Qwen3-32B-awq}"
 RUNTIME_DIR="${TMPDIR:-/tmp}"
