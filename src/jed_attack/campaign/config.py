@@ -23,7 +23,6 @@ ENV_FILE = _REPO_ROOT / ".env"
 BUILD_NEXT_DIR = (
     CAMPAIGN_ROOT / "build_next"
 )  # assembled attack.py + build_next_status.json
-BUILD_ROBUST_DIR = CAMPAIGN_ROOT / "build_robust"
 SUBMISSION_CUTS_DIR = CAMPAIGN_ROOT / "submission_cuts"
 ARTIFACT_CHAMPION_PATH = CAMPAIGN_ROOT / "artifact_champion.json"
 
@@ -312,12 +311,6 @@ URL_LAST_MAX_SUFFIX_CHARS = 2
 # guardrail (not two) halves per-candidate replay cost.
 GATE_GUARDRAIL_NAME = "optimal"
 
-# Tier-2 victim introspection (victim_feedback.introspect_worst): number of the
-# lowest-severity messages in a scored submission to probe with an extra "what
-# change would flip your decision" turn against the victim itself. Bounds the
-# extra per-submission inference cost to a fixed count, not O(submission size).
-INTROSPECT_WORST_N = int(os.getenv("JED_INTROSPECT_WORST_N", "3"))
-
 # Held-out offline proxy study. judge_study.py passes its OWN RulesGuardrail instance
 # directly (never through GATE_GUARDRAILS) to score its held-out anchor set; this is
 # independent of the "rules" entry GATE_GUARDRAILS now carries as the live gate.
@@ -405,7 +398,6 @@ def ensure_dirs() -> None:
     """Create the runtime directories the submission pipeline writes to."""
     for path in (
         BUILD_NEXT_DIR,
-        BUILD_ROBUST_DIR,
         SUBMISSION_CUTS_DIR,
         CAMPAIGN_ROOT / "logs",
     ):

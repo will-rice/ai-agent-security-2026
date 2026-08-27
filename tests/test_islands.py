@@ -24,7 +24,6 @@ def _elite(family: str, tokens_gpt: float, bucket: int = 5) -> archive.Elite:
         family=family,
         bucket=bucket,
         url_scheme="s://{h}",
-        turns={"gpt_oss": 2.0, "gemma_4": 0.0},
         input_chars=40,
     )
 

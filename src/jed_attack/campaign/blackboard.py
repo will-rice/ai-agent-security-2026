@@ -19,7 +19,6 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from jed_attack.campaign import archive, assemble, config, fill
-from jed_attack.campaign.archive import Elite
 from jed_attack.campaign.islands import IslandSet
 from jed_attack.campaign.judge_policy import (
     CandidateObjective,
@@ -98,7 +97,6 @@ class Record(BaseModel):
     feedback: list[dict]
     reasoning: str = ""
     model: str = ""
-    worker: int = 0
     ts: float
     valid: bool = True
     invalid_reason: str | None = None
@@ -479,10 +477,6 @@ class Blackboard:
         within = [record for record in firing if record.objective <= ceiling]
         return max(within, key=lambda record: (len(record.messages), -record.objective))
 
-    def best(self) -> Record | None:
-        """Compatibility alias for the exact-public champion."""
-        return self.best_public()
-
     def best_robust(self) -> Record | None:
         """The judge-robust champion within the public-regression band."""
         public_best = self.best_public()
@@ -648,28 +642,3 @@ class Blackboard:
             islands_dir = _islands_dir(self._path)
             islands_dir.mkdir(parents=True, exist_ok=True)
             self.islands.to_jsonl(islands_dir)
-
-    def champion_by_board_density(self) -> Elite | None:
-        """Board-density leader across every island's frontier (logging only).
-
-        The whole cross-island union ships (:meth:`reship_islands`); this is only the
-        single representative surfaced in logs/telemetry.
-        :meth:`islands.IslandSet.global_best_elite` returns exactly the
-        :func:`archive.elite_board_density` leader over all island frontiers -- the same
-        shape the shipped union leads with -- so the reported champion matches what
-        actually ships first, never a selection gate.
-
-        Returns:
-            The board-density-leading elite across all islands, or ``None`` if every
-            island is empty.
-        """
-        return self.islands.global_best_elite()
-
-    def reship_champions(self, public_out_dir: Path, robust_out_dir: Path) -> None:
-        """Rewrite exact-public and robust champion artifacts independently."""
-        public = self.best_public()
-        robust = self.best_robust()
-        if public is not None:
-            _ship_pools(_champion_map(public), public_out_dir)
-        if robust is not None:
-            _ship_pools(_champion_map(robust), robust_out_dir)

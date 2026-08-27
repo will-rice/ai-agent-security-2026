@@ -10,7 +10,7 @@ Selection is Pareto over the raw per-model tokens/severity, never a scalar.
 
 import json
 from collections.abc import Iterable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from itertools import zip_longest
 from pathlib import Path
 
@@ -34,10 +34,6 @@ class Elite:
         bucket: The input_char_bucket length bin (behavioral descriptor axis 2).
         url_scheme: EXFIL URL template ('{h}' host slot) the shape's shipped candidates
             post to; default reproduces the historical ``http://<host>.co``.
-        turns: Per-model agent turn count for this shape's replay, ``{model: turns}``.
-            Diagnostic only (NOT in the objective): persisted so we can measure whether
-            firing turns are a constant 2 or vary (and thus whether turns belongs in the
-            cost model). Empty for elites persisted before this field existed.
         input_chars: The shape's input message length. A hedge on the real grader's
             prefill cost (local replay is input-length-insensitive, but the grader's
             model server may charge for it). A ship-set tiebreaker, not a token-cost
@@ -52,7 +48,6 @@ class Elite:
     family: str
     bucket: int
     url_scheme: str = "http://{h}.co"
-    turns: dict[str, float] = field(default_factory=dict)
     input_chars: int = 0
 
 

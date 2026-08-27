@@ -6,11 +6,7 @@ fidelity we build a custom agent factory that wraps ``LlamaCppChatTemplateBacken
 around the same Q4_K_M GGUF files.
 """
 
-import json
 import os
-import time
-import urllib.error
-import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,10 +25,6 @@ class ResettableBackend(Protocol):
     """A resident generation backend exposing a resettable llama.cpp handle."""
 
     llm: _Resettable
-
-
-_MAX_RETRIES = 4  # transient 5xx under concurrent load; total wait ~ 1+2+4 = 7s
-_RETRY_BACKOFF_S = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,190 +213,6 @@ def gguf_agent_factory(
     # The freshly built backend's ``llm`` is non-None (only ``close()`` nulls it),
     # so it satisfies ResettableBackend; the SDK types ``llm`` as ``Any | None``.
     return ResidentAgentFactory(cast(ResettableBackend, backend), make_agent)
-
-
-def transformers_gpt_oss_factory(main_gpu: int | None = None) -> ResidentAgentFactory:
-    """Return a resident factory for gpt_oss using the SDK's TRANSFORMERS backend.
-
-    The Kaggle grader serves gpt_oss via the SDK's ``build_gpt_oss_backend`` -- the
-    transformers backend loading the native MXFP4 ``openai/gpt-oss-20b`` with
-    ``max_new_tokens=256`` -- NOT a llama.cpp GGUF. A 4-bit-requantized GGUF is a
-    DIFFERENT model: it mis-ranks shapes on the reasoning row (measured: the forge
-    champion is 22 gen-tokens on MXFP4 vs 28 on our Q4_K_M GGUF, and no-forge shapes
-    diverge in the opposite direction). This factory runs the grader's exact backend so
-    the objective ranks shapes on the model the grader actually replays.
-
-    The transformers backend is stateless per ``generate`` (no persistent prefix cache),
-    so :meth:`ResidentAgentFactory.reset` is a no-op for it. Metering reads
-    ``HFGenerationResponse.raw_text`` exactly as for the GGUF backend.
-
-    Args:
-        main_gpu: CUDA device index to pin the model to (``device_map='cuda:N'``);
-            ``None`` uses the SDK default ``device_map='auto'``.
-
-    Returns:
-        A :class:`ResidentAgentFactory` over the shared transformers backend.
-    """
-    from aicomp_sdk.agents.gpt_oss_agent import GPTOSSAgent, build_gpt_oss_backend
-
-    device_map = "auto" if main_gpu is None else f"cuda:{main_gpu}"
-    backend = build_gpt_oss_backend(device_map=device_map)
-    return ResidentAgentFactory(cast(ResettableBackend, backend), GPTOSSAgent)
-
-
-def _resolve_agent(model_key: str) -> tuple[str, Callable[[Any], AgentProtocol]]:
-    """Return the SDK model id and agent constructor for a model key.
-
-    Args:
-        model_key: ``"gpt_oss"`` or ``"gemma_4"``.
-
-    Returns:
-        A ``(model_id, agent_constructor)`` pair from the SDK.
-
-    Raises:
-        ValueError: If ``model_key`` is unknown.
-    """
-    if model_key == "gpt_oss":
-        from aicomp_sdk.agents.gpt_oss_agent import (
-            DEFAULT_GPT_OSS_MODEL_ID,
-            GPTOSSAgent,
-        )
-
-        return DEFAULT_GPT_OSS_MODEL_ID, GPTOSSAgent
-    if model_key == "gemma_4":
-        from aicomp_sdk.agents.gemma4_agent import DEFAULT_GEMMA4_MODEL_ID, Gemma4Agent
-
-        return DEFAULT_GEMMA4_MODEL_ID, Gemma4Agent
-    raise ValueError(f"unknown model_key: {model_key}")
-
-
-class _LlamaServerClient:
-    """Minimal OpenAI-compatible client for a running ``llama-server`` instance.
-
-    Exposes ``create_chat_completion`` with the same signature and return shape as
-    ``llama_cpp.Llama.create_chat_completion``, so it drops straight into the SDK's
-    ``LlamaCppChatTemplateBackend`` — the SDK does all message/tool conversion and
-    response parsing, keeping behavior identical to the in-process llama.cpp path.
-    """
-
-    def __init__(
-        self, base_url: str, *, model: str = "local", timeout: float = 600.0
-    ) -> None:
-        """Store the endpoint.
-
-        Args:
-            base_url: The server's OpenAI base, e.g. ``http://localhost:8080/v1``.
-            model: The ``model`` field to send (llama-server serves one model).
-            timeout: Per-request timeout in seconds.
-        """
-        self._url = base_url.rstrip("/") + "/chat/completions"
-        self._model = model
-        self._timeout = timeout
-
-    def create_chat_completion(self, **kwargs: object) -> dict[str, Any]:
-        """POST a chat-completion request to the server and return the JSON dict.
-
-        Retries transient server errors (HTTP 5xx / connection resets) with backoff:
-        under heavy concurrent load (gate + producers + scorer on one server) the
-        server intermittently 500s, which must not crash a long replay/gate run.
-
-        Args:
-            **kwargs: The OpenAI chat-completion body (messages, tools, max_tokens...).
-
-        Returns:
-            The parsed OpenAI-shaped completion dict.
-        """
-        body = json.dumps({"model": self._model, **kwargs}).encode("utf-8")
-        request = urllib.request.Request(
-            self._url,
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        last_error: Exception | None = None
-        for attempt in range(_MAX_RETRIES):
-            try:
-                with urllib.request.urlopen(request, timeout=self._timeout) as response:
-                    return json.loads(response.read())
-            except urllib.error.HTTPError as err:
-                if err.code < 500:
-                    raise  # client error (bad request) — retrying won't help
-                last_error = err
-            except (urllib.error.URLError, TimeoutError, ConnectionError) as err:
-                last_error = err
-            time.sleep(_RETRY_BACKOFF_S * (2**attempt))
-        raise RuntimeError(
-            f"llama-server request failed after {_MAX_RETRIES} retries"
-        ) from last_error
-
-    def close(self) -> None:
-        """No persistent resources to release."""
-
-
-def llama_server_agent_factory(
-    model_key: str,
-    base_url: str,
-    *,
-    model: str = "local",
-    max_new_tokens: int = 1024,
-) -> Callable[[], AgentProtocol]:
-    """Build agents backed by a running ``llama-server`` (llama.cpp over HTTP).
-
-    Same fidelity as the in-process GGUF factory — it reuses the SDK's
-    ``LlamaCppChatTemplateBackend`` and real ``GPTOSSAgent``/``Gemma4Agent``, only
-    swapping the inference call to an HTTP request. The server holds the model
-    resident, so nothing reloads per candidate. Point ``base_url`` at a server
-    launched with ``--jinja`` on the exact Q4_K_M GGUF (see ``docs/serving.md``).
-
-    Args:
-        model_key: ``"gpt_oss"`` or ``"gemma_4"``.
-        base_url: The server's OpenAI base, e.g. ``http://localhost:8080/v1``.
-        model: The ``model`` field to send in requests.
-        max_new_tokens: Generation cap.
-
-    Returns:
-        A zero-arg callable returning a fresh SDK agent bound to the server.
-    """
-    from aicomp_sdk.agents.hf_chat_template.backends.llama_cpp import (
-        LlamaCppChatTemplateBackend,
-    )
-    from aicomp_sdk.agents.hf_chat_template.types import HFBackendConfig
-
-    model_id, make_agent = _resolve_agent(model_key)
-    config = HFBackendConfig(
-        model_id=model_id, model_path="", max_new_tokens=max_new_tokens
-    )
-    backend = LlamaCppChatTemplateBackend(
-        llm=_LlamaServerClient(base_url, model=model),
-        config=config,
-        supports_tools=True,
-    )
-
-    def factory() -> AgentProtocol:
-        """Build a fresh agent over the shared llama-server backend."""
-        return make_agent(backend)
-
-    return factory
-
-
-def llama_server_chat_client(
-    model_key: str, override: str | None = None, *, timeout: float = 600.0
-) -> _LlamaServerClient:
-    """Return a raw OpenAI-compatible chat client for a served model (no agent/tools).
-
-    Unlike the agent factories, this exposes plain ``create_chat_completion`` so
-    callers can prompt the model directly — used by the adversarial attacker to
-    generate its next user message from the target's observed behavior.
-
-    Args:
-        model_key: ``"gpt_oss"`` or ``"gemma_4"``.
-        override: Explicit base URL, if given.
-        timeout: Per-request timeout in seconds.
-
-    Returns:
-        A client whose ``create_chat_completion(**body)`` returns the OpenAI dict.
-    """
-    return _LlamaServerClient(resolve_base_url(model_key, override), timeout=timeout)
 
 
 def resolve_base_url(model_key: str, override: str | None = None) -> str:

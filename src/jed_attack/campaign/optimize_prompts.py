@@ -180,7 +180,6 @@ def make_record(
     score: SubmissionScore,
     reasoning: str,
     model: str,
-    worker: int,
     assessment: JudgeAssessment | None = None,
     island: int = 0,
 ) -> blackboard.Record:
@@ -192,7 +191,6 @@ def make_record(
         score: The :class:`~jed_attack.campaign.submission_score.SubmissionScore`.
         reasoning: The authoring backend's reasoning text (empty if none).
         model: The lane's model id (the record's provenance tag).
-        worker: The lane's worker id.
         assessment: Optional replay-gated judge assessment to persist with the record.
         island: The FunSearch island (:class:`islands.IslandSet` index) that authored
             and scored this record, so :meth:`Blackboard.island_best` /
@@ -231,7 +229,6 @@ def make_record(
         feedback=feedback,
         reasoning=reasoning,
         model=model,
-        worker=worker,
         ts=time.time(),
         valid=score.valid,
         invalid_reason=score.invalid_reason,
@@ -349,10 +346,6 @@ def _shape_elites(
                     family=shape_family(message.text, message.type),
                     bucket=input_char_bucket(len(message.text)),
                     url_scheme=message.url_scheme,
-                    turns={
-                        model: message_score.turns_by_model.get(model, 0.0)
-                        for model in config.MODELS
-                    },
                     input_chars=len(message.text),
                 )
             )
@@ -530,7 +523,6 @@ async def _ablate_champion(
             scores[0],
             "ablation post-pass",
             "ablate",
-            worker_id,
             island=island,
         ),
         out_dir,
@@ -754,7 +746,6 @@ async def worker_loop(
                         score,
                         reasoning,
                         model,
-                        worker_id,
                         assessment=assessment,
                         island=island,
                     ),
@@ -1155,7 +1146,6 @@ async def _refine_batch(
                     score,
                     reasoning,
                     model,
-                    worker_id,
                     assessment=assessment,
                 )
                 for submission, score, assessment in zip(

@@ -6,7 +6,6 @@ import pytest
 
 from jed_attack.harness.models import (
     MODEL_SPECS,
-    _LlamaServerClient,
     gguf_target_path,
     resolve_base_url,
     resolve_endpoints,
@@ -38,13 +37,6 @@ def test_resolve_base_url_defaults_and_override(
     assert resolve_base_url("gpt_oss", "http://host:9/v1") == "http://host:9/v1"
     monkeypatch.setenv("GEMMA_BASE_URL", "http://env:1/v1")
     assert resolve_base_url("gemma_4") == "http://env:1/v1"
-
-
-def test_llama_server_client_builds_endpoint() -> None:
-    """The client targets <base>/chat/completions and stores the model name."""
-    client = _LlamaServerClient("http://localhost:8080/v1/", model="gpt-oss")
-    assert client._url == "http://localhost:8080/v1/chat/completions"
-    assert client._model == "gpt-oss"
 
 
 def test_resolve_endpoints_splits_env_else_falls_back(

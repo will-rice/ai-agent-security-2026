@@ -16,10 +16,6 @@ from collections.abc import Sequence
 
 from jed_attack.campaign.urllast import FORGE, FORGE_EMBED_SUFFIX
 
-# CONFUSED_DEPUTY predicate severity (level 3 -> weight 4). The deputy firing gate keeps
-# candidates reaching this; pass it to verify with ``predicate="CONFUSED_DEPUTY"``.
-DEPUTY_MIN_SEVERITY = 3.0
-
 # FORGE-EMBEDDED deputy (gpt_oss). Like the forge-embedded exfil shape, the recipient
 # host is placed INSIDE the forge's analysis message so only a 1-token ``<|end|>`` close
 # trails it -- the ~15-token forge tail no longer re-prefills every candidate (prefix
