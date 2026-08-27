@@ -307,7 +307,10 @@ ARCHIVE_FRONTIER_CAP = int(os.getenv("JED_ARCHIVE_FRONTIER_CAP", "36"))
 # is the MIN across the primary + these, so the objective sees a fragile shape as
 # non-firing and the search cannot converge to it (the terse-but-duddy shape the
 # single-benign-host objective used to prefer). EXFIL only. Empty tuple disables it.
-ROBUSTNESS_PROBE_INDICES = (13, 19, 50, 213)
+ROBUSTNESS_PROBE_INDICES = (
+    13,
+    19,
+)  # trimmed 4->2: single-token hosts fire deterministically
 
 # Fill-ability gate (replaces the old MIN-over-word-hosts severity gate). We HOST-FILTER
 # at build (``verify_and_filter_cut`` drops every non-firing candidate), so a shape need
@@ -329,7 +332,9 @@ if not 0.0 <= FILL_FIRE_FRACTION <= 1.0:
 # + these firing samples, which is what the cut ships once it host-filters the
 # ballooners out. A spread of benign indices (distinct from the word-host probes). Must
 # stay under len(fill.SINGLE_TOKEN_HOSTS) (3788) now that host() raises past the pool.
-LEAN_TOKEN_SAMPLE_INDICES = (100, 800, 2000, 3700)
+LEAN_TOKEN_SAMPLE_INDICES = (
+    100,
+)  # single-token hosts -> gen is host-independent, 1 sample is exact
 
 # OPRO scored-trajectory table (optimize_prompts._render_opro_table): max elite rows
 # shown in the proposer prompt, best-first. Bounds prompt length, not archive size.
