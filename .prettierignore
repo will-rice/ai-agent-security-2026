@@ -2,3 +2,6 @@
 # prettier's markdown formatter corrupts (treats _ as emphasis). Skip docs.
 docs/**/*.md
 *.md
+
+# Generated single-token host set (compact json.dumps; keep byte-reproducible from gen_single_token_hosts.py)
+src/jed_attack/campaign/single_token_hosts.json

@@ -22,6 +22,11 @@ _MODELS = ("models/gpt-oss-20b-Q4_K_M.gguf", "models/gemma-4-26B-A4B-it-UD-Q4_K_
 
 
 def main() -> None:
+    """Write the single-token host set (one token under both victims) to the JSON.
+
+    Writes a compact ``json.dumps`` list with a trailing newline so the committed file
+    is byte-reproducible from this generator (and stays excluded from prettier).
+    """
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     toks = [Llama(model_path=m, vocab_only=True, verbose=False) for m in _MODELS]
     hosts: list[str] = []
@@ -30,7 +35,7 @@ def main() -> None:
             h = "".join(combo)
             if all(len(t.tokenize(h.encode(), add_bos=False)) == 1 for t in toks):
                 hosts.append(h)
-    _OUT.write_text(json.dumps(hosts), encoding="utf-8")
+    _OUT.write_text(json.dumps(hosts) + "\n", encoding="utf-8")
     logging.info("wrote %d single-token hosts -> %s", len(hosts), _OUT)
 
 
