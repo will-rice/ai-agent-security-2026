@@ -71,9 +71,9 @@ def objective_scheme_name(
     below, never the score itself); threaded through only so a future robustness-aware
     objective has its own pool ready.
     """
-    base = f"{gate}_pareto_v24"
+    base = f"{gate}_pareto_v25"
     if robustness_lambda != 0.0:
-        base = f"robust{robustness_lambda:g}_{gate}_pareto_v24"
+        base = f"robust{robustness_lambda:g}_{gate}_pareto_v25"
     if portfolio_lambda != 0.0:
         base = f"portfolio{portfolio_lambda:g}_{base}"
     return base

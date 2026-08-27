@@ -355,7 +355,7 @@ def _shape_elites(
             # (forge-embed FLAT at the same count), so count every input token once and
             # let the search minimise input + output together. Firing branch only.
             input_cost = {
-                model: len(message.text) / config.CHARS_PER_TOKEN[model]
+                model: message_score.input_tokens_by_model.get(model, 0.0)
                 for model in config.MODELS
             }
             throughputs = {
@@ -2095,17 +2095,17 @@ def _portfolio_diversity(score: SubmissionScore) -> float:
 
 
 def _project_boards(score: SubmissionScore) -> dict[str, float]:
-    """The per-model char-PROJECTED boards, or empty for an invalid submission.
+    """The per-model token-PROJECTED boards, or empty for an invalid submission.
 
     Pure field read on ``score`` -- NO replay: :func:`project_public_board` walks the
-    round-robin fill to each model's ``config.FILL_BUDGET_CHARS`` using only the
-    deterministic ``gen_chars``/``turns`` already captured by :func:`score_submission`,
-    so it is safe to call from a hot loop / a ``max(key=...)``.
+    round-robin fill to each model's ``config.FILL_BUDGET_TOKENS`` charging each
+    candidate its ``input_tokens + gen_tokens`` (both from :func:`score_submission`), so
+    it is safe to call from a hot loop / a ``max(key=...)`` and now sees input prefill.
     """
     if not score.valid:
         return {}
     return project_public_board(
-        score, config.FILL_BUDGET_CHARS, config.SHIP_CANDIDATE_CAP
+        score, config.FILL_BUDGET_TOKENS, config.SHIP_CANDIDATE_CAP
     )
 
 

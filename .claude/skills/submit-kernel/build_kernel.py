@@ -23,11 +23,11 @@ from pathlib import Path
 # --- Fixed submission config (constants, not flags, so they can't be misset) ---
 KAGGLE_USER = "willrice"
 COMPETITION = "ai-agent-security-multi-step-tool-attacks"
-TITLE = "JED minimized 108"  # unique slug per submission so the push never collides with a still-evaluating kernel (see _slugify)
+TITLE = "JED single-token champion"  # unique slug per submission so the push never collides with a still-evaluating kernel (see _slugify)
 MACHINE_SHAPE = "NvidiaTeslaT4"  # this competition rejects P100 (400 FAILED_PRECONDITION)
 ENABLE_GPU = True
 ENABLE_INTERNET = False  # rerun env is offline; attack imports only aicomp_sdk + stdlib
-ATTACK_PY = "run/submission_cuts/minimized_2000/attack.py"  # token-ablation-minimized 108: gpt 51 / gemma 48 total tok (input shaved, gen at the 28/29 floor). Decode-vs-prefill board test vs the 108 champion.
+ATTACK_PY = "run/submission_cuts/single_token_champion/attack.py"  # host-last 108 champion recut with single-token hosts (divergent host = 1 tok under both victims); verified 1999/2000 + 2000/2000 firing, url-last/single-token gate passes
 OUT_ROOT = "run/submission_kernel"  # kernel folders are written under here, one per slug
 # -------------------------------------------------------------------------------
 
