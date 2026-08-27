@@ -108,9 +108,9 @@ def team_proposers_from_env(
 # src/jed_attack/scripts/run_optimizer.sh sets that pin to the measured-clean roster
 # below. A per-model drop-rate measurement (batch_dropped telemetry) dropped three CI
 # lanes: glm-5.2 (~80%
-# refusals), deepseek-v4-flash (~50% malformed batches), and kimi-k2.7 (the agentic lane
-# authored batches as text, not submit_batch tool calls). mimo-v2.5 and minimax-m3 both
-# authored clean batches (0% drop), so they are the roster.
+# refusals), deepseek-v4-flash (~50% malformed batches), and kimi-k2.7 (authored batches
+# as text, not submit_batch tool calls). mimo-v2.5 and minimax-m3 both authored clean
+# batches (0% drop), so they are the roster.
 _TEAM_PROPOSERS_ENV = os.getenv("JED_TEAM_PROPOSERS")
 TEAM_PROPOSERS_FROM_ENV = _TEAM_PROPOSERS_ENV is not None
 TEAM_PROPOSERS: tuple[str, ...] = team_proposers_from_env(
@@ -134,12 +134,6 @@ EVAL_HOPS = 8
 # batch scorings per generation, with early stop on the first non-improving rewrite.
 # Set to 0 to disable refinement when scoring throughput is the binding constraint.
 REFINE_MAX_ROUNDS = 4
-
-# Agentic proposer (agentic_proposer.py): max tool-loop turns per generation, each turn
-# one chat-completions call. A static cap so a lane that never calls submit_batch cannot
-# spin forever. The agentic lane makes SEQUENTIAL calls on its own key, which is fine —
-# CI is single-flight per key and this is one lane.
-AGENTIC_MAX_TOOL_TURNS = 12
 
 # Prompt-optimization orchestrator (optimize_prompts.py): its generation logfile.
 OPTIMIZE_LOG = CAMPAIGN_ROOT / "optimize_prompts.log"

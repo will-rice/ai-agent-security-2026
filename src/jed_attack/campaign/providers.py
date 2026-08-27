@@ -31,9 +31,6 @@ class Provider:
         key_env: ``api`` only — the env var holding the bearer token (never the token).
         max_tokens: The model's maximum tokens (default is a high default; a model whose
             API rejects it gets its real max in this field).
-        agentic: Route this lane through the native function-calling tool-loop proposer
-            (:func:`jed_attack.campaign.agentic_proposer.propose_batch_agentic`) so it
-            can live-test candidates before submitting, not the one-shot streamer.
     """
 
     kind: str
@@ -41,7 +38,6 @@ class Provider:
     base_url: str = ""
     key_env: str = ""
     max_tokens: int = 65536
-    agentic: bool = False
 
 
 # z.ai GLM Coding Plan endpoint (subscription weekly quota), NOT the pay-as-you-go
@@ -84,16 +80,8 @@ PROVIDERS: dict[str, Provider] = {
     "cheapest-mimo": Provider(
         "api", model="mimo-v2.5", base_url=_CHEAP, key_env=CHEAPEST_KEY_ENV
     ),
-    # kimi-k2.7 is the team's top exploit-discoverer, so it runs the agentic tool-loop
-    # proposer that live-tests candidates before submitting (see agentic_proposer). The
-    # CI cycle rebuilds providers via cheapest_provider_for_model, which returns this
-    # very entry for "kimi-k2.7", so the agentic flag survives live-model resolution.
     "cheapest-kimi": Provider(
-        "api",
-        model="kimi-k2.7",
-        base_url=_CHEAP,
-        key_env=CHEAPEST_KEY_ENV,
-        agentic=True,
+        "api", model="kimi-k2.7", base_url=_CHEAP, key_env=CHEAPEST_KEY_ENV
     ),
     "cheapest-kimi2.6": Provider(
         "api", model="kimi-k2.6", base_url=_CHEAP, key_env=CHEAPEST_KEY_ENV

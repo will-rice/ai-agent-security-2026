@@ -53,7 +53,6 @@ from openai.types.shared_params import ResponseFormatJSONSchema
 
 from jed_attack.campaign import (
     ablate,
-    agentic_proposer,
     archive,
     blackboard,
     codex_proposer,
@@ -641,22 +640,10 @@ async def worker_loop(
                 opro=board.islands.archives[island].frontier(),
                 parents=parents,
             )
-            # Agentic lanes live-test candidates via a tool loop before submitting; all
-            # other lanes stay one-shot. Refinement (below) stays one-shot regardless.
-            # ``diagnoses`` are the per-parent reflections authored ahead of the batch;
-            # agentic lanes return none (their submit_batch schema omits them).
-            if provider.agentic:
-                (
-                    batch,
-                    diagnoses,
-                    reasoning,
-                ) = await agentic_proposer.propose_batch_agentic(
-                    prompt, provider, timeout_s
-                )
-            else:
-                batch, diagnoses, reasoning = await _propose_batch_oneshot(
-                    prompt, provider, timeout_s
-                )
+            # ``diagnoses`` are the per-parent reflections authored ahead of the batch.
+            batch, diagnoses, reasoning = await _propose_batch_oneshot(
+                prompt, provider, timeout_s
+            )
             tally = outcomes.setdefault(model, [0, 0])
             if not batch:  # validation failure / refusal -> drop WHOLE, rotate model
                 tally[1] += 1
