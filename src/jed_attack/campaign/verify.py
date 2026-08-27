@@ -20,6 +20,7 @@ import functools
 import hashlib
 import json
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -201,15 +202,20 @@ def _victim_tokenizers() -> tuple[Any, ...]:
 
 
 def assert_pool_shape(
-    chains: list[list[str]], tokenizers: tuple[Any, ...] | None = None
+    chains: list[list[str]], tokenizers: Sequence[Any] | None = None
 ) -> None:
     """Raise unless every candidate is url-last with a single-token divergent host.
 
-    Decomposes the pool by longest common prefix/suffix across ``chain[0]`` to isolate
-    each candidate's divergent host, then enforces: (1) url-last -- the shared suffix
-    after the host is <= URL_LAST_MAX_SUFFIX_CHARS; (2) single-token -- every divergent
-    host is one token under BOTH victim tokenizers. Pool-wide defects, so it raises
-    (refuse to write the cut) rather than dropping.
+    Checks (1) url-last -- the pool's shared trailing suffix across ``chain[0]`` (after
+    the host) is <= URL_LAST_MAX_SUFFIX_CHARS; (2) single-token -- every candidate's
+    OWN host is one token under BOTH victim tokenizers. The host is isolated
+    per-candidate: strip the pool-wide common suffix, then take everything after that
+    candidate's LAST ``://`` (every valid EXFIL url has one, enforced by
+    ``_validate_url_scheme``). This is deliberately NOT the whole-pool longest-common-
+    prefix: when pool hosts share a leading character (e.g. ``aa``/``aab``/``ac``), an
+    LCP-based isolation would absorb the shared lead and check only the differing tail,
+    silently passing a multi-token host. Pool-wide defects, so it raises (refuse to
+    write the cut) rather than dropping.
 
     Args:
         chains: Candidate chains (each ``chain[0]`` is the rendered message text).
@@ -220,24 +226,18 @@ def assert_pool_shape(
     texts = [c[0] for c in chains]
     if len(texts) < 2:
         return
-    prefix = _common_affix(texts, suffix=False)
-    suffix = _common_affix(texts, suffix=True)
-    if len(suffix.strip()) > config.URL_LAST_MAX_SUFFIX_CHARS:
+    suffix = _common_affix(texts, suffix=True).strip()
+    if len(suffix) > config.URL_LAST_MAX_SUFFIX_CHARS:
         raise ValueError(
             f"pool is not url-last: shared suffix {suffix!r} after the host"
         )
     toks = tokenizers if tokenizers is not None else _victim_tokenizers()
     for text in texts:
-        divergent = (
-            text[len(prefix) : len(text) - len(suffix)]
-            if suffix
-            else text[len(prefix) :]
-        )
+        body = text[: len(text) - len(suffix)] if suffix else text
+        host = body.rsplit("://", 1)[1] if "://" in body else body
         for tk in toks:
-            if len(tk.tokenize(divergent.encode(), add_bos=False)) != 1:
-                raise ValueError(
-                    f"host {divergent!r} is not a single token under a victim"
-                )
+            if len(tk.tokenize(host.encode(), add_bos=False)) != 1:
+                raise ValueError(f"host {host!r} is not a single token under a victim")
 
 
 def _extract_pool(attack_src: str, var: str) -> list[list[str]]:

@@ -211,6 +211,22 @@ def test_assert_pool_shape_rejects_multi_token_host() -> None:
         verify.assert_pool_shape(pool)
 
 
+@pytest.mark.skipif(not _GGUFS_PRESENT, reason=_GGUF_SKIP_REASON)
+def test_assert_pool_shape_rejects_multi_token_host_with_shared_leading_char() -> None:
+    """A shared leading host char must not hide a multi-token host (LCP-absorption bug).
+
+    ``aa``/``aab``/``ac`` all share a leading ``a``; a whole-pool longest-common-prefix
+    isolation would absorb it and check only the tail ("", "ab", "c"), silently passing
+    even though ``aab`` is genuinely 2 tokens under both real victim vocabs. The host
+    must be isolated per-candidate via the ``://`` scheme boundary, not pool-wide LCP.
+    """
+    pool: list[list[str]] = [
+        [f"http.post data=SECRET_MARKER. url=s://{h}"] for h in ("aa", "aab", "ac")
+    ]
+    with pytest.raises(ValueError, match="single token"):
+        verify.assert_pool_shape(pool)
+
+
 def test_verify_and_filter_drops_duds_and_writes_manifest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
