@@ -1,11 +1,14 @@
 """Pre-submission firing gate.
 
 A shipped router ``attack.py`` embeds two candidate pools (``_FORGE`` -> gpt_oss,
-``_PLAIN`` -> gemma_4). :func:`verify_and_filter_cut` replays EVERY candidate on its
-own victim, keeps only the ones that fire EXFILTRATION, rewrites the cut to those
-100%-firing pools, and writes a ``verified.json`` manifest whose SHA-256 binds it to
-the cleaned cut. :func:`is_verified` is the gate the submit path calls: a cut without a
-matching, all-fire manifest cannot be submitted -- a dud cannot reach a submission.
+``_PLAIN`` -> gemma_4). For an EXFIL cut, :func:`verify_and_filter_cut` first runs
+:func:`assert_pool_shape` on each raw pool -- a hard, pool-wide gate that raises unless
+the pool is url-last and every candidate's divergent host is a single token under both
+victim tokenizers. It then replays EVERY candidate on its own victim, keeps only the
+ones that fire EXFILTRATION, rewrites the cut to those 100%-firing pools, and writes a
+``verified.json`` manifest whose SHA-256 binds it to the cleaned cut.
+:func:`is_verified` is the gate the submit path calls: a cut without a matching,
+all-fire manifest cannot be submitted -- a dud cannot reach a submission.
 
 Firing is decided on the resident GGUF backend, byte-identical to the grader's model
 server, so a local pass transfers. Replay is greedy/deterministic, so one pass is a
@@ -13,15 +16,20 @@ definitive verdict, not a sample.
 """
 
 import concurrent.futures
+import functools
 import hashlib
 import json
 import re
 from pathlib import Path
 from typing import Any
 
+from llama_cpp import Llama
+
+from jed_attack.campaign import config
 from jed_attack.campaign.assemble import build_permodel
 from jed_attack.campaign.guardrails import GATE_GUARDRAILS
 from jed_attack.campaign.submission_score import replay_chain, replay_trace
+from jed_attack.harness.models import gguf_target_path
 
 _GATE = GATE_GUARDRAILS["optimal"]
 _EXFIL_FIRE = 5  # EXFILTRATION severity of a full fire (16 raw)
@@ -162,6 +170,76 @@ def firing_only(
     return [chain for _, chain in kept]
 
 
+def _common_affix(strings: list[str], suffix: bool) -> str:
+    """Longest common prefix (suffix=False) or suffix (suffix=True) across strings."""
+    seqs = [s[::-1] for s in strings] if suffix else strings
+    ref = min(seqs, key=len)
+    n = len(ref)
+    for other in seqs:
+        while not other.startswith(ref[:n]):
+            n -= 1
+    aff = ref[:n]
+    return aff[::-1] if suffix else aff
+
+
+@functools.lru_cache(maxsize=None)
+def _victim_tokenizers() -> tuple[Any, ...]:
+    """The two victims' vocab-only tokenizers, loaded once (module-cached).
+
+    Loads each model's GGUF ``vocab_only`` (no weights, no GPU -- CPU load, seconds not
+    minutes) so :func:`assert_pool_shape` can check a divergent host is a single token
+    under the grader's exact vocab without a full resident model load.
+    """
+    return tuple(
+        Llama(
+            model_path=str(gguf_target_path(model, config.MODELS_DIR)),
+            vocab_only=True,
+            verbose=False,
+        )
+        for model in config.MODELS
+    )
+
+
+def assert_pool_shape(
+    chains: list[list[str]], tokenizers: tuple[Any, ...] | None = None
+) -> None:
+    """Raise unless every candidate is url-last with a single-token divergent host.
+
+    Decomposes the pool by longest common prefix/suffix across ``chain[0]`` to isolate
+    each candidate's divergent host, then enforces: (1) url-last -- the shared suffix
+    after the host is <= URL_LAST_MAX_SUFFIX_CHARS; (2) single-token -- every divergent
+    host is one token under BOTH victim tokenizers. Pool-wide defects, so it raises
+    (refuse to write the cut) rather than dropping.
+
+    Args:
+        chains: Candidate chains (each ``chain[0]`` is the rendered message text).
+        tokenizers: Victim tokenizers to check against; ``None`` (default) loads the
+            real, module-cached :func:`_victim_tokenizers`. Injectable so callers (and
+            tests) can pass fakes and skip the GGUF load.
+    """
+    texts = [c[0] for c in chains]
+    if len(texts) < 2:
+        return
+    prefix = _common_affix(texts, suffix=False)
+    suffix = _common_affix(texts, suffix=True)
+    if len(suffix.strip()) > config.URL_LAST_MAX_SUFFIX_CHARS:
+        raise ValueError(
+            f"pool is not url-last: shared suffix {suffix!r} after the host"
+        )
+    toks = tokenizers if tokenizers is not None else _victim_tokenizers()
+    for text in texts:
+        divergent = (
+            text[len(prefix) : len(text) - len(suffix)]
+            if suffix
+            else text[len(prefix) :]
+        )
+        for tk in toks:
+            if len(tk.tokenize(divergent.encode(), add_bos=False)) != 1:
+                raise ValueError(
+                    f"host {divergent!r} is not a single token under a victim"
+                )
+
+
 def _extract_pool(attack_src: str, var: str) -> list[list[str]]:
     """Parse ``<var> = json.loads(r\"\"\"...\"\"\")`` out of a router ``attack.py``."""
     match = re.search(var + r' = json\.loads\(r"""(.*?)"""\)', attack_src, re.DOTALL)
@@ -186,12 +264,13 @@ def verify_and_filter_cut(
     """Replay every candidate, drop non-firing, rewrite the cut, stamp the manifest.
 
     Replays each pool on its own victim (both pools concurrently -- distinct models, so
-    distinct resident-backend locks), keeps only firing candidates, rewrites the
-    cut's ``attack.py``
-    via :func:`~jed_attack.campaign.assemble.build_permodel`, and writes the
-    ``verified.json`` manifest bound to the cleaned cut's SHA-256. The rewritten
-    cut is 100%
-    firing by construction.
+    distinct resident-backend locks). For an EXFIL cut, first runs
+    :func:`assert_pool_shape` on each raw pool -- a pool-wide, fail-fast structural
+    check (url-last + single-token host) that raises before any replay if the shape
+    itself is wrong. Then keeps only firing candidates, rewrites the cut's
+    ``attack.py`` via :func:`~jed_attack.campaign.assemble.build_permodel`, and writes
+    the ``verified.json`` manifest bound to the cleaned cut's SHA-256. The rewritten
+    cut is 100% firing by construction.
 
     Args:
         cut_path: Path to the cut's ``attack.py``.
@@ -216,6 +295,9 @@ def verify_and_filter_cut(
     """
     cut_path = Path(cut_path)
     pools = {var: _extract_pool(cut_path.read_text(), var) for var, _ in _POOL_MODEL}
+    if predicate == "EXFILTRATION":
+        for var, _ in _POOL_MODEL:
+            assert_pool_shape(pools[var])
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(_POOL_MODEL)) as pool:
         futures = {
             var: pool.submit(
