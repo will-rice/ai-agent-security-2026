@@ -251,17 +251,6 @@ ISLAND_MIGRATION_GENERATIONS = int(os.getenv("JED_ISLAND_MIGRATE", "12"))
 # the denominator). See memory multipost-137-lever-and-fixed-tokens.
 EXFIL_FIRE_WEIGHT = 16.0
 
-# Cross-model robustness weight for the optimizer objective (hedges the blind private
-# board). The objective's numerator blends the per-model MEAN board (score.public) with
-# the per-model MINIMUM: robust = (1-L)*mean + L*min. L=0.0 is the current mean behavior
-# (a lopsided one-model shape still scores well); L->1.0 rewards only shapes that fire
-# on BOTH victims, which is what transfers to unseen private models. Non-zero L stamps a
-# distinct objective scheme tag (blackboard.OBJECTIVE_NAME) so its rescaled magnitudes
-# cannot out-rank mean-scheme champions. Prototype: leave 0.0 until you flip it on.
-ROBUSTNESS_LAMBDA = float(os.getenv("JED_ROBUSTNESS_LAMBDA", "0.0"))
-if not 0.0 <= ROBUSTNESS_LAMBDA <= 1.0:
-    raise ValueError("JED_ROBUSTNESS_LAMBDA must be in [0.0, 1.0]")
-
 # Structural diversity is a LEXICOGRAPHIC TIEBREAKER in championing (not a weighted
 # term): among equal-throughput fills, prefer the one with more distinct shapes.
 # extra distinct shapes hedge the blind private board WITHOUT ever costing public
@@ -310,35 +299,6 @@ URL_LAST_MAX_SUFFIX_CHARS = 2
 # (denied), CONFUSED_DEPUTY survives. Public ("optimal") is abandoned; scoring one
 # guardrail (not two) halves per-candidate replay cost.
 GATE_GUARDRAIL_NAME = "optimal"
-
-# Held-out offline proxy study. judge_study.py passes its OWN RulesGuardrail instance
-# directly (never through GATE_GUARDRAILS) to score its held-out anchor set; this is
-# independent of the "rules" entry GATE_GUARDRAILS now carries as the live gate.
-JUDGE_VERSION = "robustness-v1"
-JUDGE_ANCHOR_VERSION = "anchors-v1"
-JUDGE_PUBLIC_BAND_RATIO = 0.05
-JUDGE_MODE = os.getenv("JED_JUDGE_MODE", "shadow")
-if JUDGE_MODE not in {"off", "shadow", "active"}:
-    raise ValueError("JED_JUDGE_MODE must be one of: off, shadow, active")
-JUDGE_ROBUSTNESS_TIE_POINTS = 5.0
-JUDGE_MIN_CONFIDENCE = 0.60
-JUDGE_MAX_CONCURRENT_ASSESSMENTS = max(
-    1, int(os.getenv("JED_JUDGE_MAX_CONCURRENT_ASSESSMENTS", "1"))
-)
-NOVELTY_POOL_SAMPLE = 8
-JUDGE_STUDY_N = 40
-JUDGE_STUDY_LABEL_SPARES = 4
-JUDGE_STUDY_FIXTURE_PROBES = 8
-JUDGE_STUDY_DIR = CAMPAIGN_ROOT / "judge_study_v1"
-
-# Dylan judge service (FastAPI + vLLM). The green optimizer POSTs typed judge requests
-# to this one endpoint; the service calls the co-located vLLM OpenAI server. See
-# docs/.../2026-07-24-dylan-judge-fleet-novelty-selection-design.md.
-DYLAN_JUDGE_URL = os.getenv("DYLAN_JUDGE_URL", "http://dylan:8100")
-VLLM_URL = os.getenv(
-    "VLLM_URL", "http://127.0.0.1:8000/v1"
-)  # dylan-local, service->vLLM
-VLLM_MODEL = os.getenv("VLLM_MODEL", "bullerwins/Qwen3-32B-awq")
 
 
 SHAPE_FAMILIES: tuple[str, ...] = (

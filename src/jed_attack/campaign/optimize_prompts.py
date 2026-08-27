@@ -66,12 +66,6 @@ from jed_attack.campaign import (
     private_proxy,
     providers,
 )
-from jed_attack.campaign.judge_policy import (
-    Comparison,
-    JudgeAssessment,
-    assess_submission,
-    compare_batches,
-)
 from jed_attack.campaign.submission import (
     Message,
     MessageType,
@@ -180,7 +174,6 @@ def make_record(
     score: SubmissionScore,
     reasoning: str,
     model: str,
-    assessment: JudgeAssessment | None = None,
     island: int = 0,
 ) -> blackboard.Record:
     """Build a :class:`~jed_attack.campaign.blackboard.Record` from a scored submission.
@@ -191,7 +184,6 @@ def make_record(
         score: The :class:`~jed_attack.campaign.submission_score.SubmissionScore`.
         reasoning: The authoring backend's reasoning text (empty if none).
         model: The lane's model id (the record's provenance tag).
-        assessment: Optional replay-gated judge assessment to persist with the record.
         island: The FunSearch island (:class:`islands.IslandSet` index) that authored
             and scored this record, so :meth:`Blackboard.island_best` /
             :meth:`Blackboard.global_champion` can re-derive per-island rankings from
@@ -233,9 +225,6 @@ def make_record(
         valid=score.valid,
         invalid_reason=score.invalid_reason,
         fires=score.fires,
-        assessment=(
-            assessment.model_dump(mode="json") if assessment is not None else None
-        ),
         objective=_score_total_tokens(score),
         # Lexicographic ranking (see blackboard._objective_key): the (negated) MEAN
         # token-cost `objective` is primary; `objective_tiebreaker` (distinct
@@ -372,8 +361,8 @@ _seed_lock_loop: asyncio.AbstractEventLoop | None = None
 def _seed_gate() -> asyncio.Lock:
     """One lock serializing cold-start island seeding across every lane on this loop.
 
-    Mirrors :func:`_judge_gate`: an ``asyncio.Lock`` bound to the running loop and
-    reused across lanes, so the FIRST lane to start seeds the quality island while the
+    An ``asyncio.Lock`` bound to the running loop and reused across lanes, so the
+    FIRST lane to start seeds the quality island while the
     others block on the lock, then find an island non-empty and skip. The islands
     are never double-seeded even when all lanes start concurrently. Rebinds when the
     running loop changes (a lock binds to the loop that first awaits it), so a cache
@@ -635,20 +624,13 @@ async def worker_loop(
         try:
             team = {t: board.top_messages(t, k=_TEAM_TOP_K) for t in MessageType}
             reasoning_digest = board.recent_reasoning(k=_TEAM_REASONING_K)
-            reference_mechanisms = board.mechanism_references(
-                config.NOVELTY_POOL_SAMPLE
-            )
             model = provider.model or provider.kind
 
             # Round 0: author a BATCH from THIS island's incumbent; score every
             # submission. Each worker climbs its own lineage's best, not one shared
             # global -- that isolation is what keeps the islands from collapsing onto a
             # single frontier.
-            incumbent = (
-                board.best_robust()
-                if config.JUDGE_MODE == "active"
-                else board.island_best(island)
-            )
+            incumbent = board.island_best(island)
             # Sample THIS island's archive parents (EvoPrompt material) and render the
             # OPRO trajectory from its Pareto frontier; both are DATA the proposer
             # recombines.
@@ -695,17 +677,14 @@ async def worker_loop(
                 continue
             tally[0] += 1
             scores = await _score_batch(batch)
-            assessments = await _assess_batch(batch, scores, reference_mechanisms)
             round0_objective = _batch_refine_objective(scores)
 
             # Hill-climb the whole batch on the total-token objective (fewer wins).
             (
                 local_batch,
                 local_scores,
-                local_assessments,
                 reasoning,
                 refine_rounds,
-                shadow_decision,
             ) = await _refine_batch(
                 batch,
                 scores,
@@ -716,8 +695,6 @@ async def worker_loop(
                 model,
                 worker_id,
                 timeout_s,
-                assessments=assessments,
-                reference_mechanisms=reference_mechanisms,
             )
             batch_objective = _batch_refine_objective(local_scores)
 
@@ -737,18 +714,9 @@ async def worker_loop(
             # artifact write is gated here. The union reship below then supersedes it.
             ship_min_fallback = _ship_min_fallback(board)
             artifact_reshipped = False
-            for submission, score, assessment in zip(
-                local_batch, local_scores, local_assessments, strict=True
-            ):
+            for submission, score in zip(local_batch, local_scores, strict=True):
                 reshipped = await board.append(
-                    make_record(
-                        submission,
-                        score,
-                        reasoning,
-                        model,
-                        assessment=assessment,
-                        island=island,
-                    ),
+                    make_record(submission, score, reasoning, model, island=island),
                     out_dir,
                     reship=ship_min_fallback,
                 )
@@ -802,8 +770,6 @@ async def worker_loop(
                     best_score=best_score,
                     refine_rounds=refine_rounds,
                     local_scores=local_scores,
-                    local_assessments=local_assessments,
-                    shadow_decision=shadow_decision,
                     board=board,
                     model=provider.model,
                     worker_id=worker_id,
@@ -1038,55 +1004,6 @@ def _advance_provider_after_error(
     )
 
 
-_judge_semaphore: asyncio.Semaphore | None = None
-_judge_semaphore_loop: asyncio.AbstractEventLoop | None = None
-
-
-def _judge_gate() -> asyncio.Semaphore:
-    """One cap on concurrent judge assessments per event loop, shared across all lanes.
-
-    Built lazily inside the running loop and reused, so N lanes share a single
-    ``Semaphore(JUDGE_MAX_CONCURRENT_ASSESSMENTS)`` instead of each constructing its own
-    (a per-call semaphore let N assessments hit the single judge service at once).
-    Rebinds when the running loop changes: an ``asyncio.Semaphore`` binds to the loop
-    that first awaits it, so a cache reused across a fresh ``asyncio.run`` loop raises
-    "bound to a different event loop". Production runs one loop (one shared semaphore);
-    keying on the loop keeps that while staying correct across successive loops.
-    """
-    global _judge_semaphore, _judge_semaphore_loop
-    loop = asyncio.get_running_loop()
-    if _judge_semaphore is None or _judge_semaphore_loop is not loop:
-        _judge_semaphore = asyncio.Semaphore(config.JUDGE_MAX_CONCURRENT_ASSESSMENTS)
-        _judge_semaphore_loop = loop
-    return _judge_semaphore
-
-
-async def _assess_batch(
-    batch: list[Submission],
-    scores: list[SubmissionScore],
-    reference_mechanisms: list[str],
-) -> list[JudgeAssessment | None]:
-    """Assess a scored batch once per candidate when judge mode is enabled."""
-    if config.JUDGE_MODE == "off":
-        return [None] * len(batch)
-    semaphore = _judge_gate()
-
-    async def assess_gated(
-        submission: Submission, score: SubmissionScore
-    ) -> JudgeAssessment | None:
-        async with semaphore:
-            return await assess_submission(submission, score, reference_mechanisms)
-
-    return list(
-        await asyncio.gather(
-            *(
-                assess_gated(submission, score)
-                for submission, score in zip(batch, scores, strict=True)
-            )
-        )
-    )
-
-
 async def _refine_batch(
     batch: list[Submission],
     scores: list[SubmissionScore],
@@ -1097,16 +1014,11 @@ async def _refine_batch(
     model: str,
     worker_id: int,
     timeout_s: float,
-    *,
-    assessments: list[JudgeAssessment | None] | None = None,
-    reference_mechanisms: list[str] | None = None,
 ) -> tuple[
     list[Submission],
     list[SubmissionScore],
-    list[JudgeAssessment | None],
     str,
     int,
-    Comparison,
 ]:
     """Hill-climb a scored batch on total tokens (fewer wins); return the kept batch.
 
@@ -1126,31 +1038,17 @@ async def _refine_batch(
         model: The lane's model id (record provenance tag).
         worker_id: The lane's worker id.
         timeout_s: Per-generation proposer timeout.
-        assessments: Optional judge assessments aligned with ``batch``/``scores``.
-        reference_mechanisms: Mechanism labels used for archive-relative judging.
 
     Returns:
-        ``(batch, scores, assessments, reasoning, refine_rounds, shadow_decision)``
-        for the kept batch.
+        ``(batch, scores, reasoning, refine_rounds)`` for the kept batch.
     """
     batch_objective = _batch_refine_objective(scores)
-    local_assessments = assessments or [None] * len(batch)
-    references = reference_mechanisms or []
     refine_rounds = 0
-    shadow_decision = Comparison("tie", "not_compared")
     for _ in range(config.REFINE_MAX_ROUNDS):
         try:
             incumbent_batch = [
-                make_record(
-                    submission,
-                    score,
-                    reasoning,
-                    model,
-                    assessment=assessment,
-                )
-                for submission, score, assessment in zip(
-                    batch, scores, local_assessments, strict=True
-                )
+                make_record(submission, score, reasoning, model)
+                for submission, score in zip(batch, scores, strict=True)
             ]
             prompt = submission_prompt(
                 None,
@@ -1171,9 +1069,6 @@ async def _refine_batch(
             if not refined:
                 break  # empty refine reply -> stop the climb, keep the best
             refined_scores = await _score_batch(refined)
-            refined_assessments = await _assess_batch(
-                refined, refined_scores, references
-            )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -1182,25 +1077,13 @@ async def _refine_batch(
             )
             break
         refined_objective = _batch_refine_objective(refined_scores)
-        shadow_decision = compare_batches(
-            scores, local_assessments, refined_scores, refined_assessments
-        )
-        accept = (
-            shadow_decision.winner == "b"
-            if config.JUDGE_MODE == "active"
-            else refined_objective < batch_objective
-        )
-        if not accept:
+        if not refined_objective < batch_objective:
             break  # no improvement -> stop the climb
-        batch, scores, local_assessments = (
-            refined,
-            refined_scores,
-            refined_assessments,
-        )
+        batch, scores = refined, refined_scores
         batch_objective = refined_objective
         reasoning = refined_reasoning
         refine_rounds += 1
-    return batch, scores, local_assessments, reasoning, refine_rounds, shadow_decision
+    return batch, scores, reasoning, refine_rounds
 
 
 def _resolve_cheapest_cycle(
@@ -1718,69 +1601,6 @@ def _feedback_table(
     return rows
 
 
-def _judge_available_rate(assessments: list[JudgeAssessment | None]) -> float:
-    """Fraction of a batch with complete judge assessments."""
-    return _judge_status_rate(assessments, "available")
-
-
-def _judge_summary_metrics(
-    assessments: list[JudgeAssessment | None],
-) -> dict[str, float]:
-    """Mean judge metrics for W&B; invalid/missing statuses remain visible."""
-    available = _available_assessments(assessments)
-    robustness = [
-        assessment.robustness
-        for assessment in available
-        if assessment.robustness is not None
-    ]
-    mechanisms = [
-        assessment.mechanism
-        for assessment in available
-        if assessment.mechanism is not None
-    ]
-    private_survival = _mean_or_zero([score.private_survival for score in robustness])
-    return {
-        "judge_available_rate": _judge_status_rate(assessments, "available"),
-        "judge_skipped_invalid_rate": _judge_status_rate(
-            assessments, "skipped_invalid"
-        ),
-        "judge_skipped_nonfiring_rate": _judge_status_rate(
-            assessments, "skipped_nonfiring"
-        ),
-        "judge_unavailable_rate": _judge_status_rate(assessments, "unavailable"),
-        "judge_missing_rate": _judge_missing_rate(assessments),
-        "batch_mean_private_survival": private_survival,
-        "batch_mean_survival": private_survival,
-        "batch_mean_cross_model": _mean_or_zero(
-            [score.cross_model for score in robustness]
-        ),
-        "batch_mean_provenance_independence": _mean_or_zero(
-            [score.provenance_independence for score in robustness]
-        ),
-        "batch_mean_policy_independence": _mean_or_zero(
-            [score.policy_independence for score in robustness]
-        ),
-        "batch_mean_replay_consistency": _mean_or_zero(
-            [score.replay_consistency for score in robustness]
-        ),
-        "batch_mean_public_bypass_risk": _mean_or_zero(
-            [score.public_bypass_risk for score in robustness]
-        ),
-        "batch_mean_robustness_confidence": _mean_or_zero(
-            [score.confidence for score in robustness]
-        ),
-        "batch_mean_semantic_novelty": _mean_or_zero(
-            [score.semantic_novelty for score in mechanisms]
-        ),
-        "batch_mean_mechanism_confidence": _mean_or_zero(
-            [score.confidence for score in mechanisms]
-        ),
-        "batch_mean_exact_cell_novelty": _mean_or_zero(
-            [assessment.exact_cell_novelty for assessment in available]
-        ),
-    }
-
-
 def _batch_score_metrics(scores: list[SubmissionScore]) -> dict[str, float]:
     """Replay, firing, and predicate economics for optimizer observability."""
     if not scores:
@@ -1904,8 +1724,6 @@ def _generation_wandb_metrics(
     best_score: SubmissionScore,
     refine_rounds: int,
     local_scores: list[SubmissionScore],
-    local_assessments: list[JudgeAssessment | None],
-    shadow_decision: Comparison,
     board: blackboard.Blackboard,
     model: str,
     worker_id: int,
@@ -1929,8 +1747,6 @@ def _generation_wandb_metrics(
         best_score: The kept batch's best (fewest-token) :class:`SubmissionScore`.
         refine_rounds: Refine rounds actually run this generation.
         local_scores: The kept batch's scores (for :func:`_batch_score_metrics`).
-        local_assessments: The kept batch's judge assessments, one per submission.
-        shadow_decision: The refine loop's shadow-judge comparison outcome.
         board: The shared team blackboard (THIS worker's island sources the frontier
             gauges, so each lane reports its own lineage's frontier).
         model: The lane's model id.
@@ -1970,13 +1786,7 @@ def _generation_wandb_metrics(
         "refine_rounds": refine_rounds,
         # Positive = the refine round LOWERED the mean token cost (an improvement).
         "refine_token_gain": round0_objective - batch_objective,
-        "judge_mode": config.JUDGE_MODE,
-        "judge_available_rate": _judge_available_rate(local_assessments),
-        "shadow_winner": shadow_decision.winner,
-        "shadow_reason": shadow_decision.reason,
-        "shadow_prefers_refined": float(shadow_decision.winner == "b"),
         **_batch_score_metrics(local_scores),
-        **_judge_summary_metrics(local_assessments),
         "batch_dropped": 0.0,  # per-model drop gauge (1.0 on drop path)
         "model": model,
         "worker": worker_id,
@@ -2104,32 +1914,6 @@ def _empty_batch_score_metrics() -> dict[str, float]:
         metrics[f"batch_predicates_{suffix}"] = 0.0
     metrics |= private_proxy.empty_metrics()
     return metrics
-
-
-def _judge_status_rate(assessments: list[JudgeAssessment | None], status: str) -> float:
-    return _rate(
-        sum(
-            assessment is not None and assessment.status == status
-            for assessment in assessments
-        ),
-        len(assessments),
-    )
-
-
-def _judge_missing_rate(assessments: list[JudgeAssessment | None]) -> float:
-    return _rate(
-        sum(assessment is None for assessment in assessments), len(assessments)
-    )
-
-
-def _available_assessments(
-    assessments: list[JudgeAssessment | None],
-) -> list[JudgeAssessment]:
-    return [
-        assessment
-        for assessment in assessments
-        if assessment is not None and assessment.status == "available"
-    ]
 
 
 def _mean_or_zero(values: list[float | int]) -> float:

@@ -9,7 +9,6 @@ shipped ``attack.py`` is rewritten immediately via the per-model router
 """
 
 import asyncio
-import functools
 import json
 import logging
 from itertools import zip_longest
@@ -20,11 +19,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from jed_attack.campaign import archive, assemble, config, fill
 from jed_attack.campaign.islands import IslandSet
-from jed_attack.campaign.judge_policy import (
-    CandidateObjective,
-    JudgeAssessment,
-    compare_candidates,
-)
 from jed_attack.campaign.submission import MessageType, Submission
 
 _log = logging.getLogger(__name__)
@@ -36,10 +30,7 @@ _log = logging.getLogger(__name__)
 # the logged champion (see _objective_key). The current tag is ``v26``: the objective is
 # now a DIRECT total-token MINIMIZATION (input_tokens + gen_tokens of the leanest firing
 # shape per model, meaned over models) -- no board/fill-budget projection, no ratio.
-# NOTE: ROBUSTNESS_LAMBDA is currently UN-WIRED -- the score never reads it, so a
-# non-zero value only changes the tag/pool below, not the score.
 def objective_scheme_name(
-    robustness_lambda: float,
     portfolio_lambda: float = 0.0,
     gate: str = config.GATE_GUARDRAIL_NAME,
 ) -> str:
@@ -62,22 +53,15 @@ def objective_scheme_name(
     charging input tokens inside the projection -- both are pre-v26 history, kept here
     for the reasoning trail. The scheme encodes the gate guardrail
     (``config.GATE_GUARDRAIL_NAME``) so switching guardrails auto-starts a clean pool; a
-    non-zero portfolio weight tags diversity-on, its own pool. NOTE:
-    ``robustness_lambda`` is currently UN-WIRED (only affects the tag/pool below, never
-    the score itself); threaded through only so a future robustness-aware objective has
-    its own pool ready.
+    non-zero portfolio weight tags diversity-on, its own pool.
     """
     base = f"{gate}_pareto_v26"
-    if robustness_lambda != 0.0:
-        base = f"robust{robustness_lambda:g}_{gate}_pareto_v26"
     if portfolio_lambda != 0.0:
         base = f"portfolio{portfolio_lambda:g}_{base}"
     return base
 
 
-OBJECTIVE_NAME = objective_scheme_name(
-    config.ROBUSTNESS_LAMBDA, config.PORTFOLIO_LAMBDA
-)
+OBJECTIVE_NAME = objective_scheme_name(config.PORTFOLIO_LAMBDA)
 
 
 class Record(BaseModel):
@@ -101,7 +85,6 @@ class Record(BaseModel):
     valid: bool = True
     invalid_reason: str | None = None
     fires: bool = False
-    assessment: dict[str, Any] | None = None
     # Mean over models of the firing shape's total token cost (input + gen tokens);
     # see optimize_prompts._score_total_tokens. MINIMIZE -- +inf when invalid or when
     # any model doesn't fire (so a partial-firing/dead record never ranks as champion).
@@ -109,7 +92,7 @@ class Record(BaseModel):
     objective_tiebreaker: float = 0.0
     objective_name: str = "legacy_public"
     # Per-model public board {model: board}; the mean of these is ``public``. Persisted
-    # so the robustness objective and the incumbent block can see per-victim spread.
+    # so the incumbent block can see per-victim spread.
     public_by_model: dict[str, float] = Field(default_factory=dict)
     # Which FunSearch island (islands.IslandSet index) authored/scored this record.
     # Persisted so island_best/global_champion can re-derive per-island rankings from
@@ -153,8 +136,8 @@ class Record(BaseModel):
         """Both pools concatenated in ``config.MODELS`` order -- the flat message view.
 
         The record stores its pools on ``submission``; consumers that only need the
-        authored shapes (diversity count, judge-study candidate source, incumbent
-        prompt block) read this flat concatenation.
+        authored shapes (diversity count, incumbent prompt block) read this flat
+        concatenation.
         """
         return [m.model_dump(mode="json") for _, m in self.submission.all_messages()]
 
@@ -269,31 +252,6 @@ def _severity_sum(entry: dict) -> float:
 def _feedback_fires(feedback: list[dict]) -> bool:
     """Infer old-row firing status from persisted per-message severity."""
     return any(_severity_sum(entry) > 0.0 for entry in feedback)
-
-
-def _assessment_objective(record: Record) -> CandidateObjective:
-    """Convert a record's persisted assessment into policy comparison input."""
-    return CandidateObjective(
-        valid=record.valid,
-        firing=record.fires,
-        public=record.public,
-        gen_tokens=0.0,
-        assessment=(
-            JudgeAssessment.model_validate(record.assessment)
-            if record.assessment is not None
-            else None
-        ),
-    )
-
-
-def _more_robust_record(left: Record, right: Record) -> Record:
-    """Return the record preferred by the judge-aware policy."""
-    decision = compare_candidates(
-        _assessment_objective(left), _assessment_objective(right)
-    )
-    if decision.winner == "b":
-        return right
-    return left
 
 
 def _objective_key(
@@ -476,41 +434,6 @@ class Blackboard:
         ceiling = min(record.objective for record in firing) * (1.0 + band)
         within = [record for record in firing if record.objective <= ceiling]
         return max(within, key=lambda record: (len(record.messages), -record.objective))
-
-    def best_robust(self) -> Record | None:
-        """The judge-robust champion within the public-regression band."""
-        public_best = self.best_public()
-        if public_best is None:
-            return None
-        floor = public_best.public * (1.0 - config.JUDGE_PUBLIC_BAND_RATIO)
-        candidates = [
-            record
-            for record in self._records
-            if record.valid
-            and record.fires
-            and record.public >= floor
-            and record.assessment is not None
-            and record.assessment.get("status") == "available"
-        ]
-        if not candidates:
-            return public_best
-        return functools.reduce(_more_robust_record, candidates)
-
-    def mechanism_references(self, k: int) -> list[str]:
-        """Distinct high-public mechanism labels for archive-relative judge context."""
-        labels: list[str] = []
-        for record in sorted(self._records, key=lambda item: item.public, reverse=True):
-            if record.assessment is None:
-                continue
-            assessment = JudgeAssessment.model_validate(record.assessment)
-            if assessment.status != "available" or assessment.mechanism is None:
-                continue
-            for label in assessment.mechanism.mechanism_labels:
-                if label not in labels:
-                    labels.append(label)
-                if len(labels) == k:
-                    return labels
-        return labels
 
     def top_messages(self, mtype: MessageType, k: int) -> list[tuple[str, str, float]]:
         """Best-scoring individual messages of a shape, balanced across victim models.

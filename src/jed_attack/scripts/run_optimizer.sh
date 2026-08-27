@@ -58,17 +58,14 @@ sleep 1
 # island its own worker (optimize_prompts._build_worker_cycles warns if this lane ever
 # falls short of ISLAND_COUNT).
 #
-# JED_JUDGE_MODE=off drops the dylan robustness/mechanism judge entirely (_assess_batch
-# returns all-None, zero HTTP calls to DYLAN_JUDGE_URL). The public-board objective is
-# scored in-process from the gpt_oss/gemma GGUFs and needs no judge, so the optimizer runs
-# standalone on green with the dylan judge fleet down.
+# The public-board objective is scored in-process from the gpt_oss/gemma GGUFs alone --
+# no judge fleet involved.
 tmux new-session -d -s "$SESSION" -c "$REPO" \
   "exec bash -lc 'mkdir -p run/logs; \
     export JED_CAMPAIGN_ROOT=\"$REPO/run\" JED_WANDB=1 \
       JED_ARTIFACT_SCORE=0 \
       JED_TEAM_PROPOSERS=\"codex-gpt55\" \
       JED_PROPOSER_REPLICAS=4 \
-      JED_JUDGE_MODE=off \
       CUDA_DEVICE_ORDER=PCI_BUS_ID \
       LD_LIBRARY_PATH=\"/usr/local/cuda-12.8/lib64:\${LD_LIBRARY_PATH:-}\"; \
     uv run python -m jed_attack.campaign.optimize_prompts 2>&1 \
