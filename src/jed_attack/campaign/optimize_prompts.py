@@ -37,11 +37,9 @@ import logging
 import math
 import os
 import random
-import shutil
 import signal
 import time
 import tomllib
-from datetime import UTC, datetime
 from pathlib import Path
 from statistics import mean
 from typing import Any, Protocol, cast
@@ -57,7 +55,6 @@ from jed_attack.campaign import (
     ablate,
     agentic_proposer,
     archive,
-    artifact_score,
     blackboard,
     codex_proposer,
     config,
@@ -713,14 +710,12 @@ async def worker_loop(
             # row + updates the logging champion regardless of ``reship``; only its
             # artifact write is gated here. The union reship below then supersedes it.
             ship_min_fallback = _ship_min_fallback(board)
-            artifact_reshipped = False
             for submission, score in zip(local_batch, local_scores, strict=True):
-                reshipped = await board.append(
+                await board.append(
                     make_record(submission, score, reasoning, model, island=island),
                     out_dir,
                     reship=ship_min_fallback,
                 )
-                artifact_reshipped = artifact_reshipped or reshipped
 
             # Grow THIS island's archive from the kept batch's scored shapes, un-locked.
             # Safe NOT because the worker owns its island alone (migration in
@@ -743,7 +738,6 @@ async def worker_loop(
             new_global = board.global_champion()
             if new_global is not None and new_global is not prior_global:
                 await board.reship_islands(out_dir)
-                artifact_reshipped = True
                 await _ablate_champion(board, out_dir, worker_id)
 
             objective_best = board.best_objective()
@@ -774,9 +768,6 @@ async def worker_loop(
                     model=provider.model,
                     worker_id=worker_id,
                 ),
-            )
-            await _log_artifact_score_if_needed(
-                artifact_reshipped, out_dir, run, model, worker_id
             )
         except asyncio.CancelledError:
             raise
@@ -812,155 +803,6 @@ async def _score_batch(batch: list[Submission]) -> list[SubmissionScore]:
         One :class:`SubmissionScore` per submission, in order.
     """
     return [await asyncio.to_thread(score_pools, s) for s in batch]
-
-
-async def _score_artifact_metrics(
-    path: Path,
-) -> dict[str, artifact_score.ArtifactMetric]:
-    """Score the current shipped artifact off-thread for exact outer-loop telemetry."""
-    return await asyncio.to_thread(
-        artifact_score.score_artifact_metrics,
-        path,
-        budget_s=config.ARTIFACT_SCORE_BUDGET_S,
-    )
-
-
-_last_artifact_score_at: float = 0.0
-
-
-async def _log_artifact_score_if_needed(
-    reshipped: bool,
-    out_dir: Path,
-    run: _WandbRun | None,
-    model: str,
-    worker: int,
-) -> None:
-    """Log exact artifact metrics on a new-champion reship OR on a timed interval.
-
-    Scoring only on reship starved the telemetry for ~27h during an objective plateau,
-    so it also runs when ``ARTIFACT_SCORE_EVERY_S`` has elapsed. The timestamp is set
-    before the (awaited, GPU-locked) score so concurrent lanes don't double-run it.
-    """
-    if run is None or not config.ARTIFACT_SCORE_ENABLED:
-        return
-    global _last_artifact_score_at
-    now = time.monotonic()
-    interval = config.ARTIFACT_SCORE_EVERY_S
-    due = interval > 0.0 and (now - _last_artifact_score_at) >= interval
-    if not (reshipped or due):
-        return
-    _last_artifact_score_at = now
-    attack_path = out_dir / "attack.py"
-    try:
-        metrics = await _score_artifact_metrics(attack_path)
-    except Exception as exc:
-        _log.warning("artifact scoring failed; continuing", exc_info=True)
-        _log_wandb(
-            run,
-            {
-                "artifact_valid": 0.0,
-                "artifact_error": type(exc).__name__,
-                "model": model,
-                "worker": worker,
-            },
-        )
-        return
-    _log.info(
-        "artifact score: public=%s lb_est=%s sha=%s "
-        "gpt_oss[sel=%s toolcall_fires=%s deputy=%s] "
-        "gemma[sel=%s toolcall_fires=%s deputy=%s]",
-        metrics.get("artifact_public"),
-        metrics.get("artifact_lb_est_public"),
-        metrics.get("artifact_sha256"),
-        metrics.get("artifact_gpt_oss_fill_selected_template"),
-        metrics.get("artifact_gpt_oss_fill_probe_inj_toolcall_fires"),
-        metrics.get("artifact_gpt_oss_fill_deputy_candidate_count"),
-        metrics.get("artifact_gemma_4_fill_selected_template"),
-        metrics.get("artifact_gemma_4_fill_probe_inj_toolcall_fires"),
-        metrics.get("artifact_gemma_4_fill_deputy_candidate_count"),
-    )
-    _record_artifact_champion_if_needed(attack_path, metrics, model, worker)
-    _log_wandb(run, {**metrics, "model": model, "worker": worker})
-
-
-def _record_artifact_champion_if_needed(
-    attack_path: Path,
-    metrics: dict[str, artifact_score.ArtifactMetric],
-    model: str,
-    worker: int,
-) -> None:
-    """Persist a cut when an artifact beats the calibrated leaderboard floor."""
-    lb_est_public = _metric_float(metrics.get("artifact_lb_est_public"))
-    if lb_est_public is None:
-        return
-    previous_best = max(
-        config.ARTIFACT_LB_REFERENCE_PUBLIC,
-        _existing_artifact_champion_score(config.ARTIFACT_CHAMPION_PATH),
-    )
-    if lb_est_public <= previous_best:
-        return
-
-    timestamp = datetime.now(UTC)
-    sha = _metric_str(metrics.get("artifact_sha256")) or "unknown"
-    cut_dir = (
-        config.SUBMISSION_CUTS_DIR
-        / f"{timestamp:%Y%m%d_%H%M%S}_lb_est_{lb_est_public:07.3f}_{sha[:12]}"
-    )
-    cut_dir.mkdir(parents=True, exist_ok=True)
-    cut_attack_path = cut_dir / "attack.py"
-    shutil.copy2(attack_path, cut_attack_path)
-
-    champion: dict[str, object] = {
-        **metrics,
-        "artifact_lb_est_public": lb_est_public,
-        "previous_best_lb_est_public": previous_best,
-        "cut_timestamp_utc": timestamp.isoformat(),
-        "source_attack_path": str(attack_path),
-        "cut_attack_path": str(cut_attack_path),
-        "model": model,
-        "worker": worker,
-    }
-    metadata_path = cut_dir / "metadata.json"
-    metadata_path.write_text(
-        json.dumps(champion, indent=2, sort_keys=True), encoding="utf-8"
-    )
-    config.ARTIFACT_CHAMPION_PATH.parent.mkdir(parents=True, exist_ok=True)
-    config.ARTIFACT_CHAMPION_PATH.write_text(
-        json.dumps(champion, indent=2, sort_keys=True), encoding="utf-8"
-    )
-    _log.info(
-        "new calibrated artifact champion: lb_est=%g previous=%g cut=%s",
-        lb_est_public,
-        previous_best,
-        cut_attack_path,
-    )
-
-
-def _existing_artifact_champion_score(path: Path) -> float:
-    """Return the best persisted calibrated estimate, or zero if absent/invalid."""
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return 0.0
-    if not isinstance(data, dict):
-        return 0.0
-    return _metric_float(data.get("artifact_lb_est_public")) or 0.0
-
-
-def _metric_float(value: object) -> float | None:
-    """Parse numeric artifact metrics without treating booleans as scores."""
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int | float):
-        return float(value)
-    return None
-
-
-def _metric_str(value: object) -> str | None:
-    """Return string metrics only when they are populated."""
-    if isinstance(value, str) and value:
-        return value
-    return None
 
 
 def _generation_retry_delay(provider: providers.Provider, exc: BaseException) -> float:

@@ -63,7 +63,6 @@ sleep 1
 tmux new-session -d -s "$SESSION" -c "$REPO" \
   "exec bash -lc 'mkdir -p run/logs; \
     export JED_CAMPAIGN_ROOT=\"$REPO/run\" JED_WANDB=1 \
-      JED_ARTIFACT_SCORE=0 \
       JED_TEAM_PROPOSERS=\"codex-gpt55\" \
       JED_PROPOSER_REPLICAS=4 \
       CUDA_DEVICE_ORDER=PCI_BUS_ID \

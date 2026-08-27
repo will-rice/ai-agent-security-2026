@@ -37,25 +37,13 @@ MODELS: tuple[str, ...] = ("gpt_oss", "gemma_4")
 MODELS_DIR = Path(os.getenv("JED_MODELS_DIR", str(_REPO_ROOT / "models")))
 MODEL_GPU: dict[str, int] = {"gpt_oss": 0, "gemma_4": 1}
 
-# Exact generated-artifact scoring. The optimizer still uses public raw/sec as its
-# cheap inner-loop objective, but on every new shipped ``build_next/attack.py`` we can
-# run the full SDK evaluator (including live validation/fill) and log leaderboard-like
-# ``artifact_*`` metrics. Disable only when throughput debugging is more important than
-# exact outer-loop telemetry.
-# In-loop artifact scoring is DISABLED during the search (run_optimizer.sh sets
-# JED_ARTIFACT_SCORE=0): it GPU-locks the lane for the full budget and, firing on every
-# champion reship, stalled the search for ~20-100 min at a time — yet it feeds only the
-# wandb lb_est telemetry, not the search objective. Artifact scoring is now a deliberate
-# PRE-SUBMIT check instead: `python -m jed_attack.scripts.score_artifact` runs it once
-# at the full budget.
-ARTIFACT_SCORE_ENABLED = os.getenv("JED_ARTIFACT_SCORE", "1") != "0"
+# Exact generated-artifact scoring (`python -m jed_attack.scripts.score_artifact`): runs
+# the full SDK evaluator (including live validation/fill) against a shipped
+# ``attack.py`` and logs leaderboard-like ``artifact_*`` metrics. A deliberate
+# PRE-SUBMIT check, not part of the search loop (it GPU-locks a resident backend for
+# the full budget, which would stall the optimizer).
 # Full Kaggle-equivalent per-model budget for the pre-submit artifact score.
 ARTIFACT_SCORE_BUDGET_S = float(os.getenv("JED_ARTIFACT_SCORE_BUDGET_S", "9000"))
-# Also re-score the shipped artifact on a timer, not only on a new-champion reship —
-# otherwise the "artifact score" telemetry goes stale for the entire duration of any
-# objective plateau (it silently did for ~27h). A full score is expensive (~1-2h), so
-# default to a long interval; 0 disables the timer (reship-only, the old behavior).
-ARTIFACT_SCORE_EVERY_S = float(os.getenv("JED_ARTIFACT_SCORE_EVERY_S", "21600"))
 
 # Leaderboard calibration for live-fill artifacts. The 2026-07-28 submission
 # ``artifact-public-180 sha-95083d3e t4`` scored 180.0 under local artifact

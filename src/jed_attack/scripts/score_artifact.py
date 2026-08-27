@@ -1,8 +1,8 @@
 """Pre-submit check: score a built ``attack.py`` at the full Kaggle-equivalent budget.
 
-In-loop artifact scoring is disabled during the search (it GPU-locks the lane and
-stalls the optimizer — see ``config.ARTIFACT_SCORE_ENABLED``). Run this deliberately
-before submitting to get the leaderboard-estimate metrics for the shipped artifact.
+The optimizer's search loop never scores the shipped artifact itself (it would
+GPU-lock the lane and stall the search). Run this deliberately before submitting to
+get the leaderboard-estimate metrics for the shipped artifact.
 
 Loads its own resident GGUF backends, so stop the optimizer first (or expect GPU
 contention). Usage::
