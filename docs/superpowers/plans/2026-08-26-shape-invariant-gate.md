@@ -285,7 +285,7 @@ Call `assert_pool_shape(pools[var])` for each EXFIL pool inside `verify_and_filt
 ## Post-plan rollout (coordinator, after the final review)
 
 1. Generate + commit `single_token_hosts.json` (Task 3 Step 2) if not already.
-2. Re-render the 108 champion under the new `host()`, rebuild its cut (`build_urllast_cut` or the reseed path), run `python -m jed_attack.scripts.verify_cut` — expect 100% firing AND the new url-last/single-token gate to pass.
+2. Re-render the **host-last** 108 champion template (forge BEFORE `{u}`, host truly last — the `urlafterend`/reseed shape, NOT `build_urllast_cut`, which emits the inferior forge-AFTER-host shape the new gate correctly rejects) under the new single-token `host()`, assemble the per-model cut, run `python -m jed_attack.scripts.verify_cut` — expect 100% firing AND the new url-last/single-token gate to pass. (Verified pre-merge: the host-last champion template rendered with single-token hosts passes `assert_pool_shape` and `url_suffix_chars`=0.)
 3. Submit the single-token champion as the board A/B vs 108.920 (submit-kernel skill; spends a slot).
 4. Restart the live optimizer (`src/jed_attack/scripts/run_optimizer.sh`) so it picks up the `host()` + `url_suffix_chars` fixes; confirm 4 island workers + shipping.
 5. Repoint the cron; update memory (`run_optimizer.sh` path, the new gate).

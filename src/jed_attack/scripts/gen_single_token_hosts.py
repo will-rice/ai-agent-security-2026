@@ -16,9 +16,9 @@ from pathlib import Path
 from llama_cpp import Llama
 
 from jed_attack.campaign import config
+from jed_attack.harness.models import gguf_target_path
 
 _OUT = Path(config.__file__).parent / "single_token_hosts.json"
-_MODELS = ("models/gpt-oss-20b-Q4_K_M.gguf", "models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf")
 
 
 def main() -> None:
@@ -28,7 +28,14 @@ def main() -> None:
     is byte-reproducible from this generator (and stays excluded from prettier).
     """
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    toks = [Llama(model_path=m, vocab_only=True, verbose=False) for m in _MODELS]
+    toks = [
+        Llama(
+            model_path=str(gguf_target_path(m, config.MODELS_DIR)),
+            vocab_only=True,
+            verbose=False,
+        )
+        for m in config.MODELS
+    ]
     hosts: list[str] = []
     for length in (2, 3):
         for combo in itertools.product(string.ascii_lowercase, repeat=length):
