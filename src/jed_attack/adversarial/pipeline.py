@@ -37,6 +37,7 @@ def search(
     gcg_steps: int = 250,
     ga_rounds: int = 5,
     floor_tokens: float = float("inf"),
+    gcg_optim_len: int = 12,
 ) -> Best | None:
     """Run GCG (gpt only) -> oracle-validate -> GA; return the best firing shape.
 
@@ -47,6 +48,8 @@ def search(
         gcg_steps: GCG optimization steps (gpt_oss only).
         ga_rounds: Number of GA evolution rounds.
         floor_tokens: The champion's token_cost; the result must strictly undercut it.
+        gcg_optim_len: GCG optim_str token length; free on the board (shared cached
+            prefix), so a longer one adds target-forcing capacity for free.
 
     Returns:
         The best firing :class:`Best` if it strictly undercuts ``floor_tokens``, else
@@ -54,7 +57,13 @@ def search(
     """
     seeds: list[str] = []
     if model == "gpt_oss":
-        for cand in run_gcg(base_template, num_steps=gcg_steps):
+        # optim_str lives in the message's shared, prefix-cached region, so its input
+        # tokens are ~free on the board (see oracle.token_cost) -- spend a longer one
+        # for more capacity to force the target without paying for it.
+        optim_init = " ".join(["x"] * gcg_optim_len)
+        for cand in run_gcg(
+            base_template, num_steps=gcg_steps, optim_str_init=optim_init
+        ):
             res = evaluate(cand.message, model)  # oracle is the judge, not GCG loss
             _log.info("GCG candidate fires=%s tokens=%.2f", res.fires, res.token_cost)
             telemetry.log(

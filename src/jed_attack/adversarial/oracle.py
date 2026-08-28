@@ -27,15 +27,20 @@ class OracleResult:
 
 
 def token_cost(input_tokens: int, gen_tokens: int, model: str, fires: bool) -> float:
-    """Total replay-token cost for one candidate: input + gen + ``FIXED_TOKENS[model]``.
+    """Per-candidate board cost for one adversarial candidate: GEN tokens + ``FIXED``.
 
-    MINIMIZE -- a non-firing candidate costs ``+inf`` (never worth banking; matches the
-    campaign-wide objective's firing gate, see
-    :func:`jed_attack.campaign.optimize_prompts._score_total_tokens`).
+    MINIMIZE -- a non-firing candidate costs ``+inf`` (never worth banking).
+
+    The adversarial ``{optim_str}`` lives in the message's SHARED, prefix-cached region
+    (only the trailing host varies per candidate), so its input tokens re-prefill ~once
+    for the whole pool and are ~free on the board -- exactly the cache-aware accounting
+    the campaign objective uses (see ``submission_score._suffix_input_tokens``).
+    Counting ``input_tokens`` here penalized a long-but-free optim_str and made a
+    gen-dropping candidate look worse than the floor even when it wasn't; judge by GEN.
     """
     if not fires:
         return float("inf")
-    return float(input_tokens) + float(gen_tokens) + config.FIXED_TOKENS[model]
+    return float(gen_tokens) + config.FIXED_TOKENS[model]
 
 
 def evaluate(message: str, model: str) -> OracleResult:

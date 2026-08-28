@@ -27,6 +27,13 @@ def main() -> None:
     parser.add_argument("model", choices=("gpt_oss", "gemma_4"))
     parser.add_argument("--gcg-steps", type=int, default=250)
     parser.add_argument("--ga-rounds", type=int, default=5)
+    parser.add_argument(
+        "--optim-len",
+        type=int,
+        default=12,
+        help="GCG optim_str token length; free on the board (shared cached prefix), so"
+        " a longer one gives more capacity to force the target for free",
+    )
     args = parser.parse_args()
 
     floor_message = _CHAMPION[args.model].replace("{optim_str}", "").strip()
@@ -42,6 +49,7 @@ def main() -> None:
             "model": args.model,
             "gcg_steps": args.gcg_steps,
             "ga_rounds": args.ga_rounds,
+            "optim_len": args.optim_len,
             "floor_tokens": floor.token_cost,
         },
     )
@@ -52,6 +60,7 @@ def main() -> None:
             args.gcg_steps,
             args.ga_rounds,
             floor.token_cost,
+            args.optim_len,
         )
         if best is None:
             logging.info(

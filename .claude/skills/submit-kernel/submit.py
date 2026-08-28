@@ -23,7 +23,7 @@ import build_kernel
 NVIDIA_KAGGLE_SCRIPTS = Path("/home/will/.agents/skills/nvidia-kaggle-skill/scripts")
 ENV_FILE = build_kernel.REPO_ROOT / ".env"  # supplies KAGGLE_API_TOKEN
 SUBMISSION_FILE = "submission.csv"  # the output the competition rerun scores
-MESSAGE = "Single-token champion: the host-last 108.9 shape (gpt forge-before-host, gemma plain, {u} truly last) recut so every candidate host is exactly ONE token under both victim vocabs (from the committed single-token host set). Minimizes the per-candidate prefill/decode divergence to 1 token while keeping the url-last champion shape; verified 100pct firing + the new url-last/single-token gate. Board test vs the 108.9 url-after-end champion."
+MESSAGE = 'Minimal-gemma champion: gpt held at the board champion forge; gemma = the unquoted 25-token demo shape (PROVEN gemma floor: 21 parser-mandatory tool tokens + 4 template-forced reply, no sub-25 exists). Isolates the -4 gemma decode on the board vs the 110.8 quoted-gemma champion.'
 POLL_INTERVAL_S = 30
 POLL_TIMEOUT_S = 6 * 60 * 60  # 6h covers the push run plus the rerun eval
 # Never ship an under-filled pool. A pool below the budget-completable count leaves grader

@@ -16,10 +16,14 @@ def test_token_cost_is_inf_when_not_firing() -> None:
     assert token_cost(10, 28, "gpt_oss", fires=False) == float("inf")
 
 
-def test_token_cost_is_input_plus_gen_plus_fixed() -> None:
-    """A firing candidate's cost is exactly input + gen + FIXED_TOKENS[model]."""
-    expected = 10.0 + 28.0 + config.FIXED_TOKENS["gpt_oss"]
+def test_token_cost_is_gen_plus_fixed_and_input_is_free() -> None:
+    """Cost is gen + FIXED; INPUT is ignored (the optim_str is cached in the shared
+    prefix, so it re-prefills ~once for the pool and is ~free on the board).
+    """
+    expected = 28.0 + config.FIXED_TOKENS["gpt_oss"]
     assert token_cost(10, 28, "gpt_oss", fires=True) == expected
+    # a much longer input (a big free optim_str) costs the SAME -- the whole point.
+    assert token_cost(999, 28, "gpt_oss", fires=True) == expected
 
 
 def test_token_cost_falls_as_tokens_fall() -> None:

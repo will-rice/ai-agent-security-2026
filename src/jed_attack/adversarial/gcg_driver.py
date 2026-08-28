@@ -54,6 +54,7 @@ def run_gcg(
     num_steps: int = 250,
     search_width: int = 256,
     optim_str_init: str = "x x x x x x x x x x x x",
+    use_gguf: bool = False,
 ) -> list[GcgCandidate]:
     """Gradient-search ``{optim_str}`` so gpt-oss emits :data:`FIRING_TARGET`.
 
@@ -70,9 +71,24 @@ def run_gcg(
     """
     message = assemble_message(base_message_template)
     tok = AutoTokenizer.from_pretrained(_MODEL_ID)
-    model = AutoModelForCausalLM.from_pretrained(
-        _MODEL_ID, torch_dtype="auto", device_map=f"cuda:{main_gpu}"
-    )
+    if use_gguf:
+        # Path B: load the grader's OWN Q4_K_M GGUF, dequantized to bf16, so GCG
+        # optimizes on the SAME quantization grid llama.cpp runs -- closing most of the
+        # MXFP4->Q4_K_M transfer gap that made the MXFP4 run's suffix not transfer.
+        from jed_attack.campaign import config as _cfg
+        from jed_attack.harness.models import gguf_target_path
+
+        gguf = gguf_target_path("gpt_oss", _cfg.MODELS_DIR)
+        model = AutoModelForCausalLM.from_pretrained(
+            str(gguf.parent),
+            gguf_file=gguf.name,
+            torch_dtype=torch.bfloat16,
+            device_map=f"cuda:{main_gpu}",
+        )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            _MODEL_ID, torch_dtype="auto", device_map=f"cuda:{main_gpu}"
+        )
     cfg = GCGConfig(
         num_steps=num_steps,
         search_width=search_width,
