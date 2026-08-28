@@ -85,7 +85,7 @@ def run_gcg(
         # optimizes on the SAME quantization grid llama.cpp runs -- closing most of the
         # MXFP4->Q4_K_M transfer gap that made the MXFP4 run's suffix not transfer.
         from jed_attack.campaign import config as _cfg
-        from jed_attack.harness import gguf_transformers_patch
+        from jed_attack.harness import gguf_expert_inject, gguf_transformers_patch
         from jed_attack.harness.models import gguf_target_path
 
         gguf_transformers_patch.install()  # fix transformers gpt-oss GGUF
@@ -96,6 +96,10 @@ def run_gcg(
             torch_dtype=torch.bfloat16,
             device_map=f"cuda:{main_gpu}",
         )
+        # transformers leaves MoE experts + attention sinks randomly initialised for
+        # this GGUF (its GptOssTensorProcessor never matches the expert tensor names);
+        # inject the real MXFP4-dequantised weights so the model is faithful.
+        gguf_expert_inject.inject_experts(model, gguf)
     else:
         model = AutoModelForCausalLM.from_pretrained(
             _MODEL_ID, torch_dtype="auto", device_map=f"cuda:{main_gpu}"
