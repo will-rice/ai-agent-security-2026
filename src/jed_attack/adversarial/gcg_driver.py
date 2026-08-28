@@ -85,8 +85,10 @@ def run_gcg(
         # optimizes on the SAME quantization grid llama.cpp runs -- closing most of the
         # MXFP4->Q4_K_M transfer gap that made the MXFP4 run's suffix not transfer.
         from jed_attack.campaign import config as _cfg
+        from jed_attack.harness import gguf_transformers_patch
         from jed_attack.harness.models import gguf_target_path
 
+        gguf_transformers_patch.install()  # fix transformers gpt-oss GGUF
         gguf = gguf_target_path("gpt_oss", _cfg.MODELS_DIR)
         model = AutoModelForCausalLM.from_pretrained(
             str(gguf.parent),
