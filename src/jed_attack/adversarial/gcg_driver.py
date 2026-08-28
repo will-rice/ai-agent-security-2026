@@ -6,7 +6,7 @@ GCG loss is a proxy for "emits the target"; firing is decided by the oracle, nev
 
 import logging
 from dataclasses import dataclass
-from typing import cast
+from typing import Any, cast
 
 import nanogcg
 import torch
@@ -19,6 +19,7 @@ from jed_attack.adversarial import telemetry
 _log = logging.getLogger(__name__)
 
 _MODEL_ID = "openai/gpt-oss-20b"
+_GEN_LOG_EVERY = 25  # oracle-probe the best optim_str this often -> log GEN to wandb
 # The PARSER-MINIMAL firing tool call: NO ` <|constrain|>json` guard (verified fires at
 # 22 tokens by calling the grader parser directly -- the header only needs to contain
 # `to=functions.http.post`). This is the prize GCG drives toward; the oracle (real
@@ -103,20 +104,36 @@ def run_gcg(
         optim_str_init=optim_str_init,
         buffer_size=buffer_size,  # keep best-k + revert bad moves: escapes plateaus
         topk=topk,  # wider gradient top-k per position
-        seed=seed,  # vary across restarts to seed different basins
+        seed=cast(int, seed),  # None ok at runtime; vary across restarts
         use_prefix_cache=False,  # REQUIRED on transformers 5.x
         allow_non_ascii=True,  # let control tokens into the search
         verbosity="WARNING",
     )
     _log.info("running nanoGCG: steps=%d search_width=%d", num_steps, search_width)
-    # Live per-step loss to wandb: nanoGCG exposes no callback, so hook
-    # AttackBuffer.log_buffer (invoked once per step) to stream the best-so-far loss
-    # DURING the run, instead of dumping the whole curve only after it returns.
+    # Live per-step loss to wandb, plus the REAL signal every _GEN_LOG_EVERY steps:
+    # decode the current best optim_str, replay it on the GGUF oracle, and log its GEN
+    # tokens (loss is only a proxy; gen<floor firing is what wins). nanoGCG has no
+    # callback, so hook AttackBuffer.log_buffer (invoked once per step).
+    from jed_attack.adversarial.oracle import evaluate
+
     original_log_buffer = AttackBuffer.log_buffer
+    step = [0]
 
     def hooked_log_buffer(self: AttackBuffer, tokenizer: object) -> object:
-        """Log the per-step best-so-far loss, then defer to the original."""
+        """Log per-step loss; every _GEN_LOG_EVERY steps also log the oracle GEN."""
+        step[0] += 1
         telemetry.log({"gcg/loss": self.get_lowest_loss()})
+        if step[0] % _GEN_LOG_EVERY == 0:
+            try:
+                best = cast(Any, tokenizer).decode(
+                    self.get_best_ids().squeeze().tolist()
+                )
+                res = evaluate(message.replace("{optim_str}", best), "gpt_oss")
+                telemetry.log(
+                    {"gcg/gen_tokens": res.gen_tokens, "gcg/fires": float(res.fires)}
+                )
+            except Exception:  # oracle hiccup must not stop the search
+                _log.warning("gen-token probe failed", exc_info=True)
         return original_log_buffer(self, tokenizer)
 
     AttackBuffer.log_buffer = hooked_log_buffer
