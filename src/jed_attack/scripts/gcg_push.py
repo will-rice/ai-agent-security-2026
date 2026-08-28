@@ -40,7 +40,7 @@ OPTIM_SEED = (
 # Path B: run GCG on the grader's dequantized Q4_K_M GGUF (bf16), not the MXFP4 HF copy
 # MXFP4 loss craters but does NOT transfer (GGUF greedy stays 28); optimize the
 # SAME weights llama.cpp serves. Needs ~40GB on the load GPU.
-USE_GGUF = False
+USE_GGUF = True
 RESTARTS = 1
 STEPS = 800
 SEARCH_WIDTH = 512
