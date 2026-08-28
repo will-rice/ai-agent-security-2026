@@ -55,6 +55,9 @@ def run_gcg(
     search_width: int = 256,
     optim_str_init: str = "x x x x x x x x x x x x",
     use_gguf: bool = False,
+    buffer_size: int = 0,
+    topk: int = 256,
+    seed: int | None = None,
 ) -> list[GcgCandidate]:
     """Gradient-search ``{optim_str}`` so gpt-oss emits :data:`FIRING_TARGET`.
 
@@ -64,6 +67,11 @@ def run_gcg(
         num_steps: Number of GCG optimization steps.
         search_width: Number of candidate token swaps evaluated per step.
         optim_str_init: Initial value for the optimized string.
+        use_gguf: Load the grader's dequantized Q4_K_M GGUF instead of the MXFP4 HF
+            copy (closes the quantization transfer gap).
+        buffer_size: nanoGCG candidate buffer size (keep best-k, revert bad moves).
+        topk: Per-position gradient top-k for candidate proposal.
+        seed: RNG seed; vary across restarts to seed different search basins.
 
     Returns:
         A single-element list holding the best candidate (nanoGCG tracks only the
@@ -93,6 +101,9 @@ def run_gcg(
         num_steps=num_steps,
         search_width=search_width,
         optim_str_init=optim_str_init,
+        buffer_size=buffer_size,  # keep best-k + revert bad moves: escapes plateaus
+        topk=topk,  # wider gradient top-k per position
+        seed=seed,  # vary across restarts to seed different basins
         use_prefix_cache=False,  # REQUIRED on transformers 5.x
         allow_non_ascii=True,  # let control tokens into the search
         verbosity="WARNING",
