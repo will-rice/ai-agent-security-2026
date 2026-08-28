@@ -13,7 +13,14 @@ from jed_attack.adversarial import telemetry
 from jed_attack.adversarial.gcg_driver import run_gcg
 from jed_attack.adversarial.oracle import evaluate
 
-logging.basicConfig(level=logging.INFO, format="%(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("run/logs/gcg_push_self.log", mode="w"),
+    ],
+)
 _log = logging.getLogger("gcgpush")
 
 TEMPLATE = (
