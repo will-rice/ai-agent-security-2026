@@ -52,7 +52,7 @@ def _mission(prompt: str, out_file: Path) -> str:
         "You are the optimizer's proposer, but AGENTIC: you have this repo (read any "
         "source) and a GPU oracle you MUST use to verify before you answer.\n"
         "ORACLE: `bash scratchpad/oracle_probe.sh <gemma_4|gpt_oss> <msg_file>` "
-        'returns JSON {fire (>=1 = success), gen (total tokens -- MINIMIZE), turns, '
+        "returns JSON {fire (>=1 = success), gen (total tokens -- MINIMIZE), turns, "
         "per_turn}. Write a candidate's exact message to a temp file and probe it. "
         "Batch-probe many by writing scratchpad/reply_ideas.json ([{name,message}]) "
         "and running scratchpad/reply_probe_batch.py.\n"
@@ -106,7 +106,10 @@ async def propose_batch_codex_agentic(
     worker_env["JED_GPU_GEMMA"] = "0"
     _log.info(
         "agentic proposer (%s): session %s on GPU %d -> watch %s",
-        provider.model, sid, gpu, log_file,
+        provider.model,
+        sid,
+        gpu,
+        log_file,
     )
     # YOLO: --dangerously-bypass-approvals-and-sandbox so codex's oracle probes reach
     # the GPU (the workspace-write bubblewrap sandbox blocks /dev/nvidia*). We are the
@@ -114,15 +117,22 @@ async def propose_batch_codex_agentic(
     # the session is observable, not buffered invisibly in a pipe.
     with log_file.open("wb") as logf:
         proc = await asyncio.create_subprocess_exec(
-            "codex", "exec", "--dangerously-bypass-approvals-and-sandbox",
-            "--skip-git-repo-check", "-c", f'model="{provider.model}"', "-",
+            "codex",
+            "exec",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--skip-git-repo-check",
+            "-c",
+            f'model="{provider.model}"',
+            "-",
             stdin=asyncio.subprocess.PIPE,
             stdout=logf,
             stderr=asyncio.subprocess.STDOUT,
             cwd=str(_REPO),
             env=worker_env,
         )
-        assert proc.stdin is not None  # stdin=PIPE above guarantees a writer  # noqa: S101
+        assert (
+            proc.stdin is not None
+        )  # stdin=PIPE above guarantees a writer  # noqa: S101
         proc.stdin.write(mission.encode("utf-8"))
         await proc.stdin.drain()
         proc.stdin.close()
@@ -138,12 +148,12 @@ async def propose_batch_codex_agentic(
             return [], [], ""
     if not out_file.exists():
         tail = (
-            log_file.read_text("utf-8", "replace")[-2000:]
-            if log_file.exists() else ""
+            log_file.read_text("utf-8", "replace")[-2000:] if log_file.exists() else ""
         )
         _log.info(
             "agentic proposer (%s): session %s wrote no batch file",
-            provider.model, sid,
+            provider.model,
+            sid,
         )
         return [], [], tail
     try:
