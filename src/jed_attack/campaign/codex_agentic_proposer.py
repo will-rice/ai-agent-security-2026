@@ -109,11 +109,13 @@ async def propose_batch_codex_agentic(
     )
     # YOLO: --dangerously-bypass-approvals-and-sandbox so codex's scorer probes reach
     # the GPU (the workspace-write bubblewrap sandbox blocks /dev/nvidia*). We are the
-    # external sandbox (our own box, our own repo). Stream stdout+stderr to log_file so
-    # the session is observable, not buffered invisibly in a pipe.
+    # external sandbox (our own box, our own repo). --search (top-level, before `exec`)
+    # enables the native web_search tool so the agent can research external technique,
+    # not just the repo. Stream stdout+stderr to log_file so the session is observable.
     with log_file.open("wb") as logf:
         proc = await asyncio.create_subprocess_exec(
             "codex",
+            "--search",
             "exec",
             "--dangerously-bypass-approvals-and-sandbox",
             "--skip-git-repo-check",
