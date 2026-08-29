@@ -1814,6 +1814,12 @@ async def _propose_batch_oneshot(
     chat-completions streamer. Agentic lanes are dispatched separately (round 0 only),
     so this helper never sees them. Returns ``(submissions, diagnoses, reasoning)``.
     """
+    if provider.kind == providers.CODEX_AGENTIC_KIND:
+        from jed_attack.campaign import codex_agentic_proposer
+
+        return await codex_agentic_proposer.propose_batch_codex_agentic(
+            prompt, provider, idle_timeout_s
+        )
     if provider.kind == providers.CODEX_RESPONSES_KIND:
         return await codex_proposer.propose_batch_codex(
             prompt, provider, idle_timeout_s

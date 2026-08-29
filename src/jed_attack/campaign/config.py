@@ -35,7 +35,13 @@ MODELS: tuple[str, ...] = ("gpt_oss", "gemma_4")
 # the T4 gateway exactly -- see docs/.../in-process-scoring-design.md and memory
 # jed-t4-replay-time-budget.
 MODELS_DIR = Path(os.getenv("JED_MODELS_DIR", str(_REPO_ROOT / "models")))
-MODEL_GPU: dict[str, int] = {"gpt_oss": 0, "gemma_4": 1}
+# Which physical GPU each victim loads on. Env-configurable so the optimizer can pin its
+# resident scoring models to one GPU (e.g. both on the 48GB Ada) and free the other GPU
+# for the agentic proposer's per-worker oracle probes (see codex_agentic_proposer).
+MODEL_GPU: dict[str, int] = {
+    "gpt_oss": int(os.getenv("JED_GPU_GPT", "0")),
+    "gemma_4": int(os.getenv("JED_GPU_GEMMA", "1")),
+}
 
 # Exact generated-artifact scoring (`python -m jed_attack.scripts.score_artifact`): runs
 # the full SDK evaluator (including live validation/fill) against a shipped

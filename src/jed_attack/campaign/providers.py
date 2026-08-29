@@ -49,6 +49,10 @@ _CHEAP = CHEAPEST_BASE_URL
 # The codex ChatGPT-account Responses lane's kind (dispatched in optimize_prompts to
 # jed_attack.campaign.codex_proposer, which can't be imported here -- it imports this).
 CODEX_RESPONSES_KIND = "codex_responses"
+# The AGENTIC codex lane's kind: codex `exec` with repo + oracle tool access, dispatched
+# to jed_attack.campaign.codex_agentic_proposer. It READS source and PROBES the victim
+# before authoring, so its batch is research-informed and pre-verified, not blind.
+CODEX_AGENTIC_KIND = "codex_agentic"
 
 PROVIDERS: dict[str, Provider] = {
     # Local served target models: free, no provider block, but the weakest proposer.
@@ -107,6 +111,8 @@ PROVIDERS: dict[str, Provider] = {
     # See codex_proposer.
     "codex-gpt55": Provider(CODEX_RESPONSES_KIND, model="gpt-5.5"),
     "codex-gpt54": Provider(CODEX_RESPONSES_KIND, model="gpt-5.4"),
+    # Agentic lane: codex exec (gpt-5.5) with repo + oracle tool access.
+    "codex-agentic": Provider(CODEX_AGENTIC_KIND, model="gpt-5.5"),
 }
 
 

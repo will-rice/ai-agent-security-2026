@@ -66,8 +66,9 @@ sleep 1
 tmux new-session -d -s "$SESSION" -c "$REPO" \
   "exec bash -lc 'mkdir -p run/logs; \
     export JED_CAMPAIGN_ROOT=\"$REPO/run\" JED_WANDB=1 \
-      JED_TEAM_PROPOSERS=\"codex-gpt55\" \
+      JED_TEAM_PROPOSERS=\"codex-agentic\" \
       JED_PROPOSER_REPLICAS=2 JED_ISLANDS=2 \
+      JED_GPU_GPT=1 JED_GPU_GEMMA=1 \
       CUDA_DEVICE_ORDER=PCI_BUS_ID \
       LD_LIBRARY_PATH=\"/usr/local/cuda-12.8/lib64:\${LD_LIBRARY_PATH:-}\"; \
     uv run python -m jed_attack.campaign.optimize_prompts 2>&1 \

@@ -17,8 +17,10 @@ def test_token_cost_is_inf_when_not_firing() -> None:
 
 
 def test_token_cost_is_gen_plus_fixed_and_input_is_free() -> None:
-    """Cost is gen + FIXED; INPUT is ignored (the optim_str is cached in the shared
-    prefix, so it re-prefills ~once for the pool and is ~free on the board).
+    """Cost is gen + FIXED; INPUT is ignored.
+
+    The optim_str is cached in the shared prefix, so it re-prefills ~once for the pool
+    and is ~free on the board.
     """
     expected = 28.0 + config.FIXED_TOKENS["gpt_oss"]
     assert token_cost(10, 28, "gpt_oss", fires=True) == expected
