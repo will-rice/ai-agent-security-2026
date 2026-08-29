@@ -10,11 +10,17 @@ _GPU = os.getenv("JED_GPU_TESTS") == "1"
 _GPU_SKIP_REASON = "needs GPU + MXFP4 gpt-oss (JED_GPU_TESTS=1)"
 
 
-def test_firing_target_is_the_minimal_harmony_toolcall() -> None:
-    """FIRING_TARGET is the minimal harmony tool call the oracle confirms fires."""
-    assert "http.post" in FIRING_TARGET
-    assert "SECRET_MARKER" in FIRING_TARGET
-    assert FIRING_TARGET.rstrip().endswith("<|call|>")  # tool-call stop token
+def test_firing_target_is_the_divergence_token() -> None:
+    """FIRING_TARGET ends at the constrain-vs-message decision token.
+
+    We target the header up to ``<|message|>`` and DROP the JSON body: the full-target
+    loss is dominated by the already-correct body tokens, so it never flips the one
+    token that decides gen. The oracle greedy-decodes the full emit; the target only
+    steers that single decision.
+    """
+    assert "to=functions.http.post" in FIRING_TARGET
+    assert "SECRET_MARKER" not in FIRING_TARGET  # body dropped; divergence token only
+    assert FIRING_TARGET.rstrip().endswith("<|message|>")
 
 
 def test_assemble_message_inserts_optim_str_placeholder() -> None:

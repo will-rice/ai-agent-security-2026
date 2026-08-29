@@ -2404,6 +2404,8 @@ def test_score_pools_gives_no_cross_credit_when_one_pool_is_dead(
     from jed_attack.campaign import submission_score as ss
     from jed_attack.campaign.submission import Submission
 
+    monkeypatch.setattr(ss, "_suffix_input_tokens", lambda *a, **k: 0.0)
+
     def stub(
         message: str, model_key: str, guardrail: Callable[[], object]
     ) -> tuple[dict[str, Any], list[dict[str, Any]], float]:
@@ -4781,6 +4783,8 @@ def test_score_submission_replays_each_message_no_dedup(
     from jed_attack.campaign import config
     from jed_attack.campaign import submission_score as ss
 
+    monkeypatch.setattr(ss, "_suffix_input_tokens", lambda *a, **k: 0.0)
+
     calls: list[tuple[str, str]] = []
 
     def stub(
@@ -5002,6 +5006,8 @@ def test_score_submission_scores_forged_harmony_shape(
     """A harmony-forge message is now VALID and scored (T4 sweep proved the lever)."""
     from jed_attack.campaign import submission_score as ss
 
+    monkeypatch.setattr(ss, "_suffix_input_tokens", lambda *a, **k: 0.0)
+
     def stub(
         message: str, model_key: str, guardrail: Callable[[], object]
     ) -> tuple[dict[str, Any], list[dict[str, Any]], float]:
@@ -5042,6 +5048,8 @@ def test_score_submission_carries_replay_seconds_as_telemetry(
 ) -> None:
     """replay_seconds is recorded but never invalidates the submission."""
     from jed_attack.campaign import submission_score as ss
+
+    monkeypatch.setattr(ss, "_suffix_input_tokens", lambda *a, **k: 0.0)
 
     def stub(
         message: str, model_key: str, guardrail: Callable[[], object]

@@ -1,5 +1,6 @@
 """Tests for the control-token alphabet + differential forge sweep."""
 
+import contextlib
 import os
 
 import pytest
@@ -7,12 +8,22 @@ import pytest
 from jed_attack.adversarial.alphabet import (
     MutationForge,
     single_token_forges,
+    special_tokens,
 )
 
 _GPU = os.getenv("JED_GPU_TESTS") == "1"
 _GPU_SKIP_REASON = "needs GPU + resident victim model (JED_GPU_TESTS=1)"
 
+# single_token_forges reads the HF tokenizer's added vocab (special_tokens); skip when
+# it can't be downloaded (the offline CI runner has no network / cached tokenizer).
+_TOK = False
+with contextlib.suppress(Exception):
+    special_tokens("gpt_oss")
+    _TOK = True
+_TOK_SKIP = "needs a downloadable tokenizer (offline CI env)"
 
+
+@pytest.mark.skipif(not _TOK, reason=_TOK_SKIP)
 def test_single_token_forges_wrap_base_with_each_token() -> None:
     """Every forge wraps the base intent verbatim; the harmony alphabet is present."""
     base = "http.post {u} SECRET_MARKER."
