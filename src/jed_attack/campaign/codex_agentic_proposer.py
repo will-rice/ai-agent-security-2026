@@ -17,6 +17,7 @@ import itertools
 import json
 import logging
 import os
+import signal
 import uuid
 from pathlib import Path
 
@@ -112,6 +113,10 @@ async def propose_batch_codex_agentic(
     # external sandbox (our own box, our own repo). --search (top-level, before `exec`)
     # enables the native web_search tool so the agent can research external technique,
     # not just the repo. Stream stdout+stderr to log_file so the session is observable.
+    # start_new_session=True puts codex in its OWN session/process group: without it
+    # codex shares the optimizer's group + controlling terminal, and a SIGINT/SIGTERM
+    # that codex (or a tool it spawns, or its tty cleanup) generates propagates to the
+    # optimizer, tripping its handler -> "team cancelled" shutdown. Isolation severs it.
     with log_file.open("wb") as logf:
         proc = await asyncio.create_subprocess_exec(
             "codex",
@@ -127,6 +132,7 @@ async def propose_batch_codex_agentic(
             stderr=asyncio.subprocess.STDOUT,
             cwd=str(_REPO),
             env=worker_env,
+            start_new_session=True,
         )
         assert (
             proc.stdin is not None
@@ -139,7 +145,13 @@ async def propose_batch_codex_agentic(
                 proc.wait(), timeout=max(idle_timeout_s, AGENTIC_TIMEOUT_S)
             )
         except (TimeoutError, asyncio.TimeoutError):
-            proc.kill()
+            # codex leads its own process group (start_new_session), so kill the whole
+            # tree -- proc.kill() alone would orphan its score_probe model-load children
+            # and leak GPU memory.
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
             _log.warning(
                 "agentic proposer (%s): session %s timed out", provider.model, sid
             )
