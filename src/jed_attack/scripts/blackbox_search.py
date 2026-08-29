@@ -43,8 +43,8 @@ def main() -> None:
     )
     filled = prompt.replace(blackbox.PLACEHOLDER, args.seed_optim)
     logging.info("faithful prompt: %d chars; tail=%r", len(prompt), prompt[-120:])
-    lp_con = blackbox.target_logprob(filled, blackbox.TARGET_CONSTRAIN, llm)
-    lp_no = blackbox.target_logprob(filled, blackbox.TARGET_NO_CONSTRAIN, llm)
+    lp_con = blackbox.target_logprob(filled, blackbox.TARGET_DIVERGENCE_CON, llm)
+    lp_no = blackbox.target_logprob(filled, blackbox.TARGET_DIVERGENCE, llm)
     logging.info(
         "SCORER SANITY: constrain=%.3f no_constrain=%.3f (no_constrain must be LOWER)",
         lp_con,
