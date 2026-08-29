@@ -41,7 +41,12 @@ _NUM_GPUS = int(os.getenv("JED_NUM_GPUS", "2"))
 _GPU_CYCLE = itertools.cycle(range(_NUM_GPUS))
 _REPO = Path(__file__).resolve().parents[3]  # src/jed_attack/campaign/ -> repo root
 _OUT_DIR = _REPO / "run" / "agentic_batches"
-_MISSION_PATH = _REPO / "scratchpad" / "codex_agentic_mission.md"
+# The committed, versioned mission prompts (domain facts + instruments the agent gets on
+# top of the optimizer prompt). Which one loads is selected by JED_MISSION_PATH so the
+# same code runs both the exfil optimizer (default) and the deputy hedge -- no
+# scratchpad file-swap. Default is the packaged exfil mission next to this module.
+_MISSIONS_DIR = Path(__file__).resolve().parent / "missions"
+_MISSION_PATH = Path(os.getenv("JED_MISSION_PATH", str(_MISSIONS_DIR / "exfil.md")))
 
 
 def _mission(prompt: str, out_file: Path) -> str:

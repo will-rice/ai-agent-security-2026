@@ -71,8 +71,11 @@ tmux new-session -d -s "$SESSION" -c "$REPO" \
       JED_GPU_GPT=1 JED_GPU_GEMMA=1 \
       CUDA_DEVICE_ORDER=PCI_BUS_ID \
       LD_LIBRARY_PATH=\"/usr/local/cuda-12.8/lib64:\${LD_LIBRARY_PATH:-}\"; \
-    uv run python -m jed_attack.campaign.optimize_prompts 2>&1 \
-      | tee -a run/logs/optimizer.log'"
+    while true; do \
+      uv run python -m jed_attack.campaign.optimize_prompts 2>&1 | tee -a run/logs/optimizer.log; \
+      echo \"[wrapper] optimizer exited \$? at \$(date -u +%H:%M) -- resuming from run board in 15s\" | tee -a run/logs/optimizer.log; \
+      sleep 15; \
+    done'"
 
 echo "optimizer worker launched in tmux session '$SESSION'"
 echo "  watch:   tmux attach -t $SESSION   (detach: Ctrl-b d)"
