@@ -23,11 +23,11 @@ from pathlib import Path
 # --- Fixed submission config (constants, not flags, so they can't be misset) ---
 KAGGLE_USER = "willrice"
 COMPETITION = "ai-agent-security-multi-step-tool-attacks"
-TITLE = "JED minimal gemma champion"  # unique slug per submission so the push never collides with a still-evaluating kernel (see _slugify)
+TITLE = "JED variance 3"  # unique slug per submission so the push never collides with a still-evaluating kernel (see _slugify)
 MACHINE_SHAPE = "NvidiaTeslaT4"  # this competition rejects P100 (400 FAILED_PRECONDITION)
 ENABLE_GPU = True
 ENABLE_INTERNET = False  # rerun env is offline; attack imports only aicomp_sdk + stdlib
-ATTACK_PY = "run/submission_cuts/gemma_fewshot_lean/attack.py"  # gpt=champion forge + gemma=minimal 25-tok proven-floor demo
+ATTACK_PY = "run/submission_cuts/gemma_fewshot_lean/attack.py"  # the 115.9 best cut, re-submitted for variance
 OUT_ROOT = "run/submission_kernel"  # kernel folders are written under here, one per slug
 # -------------------------------------------------------------------------------
 

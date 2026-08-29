@@ -23,7 +23,7 @@ import build_kernel
 NVIDIA_KAGGLE_SCRIPTS = Path("/home/will/.agents/skills/nvidia-kaggle-skill/scripts")
 ENV_FILE = build_kernel.REPO_ROOT / ".env"  # supplies KAGGLE_API_TOKEN
 SUBMISSION_FILE = "submission.csv"  # the output the competition rerun scores
-MESSAGE = 'Minimal-gemma champion: gpt held at the board champion forge; gemma = the unquoted 25-token demo shape (PROVEN gemma floor: 21 parser-mandatory tool tokens + 4 template-forced reply, no sub-25 exists). Isolates the -4 gemma decode on the board vs the 110.8 quoted-gemma champion.'
+MESSAGE = 'Variance re-submit of the best cut (gemma_fewshot_lean, prev 115.9): identical gated shape, resubmitted to characterize per-run scoring noise (same cut scored 115.9 vs 107.5).'
 POLL_INTERVAL_S = 30
 POLL_TIMEOUT_S = 6 * 60 * 60  # 6h covers the push run plus the rerun eval
 # Never ship an under-filled pool. A pool below the budget-completable count leaves grader
