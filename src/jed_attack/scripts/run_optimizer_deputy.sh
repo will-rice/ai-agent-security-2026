@@ -18,7 +18,7 @@ tmux new-session -d -s "$SESSION" -c "$REPO" \
   "exec bash -lc 'mkdir -p run_deputy/logs; \
     export JED_CAMPAIGN_ROOT=\"$REPO/run_deputy\" JED_WANDB=1 \
       JED_MISSION_PATH=\"$REPO/src/jed_attack/campaign/missions/deputy.md\" \
-      JED_PROPOSER_REPLICAS=2 JED_ISLANDS=2 JED_NUM_GPUS=2 \
+      JED_PROPOSER_REPLICAS=1 JED_ISLANDS=1 JED_NUM_GPUS=2 \
       JED_GPU_GPT=0 JED_GPU_GEMMA=1 \
       CUDA_DEVICE_ORDER=PCI_BUS_ID \
       JED_MODELS_DIR=\"$REPO/models\" \
