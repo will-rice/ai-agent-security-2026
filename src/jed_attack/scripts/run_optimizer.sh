@@ -45,14 +45,11 @@ sleep 1
 # Env is set inside the pane's login shell: a new-session inherits the tmux
 # SERVER's stale environment (the server is already up for gemma/gptoss), not
 # this script's, so exporting here would not reach the worker.
-# Sole proposer lane: codex-gpt55 (gpt-5.5 via the codex ChatGPT-account Responses
-# backend, authed by the OAuth token in ~/.codex/auth.json, no env key). Measured
-# 2026-08-12 as the steadiest author (obj 33-47, zero drops) while the CheapestInference
-# lanes had grown a ~30% ship-invariant drop rate and a wide low-side spread under the
-# schema-as-source-of-truth prompt, so mimo/minimax are dropped. CAVEAT: gpt-5.5 spends
-# the PERSONAL ChatGPT Pro quota per generation and the token expires (~days, then needs
-# `codex login`); as the SOLE lane it burns quota faster and a lapsed token stalls the
-# whole roster -- watch for 401s / quota 429s.
+# Sole proposer: codex-agentic (gpt-5.5 via the codex CLI, agentic -- reads source and
+# probes the victim on the GPU scorer before authoring). Keyless, authed by the OAuth
+# token in ~/.codex/auth.json (no env key). CAVEAT: gpt-5.5 spends the PERSONAL ChatGPT
+# Pro quota per generation and the token expires (~days, then needs `codex login`); a
+# lapsed token stalls every worker -- watch for 401s / quota 429s.
 # WORKERS=ISLANDS=2 (not 4): scoring is the bottleneck and SERIALIZES on the per-model
 # llama.cpp lock (submission_score._model_locks) -- score_pools already replays both
 # victims concurrently across the two GPUs for ONE candidate, so a single worker
@@ -66,7 +63,6 @@ sleep 1
 tmux new-session -d -s "$SESSION" -c "$REPO" \
   "exec bash -lc 'mkdir -p run/logs; \
     export JED_CAMPAIGN_ROOT=\"$REPO/run\" JED_WANDB=1 \
-      JED_TEAM_PROPOSERS=\"codex-agentic\" \
       JED_PROPOSER_REPLICAS=2 JED_ISLANDS=2 \
       JED_GPU_GPT=1 JED_GPU_GEMMA=1 \
       CUDA_DEVICE_ORDER=PCI_BUS_ID \

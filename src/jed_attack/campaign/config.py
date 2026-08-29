@@ -85,48 +85,6 @@ ARTIFACT_LB_REFERENCE_LOCAL_S_PER_CANDIDATE: dict[str, float] = {
 }
 
 
-def team_proposers_from_env(
-    value: str | None, *, default: tuple[str, ...]
-) -> tuple[str, ...]:
-    """Parse a comma-separated proposer roster override.
-
-    Args:
-        value: Raw ``JED_TEAM_PROPOSERS`` value, or ``None``.
-        default: The fallback roster when no usable override is set.
-
-    Returns:
-        The stripped proposer names, preserving order, or ``default``.
-    """
-    if value is None:
-        return default
-    proposers = tuple(name.strip() for name in value.split(",") if name.strip())
-    return proposers or default
-
-
-# The proposer models the async team rotates. optimize_team GROUPS these by API key into
-# one lane per key (one worker per lane). CheapestInference is also single-flight at
-# the model-window level, so the worker must not advance to another CI model after a
-# CI concurrency/stream failure; it retries the same model after a cooldown instead.
-#
-# NOTE: when JED_TEAM_PROPOSERS is UNSET the CI lane tracks the full live /v1/models
-# response (this default is only the offline fallback); the roster is restricted to a
-# subset ONLY by pinning JED_TEAM_PROPOSERS, which intersects the pin with live models.
-# src/jed_attack/scripts/run_optimizer.sh sets that pin to the measured-clean roster
-# below. A per-model drop-rate measurement (batch_dropped telemetry) dropped three CI
-# lanes: glm-5.2 (~80%
-# refusals), deepseek-v4-flash (~50% malformed batches), and kimi-k2.7 (authored batches
-# as text, not submit_batch tool calls). mimo-v2.5 and minimax-m3 both authored clean
-# batches (0% drop), so they are the roster.
-_TEAM_PROPOSERS_ENV = os.getenv("JED_TEAM_PROPOSERS")
-TEAM_PROPOSERS_FROM_ENV = _TEAM_PROPOSERS_ENV is not None
-TEAM_PROPOSERS: tuple[str, ...] = team_proposers_from_env(
-    _TEAM_PROPOSERS_ENV,
-    default=(
-        "cheapest-mimo",
-        "cheapest-minimax",
-    ),
-)
-
 # Max tool hops per interaction. MUST match the scored gateway's replay depth
 # (aicomp_sdk DEFAULT_MAX_TOOL_HOPS = AttackRunConfig.max_tool_hops = 8), or
 # multi-post candidates (one message → up to 8 SECRET_MARKER posts) are
@@ -173,15 +131,14 @@ MAX_SHIP_MESSAGES = 300
 
 # MIN_SHIP_MESSAGES (1): the schema's minItems on EACH pool -- effectively NO count
 # floor, just "non-empty" (the mean objective needs both per-model columns populated).
-# Set to 1 ON PURPOSE: the cheapest proposers only SOFT-follow response_format (probed
-# 2026-08-11: they miss the nesting or fall short in a pool -- no grammar-constrained
-# decoding there), so a real count floor is a wasteful DROP-FILTER: it rejects
-# submissions the model can't reliably hit in BOTH pools rather than lifting the count.
-# The prompt drives production ("push each pool toward its maxItems cap" -> ~100/pool).
-# A HARD-enforcing lane (vLLM guided response_format, e.g. Qwen on dylan) WOULD honor a
-# real floor -- raise this only when such a lane dominates. Env-overridable
-# (JED_MIN_SHIP_MESSAGES); must be <= MAX_SHIP_MESSAGES. Field(min_length) binds at
-# import (tests/conftest.py sets it).
+# Set to 1 ON PURPOSE: the agentic proposer's structured-output authoring only SOFT-
+# follows response_format (probed 2026-08-11 against earlier chat-completions lanes:
+# missed nesting or fell short in a pool -- no grammar-constrained decoding there), so a
+# real count floor is a wasteful DROP-FILTER: it rejects submissions the model can't
+# reliably hit in BOTH pools rather than lifting the count. The prompt drives production
+# ("push each pool toward its maxItems cap" -> ~100/pool). Raise this only once the lane
+# reliably hits a higher floor. Env-overridable (JED_MIN_SHIP_MESSAGES); must be <=
+# MAX_SHIP_MESSAGES. Field(min_length) binds at import (tests/conftest.py sets it).
 MIN_SHIP_MESSAGES = int(os.getenv("JED_MIN_SHIP_MESSAGES", "1"))
 if not 0 < MIN_SHIP_MESSAGES <= MAX_SHIP_MESSAGES:
     raise ValueError("MIN_SHIP_MESSAGES must be in 1..MAX_SHIP_MESSAGES")

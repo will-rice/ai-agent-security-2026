@@ -1,19 +1,15 @@
-"""Agentic proposer lane: codex `exec` with tool access, not a blind LLM call.
+"""Agentic proposer lane: codex `exec` with tool access -- the SOLE proposer.
 
-The Responses lane (:mod:`jed_attack.campaign.codex_proposer`) is a pure model call --
-it cannot read source or run the victim, so it proposes blind. This lane runs the codex
-CLI agentically (``codex exec``) with the repo and the real scorer
-(``src/jed_attack/scripts/score_probe.sh``) as instruments: it READS the SDK source to
-understand the victims, GRADES constructions through the real scorer (the same
-objective the optimizer minimizes), keeps only firing/lean ones, and only then emits
-the batch. Same ``(submissions, diagnoses, reasoning)``
-contract as the blind lane, so :func:`optimize_prompts._propose_batch_oneshot` treats it
-as a drop-in -- the FunSearch islands, scoring, and archive downstream are unchanged.
+This lane runs the codex CLI agentically (``codex exec``) with the repo and the real
+scorer (``src/jed_attack/scripts/score_probe.sh``) as instruments: it READS the SDK
+source to understand the victims, GRADES constructions through the real scorer (the same
+objective the optimizer minimizes), keeps only firing/lean ones, and only then emits the
+batch. :func:`optimize_prompts._propose_batch_oneshot` calls it directly -- the
+FunSearch islands, scoring, and archive downstream are unchanged.
 
 Output handoff: the agent writes the final ``SubmissionBatch`` JSON to a unique file
 (the agent's stdout carries its reasoning/tool-calls, not the answer); we validate that
-file with ``SubmissionBatch.model_validate_json`` so the same ship-invariants run and an
-invalid batch drops WHOLE, exactly like the streaming lanes.
+file with ``SubmissionBatch.model_validate_json`` so an invalid batch drops WHOLE.
 """
 
 import asyncio

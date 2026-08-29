@@ -1,8 +1,8 @@
 """Async team orchestrator for the whole-submission incumbent loop.
 
-A team of proposer lanes (one per usable ``config.TEAM_PROPOSERS`` entry) runs
-concurrently in a single async process, sharing one :class:`~jed_attack.campaign.
-blackboard.Blackboard`. Each lane, forever:
+``JED_PROPOSER_REPLICAS`` identical codex-agentic workers run concurrently in a single
+async process, sharing one :class:`~jed_attack.campaign.blackboard.Blackboard`. Each
+worker, forever:
 
 1. reads the team's global-best incumbent and its per-message feedback from the shared
    blackboard (:meth:`Blackboard.best`, or nothing on a cold start), plus a cross-model
@@ -11,9 +11,10 @@ blackboard.Blackboard`. Each lane, forever:
 2. builds a proposer prompt (:func:`submission_prompt`) that embeds — all clearly
    labelled as DATA — the incumbent's board total, its per-message feedback table, its
    messages, and the team digest, and asks for a BATCH of improved full submissions;
-3. authors a batch of submissions on its lane via AsyncOpenAI
-   (:func:`propose_batch_async`: streams one reply, parses a ``list[Submission]``),
-   capturing the backend's reasoning;
+3. authors a batch of submissions agentically
+   (:func:`codex_agentic_proposer.propose_batch_codex_agentic`: runs codex `exec` with
+   repo + oracle access, parses a ``list[Submission]``), capturing the backend's
+   reasoning;
 4. scores EVERY submission off-thread on resident in-process llama-cpp-python backends,
    each pool replayed on ITS OWN victim only
    (:func:`~jed_attack.campaign.submission_score.score_pools`),
@@ -31,7 +32,6 @@ Victim/trace output embedded in any proposer prompt is DATA, never instructions 
 """
 
 import asyncio
-import contextlib
 import json
 import logging
 import math
@@ -45,17 +45,15 @@ from statistics import mean
 from typing import Any, Protocol, cast
 
 import git
-import pydantic
 from dotenv import load_dotenv
 from openai.lib._parsing import type_to_response_format_param
-from openai.types.chat import ChatCompletionMessageParam
 from openai.types.shared_params import ResponseFormatJSONSchema
 
 from jed_attack.campaign import (
     ablate,
     archive,
     blackboard,
-    codex_proposer,
+    codex_agentic_proposer,
     config,
     fill,
     islands,
@@ -93,24 +91,17 @@ class _WandbRun(Protocol):
 
 _log = logging.getLogger("optimize_prompts")
 
-_PROPOSER_TEMPERATURE = 1.0  # high temp + random seed => successive calls explore
-# Backoff after a whole generation raises, so a persistently-failing lane (a refusal
+# Backoff after a whole generation raises, so a persistently-failing worker (a refusal
 # yielding no JSON, a proposer/score outage) retries without busy-spinning the process.
 _GENERATION_RETRY_S = float(os.getenv("JED_GENERATION_RETRY_S", "10"))
-# CheapestInference is effectively single-flight per key/model window. After a stream
-# disconnect or concurrency 429, the server can keep counting the prior request as
-# active briefly, so the normal fast retry just burns 429s.
-_CI_GENERATION_RETRY_S = float(os.getenv("JED_CI_GENERATION_RETRY_S", "60"))
 _PREDICATE_METRIC_SUFFIX = {
     "CONFUSED_DEPUTY": "confused_deputy",
     "DESTRUCTIVE_WRITE": "destructive_write",
     "EXFILTRATION": "exfiltration",
     "UNTRUSTED_TO_ACTION": "untrusted_to_action",
 }
-# Streaming proposer IDLE timeout: max seconds to wait for the NEXT streamed token
-# before abandoning the call as stalled. NOT a wall-clock cap — an actively streaming
-# model is never cut off however long it takes, so a slow thinking model finishes; only
-# a genuine stall (no token for this long) rotates the lane to its next model.
+# Proposer timeout floor passed to the agentic lane (codex_agentic_proposer takes the
+# max of this and its own AGENTIC_TIMEOUT_S wall-clock cap).
 PROPOSER_IDLE_TIMEOUT_S = float(os.getenv("JED_PROPOSER_IDLE_TIMEOUT_S", "300"))
 
 # Archive parents recombined/mutated into each generation (EvoPrompt "1-2 elites"). A
@@ -569,54 +560,47 @@ async def worker_loop(
     timeout_s: float,
     run: _WandbRun | None = None,
 ) -> None:
-    """One lane (one API key): rotate models, author a BATCH, score all, refine, ship.
+    """One worker: author a BATCH agentically, score all, refine, ship.
 
-    A lane owns a single API key and rotates through its models one generation at a
-    time, so only one request per key is ever in flight — a shared-key concurrency cap
-    (cheapestinference's per-key limit, confirmed empirically) can never be hit, while
-    every model still gets exercised. Each generation reads the shared blackboard's
-    objective champion + team digest, authors round 0 as a BATCH of submissions on the
-    generation's model, scores EVERY submission off-thread, then hill-climbs the batch:
-    up to ``config.REFINE_MAX_ROUNDS`` further re-authorings against every submission
-    in the current batch and its feedback, re-scoring every submission and keeping the
-    batch with the LOWER mean total-token objective, stopping at the first round that
-    doesn't strictly improve (or on a refine round's own failure). Every submission of
-    the kept batch is appended to the flat-file blackboard as its own candidate; a new
-    objective best reships ``attack.py`` via the per-model router
-    (:func:`~jed_attack.campaign.assemble.build_permodel`). A refine
-    round's failure is caught and the best-so-far batch is still shipped; an
-    empty batch skips the generation; a whole generation's failure (proposer blip,
-    refusal yielding no JSON, score outage) is caught and backed off so the lane keeps
-    running
-    (and advances to the next model); a cancellation propagates so the team shuts down
-    cleanly.
+    Each generation reads the shared blackboard's objective champion + team digest,
+    authors round 0 as a BATCH of submissions on the codex-agentic lane, scores EVERY
+    submission off-thread, then hill-climbs the batch: up to
+    ``config.REFINE_MAX_ROUNDS`` further re-authorings against every submission in the
+    current batch and its feedback, re-scoring every submission and keeping the batch
+    with the LOWER mean total-token objective, stopping at the first round that doesn't
+    strictly improve (or on a refine round's own failure). Every submission of the kept
+    batch is appended to the flat-file blackboard as its own candidate; a new objective
+    best reships ``attack.py`` via the per-model router
+    (:func:`~jed_attack.campaign.assemble.build_permodel`). A refine round's failure is
+    caught and the best-so-far batch is still shipped; an empty batch skips the
+    generation; a whole generation's failure (proposer blip, refusal yielding no JSON,
+    score outage) is caught and backed off so the worker keeps running; a cancellation
+    propagates so the team shuts down cleanly.
 
     Args:
-        worker_id: This lane's index (its metric/record tag).
-        providers_cycle: The lane's models, rotated one per generation.
+        worker_id: This worker's index (its metric/record tag).
+        providers_cycle: The worker's proposer(s) (always ``[codex-agentic]``).
         board: The shared team blackboard.
         out_dir: Where the curation ship (or a new-best append) writes ``attack.py``.
         timeout_s: Per-generation proposer timeout.
         run: The shared W&B run to log to, or ``None``.
     """
-    # This lane evolves exactly ONE island (FunSearch islands): its own lineage, that it
-    # alone writes. Worker 0 -> the novelty island 0; every other worker -> a quality
+    # This worker evolves exactly ONE island (FunSearch islands): its own lineage, that
+    # it alone writes. Worker 0 -> the novelty island 0; every other worker -> a quality
     # island. Several workers on the same island index share it (single-writer still
-    # holds per running lane because only one request per key is in flight).
+    # holds per running worker).
     island = worker_id % config.ISLAND_COUNT
     # Cold-start: seed a quality island from the incumbent's shapes so some island
     # frontier is non-empty (and a strong artifact ships) on the first run, instead of
     # only the MIN fallback shipping until the loop rediscovers those shapes. One-time +
-    # lock-guarded, so warm islands and every lane after the first skip it.
+    # lock-guarded, so warm islands and every worker after the first skip it.
     await _seed_islands(board, out_dir)
     gen = 0
-    # Per-model [valid, dropped] tally so a lane's log/wandb shows which models author a
-    # parseable batch and which drop out (validation failure or refusal). Drop-prone
-    # models are pruned from config.TEAM_PROPOSERS once the rate is clear.
+    # [valid, dropped] tally so a worker's log/wandb shows how often the agentic lane
+    # authors a parseable batch vs. drops out (validation failure or timeout).
     outcomes: dict[str, list[int]] = {}
     while True:
         provider = providers_cycle[gen % len(providers_cycle)]
-        advance_provider = True
         try:
             team = {t: board.top_messages(t, k=_TEAM_TOP_K) for t in MessageType}
             reasoning_digest = board.recent_reasoning(k=_TEAM_REASONING_K)
@@ -648,7 +632,7 @@ async def worker_loop(
                 prompt, provider, timeout_s
             )
             tally = outcomes.setdefault(model, [0, 0])
-            if not batch:  # validation failure / refusal -> drop WHOLE, rotate model
+            if not batch:  # validation failure / timeout -> drop WHOLE, next generation
                 tally[1] += 1
                 _log.warning(
                     "worker %d (%s): batch dropped; model tally valid=%d dropped=%d",
@@ -761,19 +745,14 @@ async def worker_loop(
             )
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
-            retry_s = _generation_retry_delay(provider, exc)
-            advance_provider = _advance_provider_after_error(provider, exc)
+        except Exception:
             _log.exception(
-                "worker %d generation failed; retrying in %.1fs%s",
+                "worker %d generation failed; retrying in %.1fs",
                 worker_id,
-                retry_s,
-                "" if advance_provider else " on same provider",
+                _GENERATION_RETRY_S,
             )
-            await asyncio.sleep(retry_s)
-        if advance_provider:
-            # Rotate to the next model in the lane; normal failures skip ahead too.
-            gen += 1
+            await asyncio.sleep(_GENERATION_RETRY_S)
+        gen += 1
 
 
 async def _score_batch(batch: list[Submission]) -> list[SubmissionScore]:
@@ -793,47 +772,6 @@ async def _score_batch(batch: list[Submission]) -> list[SubmissionScore]:
         One :class:`SubmissionScore` per submission, in order.
     """
     return [await asyncio.to_thread(score_pools, s) for s in batch]
-
-
-def _generation_retry_delay(provider: providers.Provider, exc: BaseException) -> float:
-    """Return the retry delay for a failed proposer generation.
-
-    Args:
-        provider: The proposer that failed.
-        exc: The raised generation exception.
-
-    Returns:
-        A longer cooldown for CheapestInference single-flight failures; otherwise the
-        normal generation retry delay.
-    """
-    if provider.key_env == "CHEAPEST_API_KEY" and _is_ci_single_flight_error(exc):
-        return _CI_GENERATION_RETRY_S
-    return _GENERATION_RETRY_S
-
-
-def _is_ci_single_flight_error(exc: BaseException) -> bool:
-    """Recognize CI errors caused by its single active request/model window."""
-    text = f"{type(exc).__name__}: {exc}".lower()
-    return (
-        "concurrency limit" in text
-        or "incomplete chunked read" in text
-        or "remoteprotocolerror" in text
-    )
-
-
-def _advance_provider_after_error(
-    provider: providers.Provider, exc: BaseException
-) -> bool:
-    """Return whether a failed lane should rotate to its next provider.
-
-    CI single-flight failures usually mean the current model request is still clearing
-    server-side. Switching to another CI model under the same key immediately replays
-    the collision, so retry the same provider after cooldown. Other failures still
-    rotate so unsupported or bad models do not wedge the lane forever.
-    """
-    return not (
-        provider.key_env == "CHEAPEST_API_KEY" and _is_ci_single_flight_error(exc)
-    )
 
 
 async def _refine_batch(
@@ -918,98 +856,17 @@ async def _refine_batch(
     return batch, scores, reasoning, refine_rounds
 
 
-def _resolve_cheapest_cycle(
-    configured: list[providers.Provider],
-) -> list[providers.Provider]:
-    """Return the CheapestInference cycle for this optimizer launch.
-
-    The active subscription/window is the provider's /v1/models response, so the
-    default CI lane should track that response. If an operator explicitly pins
-    ``JED_TEAM_PROPOSERS``, keep only pinned models that are currently listed. If the
-    lookup itself fails, fall back to the configured static cycle so the optimizer can
-    still start in offline/provider-outage cases.
-    """
-    try:
-        live_model_ids = providers.fetch_cheapest_model_ids()
-    except RuntimeError:
-        _log.warning(
-            "CheapestInference model lookup failed; using static fallback cycle",
-            exc_info=True,
-        )
-        return configured
-
-    if config.TEAM_PROPOSERS_FROM_ENV:
-        configured_ids = {provider.model for provider in configured}
-        selected_ids = tuple(
-            model_id for model_id in live_model_ids if model_id in configured_ids
-        )
-        missing_ids = sorted(configured_ids.difference(live_model_ids))
-        if missing_ids:
-            _log.warning(
-                "configured CheapestInference models unavailable: %s",
-                missing_ids,
-            )
-        if not selected_ids:
-            _log.warning(
-                "no configured CheapestInference models are available; skipping CI lane"
-            )
-            return []
-        live_model_ids = selected_ids
-
-    return [
-        providers.cheapest_provider_for_model(model_id) for model_id in live_model_ids
-    ]
-
-
-def _build_worker_cycles(
-    lanes: dict[str, list[providers.Provider]], replicas: int
-) -> list[list[providers.Provider]]:
-    """Fan each lane's key into ``replicas`` concurrent same-key workers.
-
-    ``JED_PROPOSER_REPLICAS>1`` fans a lane's key into N concurrent same-key workers
-    that author + score in parallel against the shared blackboard. The cheapest lane
-    stays single (its per-key cap 429s parallel requests -- confirmed); other keys
-    (codex/z.ai) tolerate concurrency, so N replicas = N-way parallel authoring on one
-    key. Watch the log for 429s and back off ``JED_PROPOSER_REPLICAS`` if a key caps
-    low.
-
-    Islands need one worker each (:func:`worker_loop` pins
-    ``island = worker_id % config.ISLAND_COUNT`` over every cycle, across all lanes),
-    so this warns when the total worker count is short of ``config.ISLAND_COUNT`` --
-    islands beyond that count never get a proposing worker.
-
-    Args:
-        lanes: Provider cycles keyed by ``key_env`` (``""`` for keyless lanes such as
-            the codex Responses backend).
-        replicas: Same-key worker fan-out applied to every lane except the cheapest
-            one.
-
-    Returns:
-        One provider cycle per worker.
-    """
-    cycles = [
-        cycle
-        for key_env, cycle in lanes.items()
-        for _ in range(1 if key_env == providers.CHEAPEST_KEY_ENV else replicas)
-    ]
-    if len(cycles) < config.ISLAND_COUNT:
-        _log.warning(
-            "%d worker(s) across all lanes, fewer than ISLAND_COUNT=%d; islands "
-            "beyond the worker count never evolve -- raise JED_PROPOSER_REPLICAS "
-            "or lower JED_ISLANDS",
-            len(cycles),
-            config.ISLAND_COUNT,
-        )
-    return cycles
-
-
 async def optimize_team(
     board: blackboard.Blackboard,
     out_dir: Path,
     timeout_s: float,
     run: _WandbRun | None = None,
 ) -> None:
-    """Launch one worker per usable ``TEAM_PROPOSERS`` lane and run them concurrently.
+    """Launch ``JED_PROPOSER_REPLICAS`` codex-agentic workers and run them concurrently.
+
+    The proposer is a single keyless lane (codex-agentic), so the team is just N
+    identical workers fanned out across ``config.ISLAND_COUNT`` islands
+    (:func:`worker_loop` pins ``island = worker_id % config.ISLAND_COUNT``).
 
     Args:
         board: The shared team blackboard.
@@ -1017,43 +874,20 @@ async def optimize_team(
         timeout_s: Per-generation proposer timeout.
         run: The shared W&B run to log to, or ``None``.
     """
-    # One lane per API KEY: the lane's worker rotates through that key's models one
-    # generation at a time, so only one request per key is ever in flight. The
-    # cheapestinference concurrency cap is per-key (confirmed empirically — N pinned CI
-    # workers 429'd each other), so its models collapse into a single rotating lane;
-    # z.ai is its own key, hence a second independent lane that also rotates its models.
-    lanes: dict[str, list[providers.Provider]] = {}
-    cheapest_configured: list[providers.Provider] = []
-    for name in config.TEAM_PROPOSERS:
-        provider = providers.get(name)
-        if provider.key_env and provider.key_env not in os.environ:
-            _log.warning("lane %s skipped: %s unset", name, provider.key_env)
-            continue
-        if providers.is_cheapest(provider):
-            lanes.setdefault(provider.key_env, [])
-            cheapest_configured.append(provider)
-            continue
-        lanes.setdefault(provider.key_env, []).append(provider)
-    if cheapest_configured:
-        lanes[providers.CHEAPEST_KEY_ENV] = _resolve_cheapest_cycle(cheapest_configured)
-    lanes = {key_env: cycle for key_env, cycle in lanes.items() if cycle}
-    if not lanes:  # no keys set -> fail loudly instead of a silent successful no-op
-        raise SystemExit(
-            "no usable proposer lanes; set CHEAPEST_API_KEY and/or ZAI_API_KEY"
-        )
+    provider = providers.get("codex-agentic")
     replicas = max(1, int(os.getenv("JED_PROPOSER_REPLICAS", "1")))
-    cycles = _build_worker_cycles(lanes, replicas)
-    _log.info(
-        "team: %d workers over %d keys (replicas=%d) -> %s",
-        len(cycles),
-        len(lanes),
-        replicas,
-        [[p.model for p in cycle] for cycle in cycles],
-    )
+    if replicas < config.ISLAND_COUNT:
+        _log.warning(
+            "%d worker(s), fewer than ISLAND_COUNT=%d; islands beyond the worker "
+            "count never evolve -- raise JED_PROPOSER_REPLICAS or lower JED_ISLANDS",
+            replicas,
+            config.ISLAND_COUNT,
+        )
+    _log.info("team: %d codex-agentic workers", replicas)
     await asyncio.gather(
         *(
-            worker_loop(i, cycle, board, out_dir, timeout_s, run)
-            for i, cycle in enumerate(cycles)
+            worker_loop(i, [provider], board, out_dir, timeout_s, run)
+            for i in range(replicas)
         )
     )
 
@@ -1085,11 +919,10 @@ def _submission_response_format() -> ResponseFormatJSONSchema:
     ``model_json_schema`` renders that enum as a ``$ref`` carrying a sibling
     ``description``, which OpenAI strict structured outputs reject (a ``$ref`` may not
     have siblings), so constrained decoding would silently not enforce
-    ``exfil``/``deputy``. We feed this param to the low-level streaming ``.create``
-    rather than the SDK's ``.stream(response_format=Model)`` helper (see
-    :func:`propose_batch_async` for why). Built fresh each call so it reflects the live
-    model; the ``{{SCHEMA}}`` the proposer reads and the ``response_format`` that
-    constrains it come from this ONE object and cannot drift.
+    ``exfil``/``deputy``. :func:`_submission_schema_json` embeds this schema as the
+    proposer prompt's ``{{SCHEMA}}`` block -- the agentic lane's only consumer, so it
+    and any future strict-decoding caller read the SAME schema and cannot drift. Built
+    fresh each call so it reflects the live model.
     """
     return cast(
         "ResponseFormatJSONSchema", type_to_response_format_param(SubmissionBatch)
@@ -1807,114 +1640,13 @@ def _batch_predicate_counts(scores: list[SubmissionScore]) -> dict[str, int]:
 async def _propose_batch_oneshot(
     prompt: str, provider: providers.Provider, idle_timeout_s: float
 ) -> tuple[list[Submission], list[str], str]:
-    """Route a one-shot batch proposal to the right backend and return its result.
+    """Author a batch via the agentic codex lane, the SOLE proposer.
 
-    The codex ChatGPT-account lane speaks the Responses API, so it has its own proposer
-    (:func:`codex_proposer.propose_batch_codex`); every other lane uses the
-    chat-completions streamer. Agentic lanes are dispatched separately (round 0 only),
-    so this helper never sees them. Returns ``(submissions, diagnoses, reasoning)``.
+    Returns ``(submissions, diagnoses, reasoning)``.
     """
-    if provider.kind == providers.CODEX_AGENTIC_KIND:
-        from jed_attack.campaign import codex_agentic_proposer
-
-        return await codex_agentic_proposer.propose_batch_codex_agentic(
-            prompt, provider, idle_timeout_s
-        )
-    if provider.kind == providers.CODEX_RESPONSES_KIND:
-        return await codex_proposer.propose_batch_codex(
-            prompt, provider, idle_timeout_s
-        )
-    return await propose_batch_async(prompt, provider, idle_timeout_s)
-
-
-async def propose_batch_async(
-    prompt: str, provider: providers.Provider, idle_timeout_s: float
-) -> tuple[list[Submission], list[str], str]:
-    """Author a batch of submissions on ``provider`` by STREAMING a structured call.
-
-    ``response_format`` is the strict param the SDK derives from
-    :class:`SubmissionBatch` (:func:`_submission_response_format`), so the model is the
-    single source for both constrained decoding and validation. We use the low-level
-    ``.create(stream=True)`` and accumulate RAW chunks, parsing the whole content once
-    at the end with ``SubmissionBatch.model_validate_json`` -- deliberately NOT the
-    SDK's ``.stream(response_format=Model)`` helper. That helper works on clean replies,
-    but it parses INCREMENTALLY as chunks arrive; this proposer emits harmony forge
-    tokens (``<|end|><|start|>...``) inside JSON strings, reasoning, and the odd prose
-    refusal, and a mid-stream partial parse can choke on that, whereas a single final
-    parse of the complete content cannot. The model's ``@model_validator`` ship
-    invariants (typed shape, ``hops`` == target count) run in that final parse, so a
-    batch with ANY invalid message fails to parse and is dropped WHOLE -- never a
-    partial batch -- and we classify the drop cause ourselves (refusal vs invariant).
-
-    Streaming swaps the wall-clock timeout for an IDLE one (:func:`asyncio.timeout`,
-    rescheduled per streamed token), so the call is abandoned only on a stall, never
-    mid-stream, and a slow-but-active thinking model always finishes. The completion
-    budget is ``provider.max_tokens``. A CI concurrency 429 is logged distinctly, then
-    re-raised.
-
-    Args:
-        prompt: The batch-proposer prompt text.
-        provider: The proposer lane to call.
-        idle_timeout_s: Max seconds to wait for the next streamed token before aborting.
-
-    Returns:
-        The parsed submissions (empty if the reply carried no valid batch), the batch's
-        per-parent ``diagnoses`` reflections (empty on a drop or a cold start), and the
-        backend's reasoning text (empty if none).
-    """
-    client = providers.async_openai_client(provider)
-    messages: list[ChatCompletionMessageParam] = [
-        {"role": "system", "content": _load_prompts()["system"]},
-        {"role": "user", "content": prompt},
-    ]
-    try:
-        stream = await client.chat.completions.create(
-            model=provider.model,
-            messages=messages,
-            max_completion_tokens=provider.max_tokens,
-            temperature=_PROPOSER_TEMPERATURE,
-            response_format=_submission_response_format(),
-            stream=True,
-        )
-    except Exception as exc:
-        if "concurrency limit" in str(exc).lower():
-            _log.warning("CI concurrency 429 on %s (experiment signal)", provider.model)
-        raise
-    content: list[str] = []
-    reasoning: list[str] = []
-    loop = asyncio.get_running_loop()
-    try:
-        async with asyncio.timeout(idle_timeout_s) as timer:
-            async for chunk in stream:
-                timer.reschedule(loop.time() + idle_timeout_s)  # token -> reset idle
-                if not chunk.choices:
-                    continue
-                delta = chunk.choices[0].delta
-                if delta.content:
-                    content.append(delta.content)
-                piece = getattr(delta, "reasoning_content", None) or getattr(
-                    delta, "reasoning", None
-                )
-                if piece:
-                    reasoning.append(piece)
-    finally:
-        with contextlib.suppress(Exception):
-            await stream.close()
-    try:
-        batch = SubmissionBatch.model_validate_json("".join(content))
-    except pydantic.ValidationError as exc:
-        # Drop the WHOLE batch, never a salvaged subset. model_validate_json wraps a
-        # non-JSON reply as a json_invalid error, so split the two drop causes for
-        # per-model triage: a refusal / prose reply (the model won't do the task) vs a
-        # JSON batch whose messages break the ship invariants (bad type, hops != count).
-        not_json = any(e.get("type") == "json_invalid" for e in exc.errors())
-        reason = "reply was not JSON (refusal/prose)" if not_json else "ship-invariants"
-        _log.info("proposed batch dropped (%s): %s", provider.model, reason)
-        return [], [], "".join(reasoning)
-    _log.info(
-        "proposed batch (%s): %d submissions", provider.model, len(batch.submissions)
+    return await codex_agentic_proposer.propose_batch_codex_agentic(
+        prompt, provider, idle_timeout_s
     )
-    return batch.submissions, batch.diagnoses, "".join(reasoning)
 
 
 def _log_wandb(run: _WandbRun | None, metrics: dict[str, Any]) -> None:

@@ -17,7 +17,6 @@ tmux kill-session -t "$SESSION" 2>/dev/null || true
 tmux new-session -d -s "$SESSION" -c "$REPO" \
   "exec bash -lc 'mkdir -p run_deputy/logs; \
     export JED_CAMPAIGN_ROOT=\"$REPO/run_deputy\" JED_WANDB=1 \
-      JED_TEAM_PROPOSERS=\"codex-agentic\" \
       JED_MISSION_PATH=\"$REPO/src/jed_attack/campaign/missions/deputy.md\" \
       JED_PROPOSER_REPLICAS=2 JED_ISLANDS=2 JED_NUM_GPUS=2 \
       JED_GPU_GPT=0 JED_GPU_GEMMA=1 \

@@ -147,48 +147,39 @@ def test_candidate_chains_renders_pool_url_scheme_uniquely_per_candidate() -> No
         assert "s://" in text and "{u}" not in text
 
 
-def test_codex_responses_lane_registered_and_routed(
+def test_codex_agentic_lane_registered_and_routed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The codex lane is registered, its schema builds, and it routes correctly."""
+    """The codex-agentic lane is registered, its schema builds, and it routes."""
     import asyncio
 
     from openai.lib._pydantic import to_strict_json_schema
 
-    from jed_attack.campaign import codex_proposer
+    from jed_attack.campaign import codex_agentic_proposer
     from jed_attack.campaign.submission import Submission, SubmissionBatch
 
-    for name in ("codex-gpt55", "codex-gpt54"):
-        assert providers.get(name).kind == providers.CODEX_RESPONSES_KIND
+    assert providers.get("codex-agentic").kind == providers.CODEX_AGENTIC_KIND
     # The lane depends on SubmissionBatch converting to a strict schema — guard it.
     assert to_strict_json_schema(SubmissionBatch)["type"] == "object"
 
     calls: list[str] = []
 
-    async def fake_codex(
+    async def fake_agentic(
         prompt: str, provider: providers.Provider, idle_timeout_s: float
     ) -> tuple[list[Submission], list[str], str]:
-        calls.append("codex")
+        calls.append("agentic")
         return [], [], ""
 
-    async def fake_chat(
-        prompt: str, provider: providers.Provider, idle_timeout_s: float
-    ) -> tuple[list[Submission], list[str], str]:
-        calls.append("chat")
-        return [], [], ""
-
-    monkeypatch.setattr(codex_proposer, "propose_batch_codex", fake_codex)
-    monkeypatch.setattr(optimize_prompts, "propose_batch_async", fake_chat)
-
-    asyncio.run(
-        optimize_prompts._propose_batch_oneshot("p", providers.get("codex-gpt55"), 1.0)
+    monkeypatch.setattr(
+        codex_agentic_proposer, "propose_batch_codex_agentic", fake_agentic
     )
+
     asyncio.run(
         optimize_prompts._propose_batch_oneshot(
-            "p", providers.get("cheapest-mimo"), 1.0
+            "p", providers.get("codex-agentic"), 1.0
         )
     )
-    assert calls == ["codex", "chat"]
+    assert calls == ["agentic"]
 
 
 def test_message_rejects_bad_hops_and_inconsistent_target_count() -> None:
@@ -345,119 +336,6 @@ def test_infer_message_type_prefers_url_over_address() -> None:
     )
 
 
-def _chunk(content: object = None, reasoning: object = None) -> SimpleNamespace:
-    """A raw stream chunk carrying a content and/or reasoning delta."""
-    delta = SimpleNamespace(content=content, reasoning_content=reasoning)
-    return SimpleNamespace(choices=[SimpleNamespace(delta=delta)])
-
-
-def _fake_stream_client(
-    monkeypatch: pytest.MonkeyPatch, chunks: list[SimpleNamespace]
-) -> None:
-    """Fake async_openai_client whose create(stream=True) yields ``chunks``.
-
-    propose_batch_async accumulates the raw content and parses it once at the end, so
-    the fake only has to replay the chunk stream -- no incremental parsing.
-    """
-
-    class FakeStream:
-        def __init__(self) -> None:
-            self._i = 0
-
-        def __aiter__(self) -> "FakeStream":
-            return self
-
-        async def __anext__(self) -> SimpleNamespace:
-            if self._i >= len(chunks):
-                raise StopAsyncIteration
-            chunk = chunks[self._i]
-            self._i += 1
-            return chunk
-
-        async def close(self) -> None:
-            return None
-
-    async def create(**_: object) -> FakeStream:
-        return FakeStream()
-
-    class FakeClient:
-        chat = SimpleNamespace(completions=SimpleNamespace(create=create))
-
-    monkeypatch.setattr(providers, "async_openai_client", lambda p: FakeClient())
-
-
-def test_propose_batch_async_streams_and_parses(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Accumulate raw content + reasoning, then parse the full SubmissionBatch."""
-    import asyncio
-
-    json_out = (
-        '{"submissions":[{'
-        '"gpt_oss":[{"type":"exfil","text":"SECRET_MARKER url={u}","hops":1}],'
-        '"gemma_4":[{"type":"exfil","text":"SECRET_MARKER url={u}","hops":1}]}]}'
-    )
-    _fake_stream_client(
-        monkeypatch,
-        [
-            _chunk(reasoning="weighed "),
-            _chunk(reasoning="diversity"),
-            _chunk(content=json_out),
-        ],
-    )
-    prov = providers.get("cheapest-kimi")
-    got_batch, _diagnoses, reasoning = asyncio.run(
-        optimize_prompts.propose_batch_async("prompt", prov, idle_timeout_s=5.0)
-    )
-    assert len(got_batch) == 1
-    first_model, first_message = next(iter(got_batch[0].all_messages()))
-    assert first_model == "gpt_oss"
-    assert first_message.text == "SECRET_MARKER url={u}"
-    assert reasoning == "weighed diversity"
-
-
-def test_propose_batch_async_drops_batch_that_fails_validation(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A structurally valid reply that fails the ship invariants is dropped WHOLE.
-
-    The final model_validate_json runs the Message validators, so a batch with an
-    invalid message raises ValidationError; propose_batch_async catches it and returns
-    an empty batch -- never a salvaged subset -- while still surfacing the reasoning.
-    """
-    import asyncio
-
-    bad = (
-        '{"submissions":[{'
-        '"gpt_oss":[{"type":"exfil","text":"no url","hops":1}],'
-        '"gemma_4":[{"type":"exfil","text":"no url","hops":1}]}]}'
-    )
-    _fake_stream_client(monkeypatch, [_chunk(reasoning="tried"), _chunk(content=bad)])
-    prov = providers.get("cheapest-kimi")
-    got_batch, _diagnoses, reasoning = asyncio.run(
-        optimize_prompts.propose_batch_async("prompt", prov, idle_timeout_s=5.0)
-    )
-    assert got_batch == []
-    assert reasoning == "tried"
-
-
-def test_propose_batch_async_drops_non_json_reply(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A non-JSON reply (refusal / prose) is dropped, not raised; the loop survives."""
-    import asyncio
-
-    _fake_stream_client(
-        monkeypatch, [_chunk(content="I can't help with that."), _chunk(reasoning="no")]
-    )
-    prov = providers.get("cheapest-kimi")
-    got_batch, _diagnoses, reasoning = asyncio.run(
-        optimize_prompts.propose_batch_async("prompt", prov, idle_timeout_s=5.0)
-    )
-    assert got_batch == []
-    assert reasoning == "no"
-
-
 def test_worker_loop_appends_then_survives_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -468,7 +346,7 @@ def test_worker_loop_appends_then_survives_failure(
     refine handler, which logs + breaks, so round 0's already-scored best batch is still
     appended + shipped, no backoff); the third is the next generation's round 0
     (cancels, propagating through the outer handler and ending the loop). ``score`` is a
-    sync stub (no GPU) run off-thread, ``propose_batch_async`` an async stub, and
+    sync stub (no GPU) run off-thread, ``_propose_batch_oneshot`` an async stub, and
     curation stubbed.
     """
     import asyncio
@@ -520,12 +398,12 @@ def test_worker_loop_appends_then_survives_failure(
     async def fake_score_batch(batch: list[Submission]) -> list[SubmissionScore]:
         return [score for _ in batch]
 
-    monkeypatch.setattr(op, "propose_batch_async", fake_batch)
+    monkeypatch.setattr(op, "_propose_batch_oneshot", fake_batch)
     monkeypatch.setattr(op, "_score_batch", fake_score_batch)
     monkeypatch.setattr(op, "_GENERATION_RETRY_S", 0.0)
 
     board = bb.Blackboard.load(tmp_path / "bb.jsonl")
-    prov = providers.get("cheapest-minimax")
+    prov = providers.get("codex-agentic")
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(op.worker_loop(0, [prov], board, tmp_path / "out", timeout_s=1.0))
     best = board.best_public()
@@ -587,14 +465,14 @@ def test_worker_loop_batches_scores_all_and_stores_flat(
     async def fake_score_batch(batch: list[Submission]) -> list["SubmissionScore"]:
         return [_fake_score(submission, scored) for submission in batch]
 
-    monkeypatch.setattr(op, "propose_batch_async", fake_batch)
+    monkeypatch.setattr(op, "_propose_batch_oneshot", fake_batch)
     monkeypatch.setattr(op, "_score_batch", fake_score_batch)
     monkeypatch.setattr(config, "REFINE_MAX_ROUNDS", 0)  # isolate round 0
     monkeypatch.setattr(op, "_GENERATION_RETRY_S", 0.0)
 
     out_dir = tmp_path / "out"
     board = bb.Blackboard.load(tmp_path / "bb.jsonl")
-    prov = providers.get("cheapest-minimax")
+    prov = providers.get("codex-agentic")
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(op.worker_loop(0, [prov], board, out_dir, timeout_s=1.0))
     assert len(scored) == 2  # every submission scored
@@ -671,7 +549,7 @@ def test_worker_loop_grows_pareto_archive(
     async def fake_score_batch(batch: list[Submission]) -> list[SubmissionScore]:
         return [score for _ in batch]
 
-    monkeypatch.setattr(op, "propose_batch_async", fake_batch)
+    monkeypatch.setattr(op, "_propose_batch_oneshot", fake_batch)
     monkeypatch.setattr(op, "_score_batch", fake_score_batch)
     monkeypatch.setattr(config, "REFINE_MAX_ROUNDS", 0)  # isolate round 0
     monkeypatch.setattr(op, "_GENERATION_RETRY_S", 0.0)
@@ -691,7 +569,7 @@ def test_worker_loop_grows_pareto_archive(
 
     monkeypatch.setattr(board, "reship_islands", spy_reship)
 
-    prov = providers.get("cheapest-minimax")
+    prov = providers.get("codex-agentic")
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(op.worker_loop(0, [prov], board, out_dir, timeout_s=1.0))
 
@@ -773,7 +651,7 @@ def test_worker_loop_inserts_only_into_its_island_and_ships_global_best(
     async def no_ablate(board_: bb.Blackboard, out_dir_: Path, worker_id_: int) -> bool:
         return False
 
-    monkeypatch.setattr(op, "propose_batch_async", fake_batch)
+    monkeypatch.setattr(op, "_propose_batch_oneshot", fake_batch)
     monkeypatch.setattr(op, "_score_batch", fake_score_batch)
     monkeypatch.setattr(op, "_ablate_champion", no_ablate)
     monkeypatch.setattr(config, "REFINE_MAX_ROUNDS", 0)
@@ -791,7 +669,7 @@ def test_worker_loop_inserts_only_into_its_island_and_ships_global_best(
 
     monkeypatch.setattr(board, "reship_islands", spy_reship)
 
-    prov = providers.get("cheapest-minimax")
+    prov = providers.get("codex-agentic")
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(op.worker_loop(worker_id, [prov], board, out_dir, timeout_s=1.0))
 
@@ -1175,12 +1053,12 @@ def test_worker_loop_frontier_artifact_survives_a_later_min_best(
     async def fake_score_batch(batch: list[Submission]) -> list[SubmissionScore]:
         return [score_by_text[s.gpt_oss[0].text] for s in batch]
 
-    monkeypatch.setattr(op, "propose_batch_async", fake_batch)
+    monkeypatch.setattr(op, "_propose_batch_oneshot", fake_batch)
     monkeypatch.setattr(op, "_score_batch", fake_score_batch)
 
     out_dir = tmp_path / "out"
     board = bb.Blackboard.load(tmp_path / "bb.jsonl")
-    prov = providers.get("cheapest-minimax")
+    prov = providers.get("codex-agentic")
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(op.worker_loop(0, [prov], board, out_dir, timeout_s=1.0))
 
@@ -1335,7 +1213,7 @@ def test_worker_loop_cold_start_seeds_archive_and_ships_frontier(
         ]
 
     monkeypatch.setattr(config, "REFINE_MAX_ROUNDS", 0)
-    monkeypatch.setattr(op, "propose_batch_async", fake_batch)
+    monkeypatch.setattr(op, "_propose_batch_oneshot", fake_batch)
     monkeypatch.setattr(op, "_score_batch", fake_score_batch)
     monkeypatch.setattr(op, "_GENERATION_RETRY_S", 0.0)
 
@@ -1353,7 +1231,7 @@ def test_worker_loop_cold_start_seeds_archive_and_ships_frontier(
 
     monkeypatch.setattr(board, "reship_islands", spy_reship)
 
-    prov = providers.get("cheapest-minimax")
+    prov = providers.get("codex-agentic")
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(op.worker_loop(0, [prov], board, out_dir, timeout_s=1.0))
 
@@ -1541,10 +1419,10 @@ def test_startup_warm_restart_ships_frontier_not_min_champion(
     ) -> tuple[list["Submission"], list[str], str]:
         raise asyncio.CancelledError
 
-    monkeypatch.setattr(op, "propose_batch_async", fake_batch)
+    monkeypatch.setattr(op, "_propose_batch_oneshot", fake_batch)
     monkeypatch.setattr(op, "_GENERATION_RETRY_S", 0.0)
 
-    prov = providers.get("cheapest-minimax")
+    prov = providers.get("codex-agentic")
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(op.worker_loop(0, [prov], board, out_dir, timeout_s=1.0))
 
@@ -2731,12 +2609,12 @@ def _run_refine_worker(
         return [_score_with_tokens(next(pub_it)) for _ in batch]
 
     monkeypatch.setattr(config, "REFINE_MAX_ROUNDS", max_rounds)
-    monkeypatch.setattr(op, "propose_batch_async", fake_batch)
+    monkeypatch.setattr(op, "_propose_batch_oneshot", fake_batch)
     monkeypatch.setattr(op, "_score_batch", fake_score_batch)
     monkeypatch.setattr(op, "_GENERATION_RETRY_S", 0.0)
 
     board = bb.Blackboard.load(tmp_path / "bb.jsonl")
-    prov = providers.get("cheapest-minimax")
+    prov = providers.get("codex-agentic")
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(op.worker_loop(0, [prov], board, tmp_path / "out", timeout_s=1.0))
     return board
@@ -2749,46 +2627,18 @@ def test_default_refine_rounds_restores_adversarial_hill_climb() -> None:
     assert config.REFINE_MAX_ROUNDS == 4
 
 
-def test_default_team_proposers_keep_cheapest_rotation_available() -> None:
-    """The default roster keeps multiple CI models in one grouped key lane."""
-    from jed_attack.campaign import config, providers
-
-    cheapest = [
-        name
-        for name in config.TEAM_PROPOSERS
-        if providers.get(name).key_env == "CHEAPEST_API_KEY"
-    ]
-    assert "cheapest-minimax" in cheapest
-    assert "cheapest-kimi2.6" not in cheapest
-    assert len(cheapest) > 1
-
-
-def test_optimize_team_uses_live_cheapest_model_list(
+def test_optimize_team_launches_one_worker_per_replica(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The CI lane is the live /v1/models result, not the stale static fallback."""
+    """JED_PROPOSER_REPLICAS identical codex-agentic workers, one call each."""
     import asyncio
 
     from jed_attack.campaign import blackboard as bb
-    from jed_attack.campaign import config, providers
     from jed_attack.campaign import optimize_prompts as op
+    from jed_attack.campaign import providers
 
-    cycles: list[list[str]] = []
-
-    monkeypatch.setenv("CHEAPEST_API_KEY", "test-key")
-    monkeypatch.delenv("ZAI_API_KEY", raising=False)
-    monkeypatch.setattr(
-        config,
-        "TEAM_PROPOSERS",
-        ("cheapest-kimi", "cheapest-minimax"),
-    )
-    monkeypatch.setattr(config, "TEAM_PROPOSERS_FROM_ENV", False, raising=False)
-    monkeypatch.setattr(
-        providers,
-        "fetch_cheapest_model_ids",
-        lambda: ("brand-new-ci-model", "glm-5.2"),
-        raising=False,
-    )
+    monkeypatch.setenv("JED_PROPOSER_REPLICAS", "3")
+    seen: list[tuple[int, list[str]]] = []
 
     async def fake_worker_loop(
         worker_id: int,
@@ -2798,149 +2648,40 @@ def test_optimize_team_uses_live_cheapest_model_list(
         timeout_s: float,
         run: object | None = None,
     ) -> None:
-        del worker_id, board, out_dir, timeout_s, run
-        cycles.append([provider.model for provider in providers_cycle])
-        raise asyncio.CancelledError
+        del board, out_dir, timeout_s, run
+        seen.append((worker_id, [provider.model for provider in providers_cycle]))
 
     monkeypatch.setattr(op, "worker_loop", fake_worker_loop)
 
     board = bb.Blackboard.load(tmp_path / "bb.jsonl")
-    with pytest.raises(asyncio.CancelledError):
-        asyncio.run(op.optimize_team(board, tmp_path / "out", timeout_s=1.0))
+    asyncio.run(op.optimize_team(board, tmp_path / "out", timeout_s=1.0))
 
-    assert cycles == [["brand-new-ci-model", "glm-5.2"]]
+    codex = providers.get("codex-agentic")
+    assert seen == [(0, [codex.model]), (1, [codex.model]), (2, [codex.model])]
 
 
-def test_build_worker_cycles_fans_codex_lane_to_island_count(
-    monkeypatch: pytest.MonkeyPatch,
+def test_optimize_team_warns_when_replicas_below_island_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Replicas == ISLAND_COUNT gives the keyless codex lane one worker per island."""
-    from jed_attack.campaign import config, providers
-    from jed_attack.campaign import optimize_prompts as op
-
-    monkeypatch.setattr(config, "ISLAND_COUNT", 4, raising=False)
-    codex = providers.get("codex-gpt55")
-    cycles = op._build_worker_cycles({"": [codex]}, replicas=4)
-
-    assert len(cycles) == 4
-    assert all(cycle == [codex] for cycle in cycles)
-
-
-def test_build_worker_cycles_warns_when_codex_lane_is_short(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    """Fewer codex replicas than ISLAND_COUNT logs a warning (islands go workerless)."""
-    from jed_attack.campaign import config, providers
-    from jed_attack.campaign import optimize_prompts as op
-
-    monkeypatch.setattr(config, "ISLAND_COUNT", 4, raising=False)
-    codex = providers.get("codex-gpt55")
-    cycles = op._build_worker_cycles({"": [codex]}, replicas=1)
-
-    assert len(cycles) == 1
-    assert "ISLAND_COUNT" in caplog.text
-
-
-def test_build_worker_cycles_warns_on_any_short_lane(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    """Coverage is total workers, not codex-only: a short non-codex lane warns too.
-
-    Island ownership is ``worker_id % ISLAND_COUNT`` over every cycle across all
-    lanes, so under-coverage is a function of the total worker count regardless of
-    which lane supplies the workers.
-    """
-    from jed_attack.campaign import config, providers
-    from jed_attack.campaign import optimize_prompts as op
-
-    monkeypatch.setattr(config, "ISLAND_COUNT", 4, raising=False)
-    zai = providers.get("zai-glm5")
-    cycles = op._build_worker_cycles({"ZAI_API_KEY": [zai]}, replicas=1)
-
-    assert len(cycles) == 1
-    assert "ISLAND_COUNT" in caplog.text
-
-
-def test_build_worker_cycles_silent_when_workers_meet_island_count(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    """No warning when the total worker count reaches ISLAND_COUNT (any lane)."""
-    from jed_attack.campaign import config, providers
-    from jed_attack.campaign import optimize_prompts as op
-
-    monkeypatch.setattr(config, "ISLAND_COUNT", 4, raising=False)
-    zai = providers.get("zai-glm5")
-    cycles = op._build_worker_cycles({"ZAI_API_KEY": [zai]}, replicas=4)
-
-    assert len(cycles) == 4
-    assert "ISLAND_COUNT" not in caplog.text
-
-
-def test_team_proposers_env_override_parses_csv() -> None:
-    """Operators can pin a different single CI model without editing source."""
-    from jed_attack.campaign import config
-
-    assert config.team_proposers_from_env(
-        "cheapest-kimi2.6, zai-glm5-turbo",
-        default=("cheapest-minimax", "zai-glm5-turbo"),
-    ) == ("cheapest-kimi2.6", "zai-glm5-turbo")
-
-
-def test_ci_single_flight_errors_get_longer_retry_delay(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """CI concurrency/stream failures need a cooldown so the provider slot can clear."""
-    from jed_attack.campaign import optimize_prompts as op
-    from jed_attack.campaign import providers
-
-    monkeypatch.setattr(op, "_GENERATION_RETRY_S", 3.0)
-    monkeypatch.setattr(op, "_CI_GENERATION_RETRY_S", 45.0)
-
-    assert op._generation_retry_delay(
-        providers.get("cheapest-minimax"),
-        RuntimeError("Concurrency limit reached for this key"),
-    ) == pytest.approx(45.0)
-    assert op._generation_retry_delay(
-        providers.get("cheapest-minimax"),
-        RuntimeError("peer closed connection (incomplete chunked read)"),
-    ) == pytest.approx(45.0)
-    assert op._generation_retry_delay(
-        providers.get("zai-glm5-turbo"),
-        RuntimeError("Concurrency limit reached for this key"),
-    ) == pytest.approx(3.0)
-
-
-def test_worker_retries_same_ci_model_after_single_flight_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A lingering CI slot should not make the lane switch models and collide again."""
+    """Fewer replicas than ISLAND_COUNT logs a warning (islands go workerless)."""
     import asyncio
 
     from jed_attack.campaign import blackboard as bb
+    from jed_attack.campaign import config
     from jed_attack.campaign import optimize_prompts as op
-    from jed_attack.campaign import providers
 
-    seen: list[str] = []
-    ci_a = providers.get("cheapest-kimi2.6")
-    ci_b = providers.get("cheapest-minimax")
+    monkeypatch.setattr(config, "ISLAND_COUNT", 4, raising=False)
+    monkeypatch.setenv("JED_PROPOSER_REPLICAS", "1")
 
-    async def fake_batch(
-        prompt: str, provider: "providers.Provider", timeout_s: float
-    ) -> tuple[list["Submission"], list[str], str]:
-        seen.append(provider.model)
-        if len(seen) == 1:
-            raise RuntimeError("Concurrency limit reached for this key")
-        raise asyncio.CancelledError
+    async def fake_worker_loop(*_args: object, **_kwargs: object) -> None:
+        return None
 
-    monkeypatch.setattr(op, "propose_batch_async", fake_batch)
-    monkeypatch.setattr(op, "_GENERATION_RETRY_S", 0.0)
-    monkeypatch.setattr(op, "_CI_GENERATION_RETRY_S", 0.0)
+    monkeypatch.setattr(op, "worker_loop", fake_worker_loop)
 
     board = bb.Blackboard.load(tmp_path / "bb.jsonl")
-    with pytest.raises(asyncio.CancelledError):
-        asyncio.run(op.worker_loop(0, [ci_a, ci_b], board, tmp_path / "out", 1.0))
+    asyncio.run(op.optimize_team(board, tmp_path / "out", timeout_s=1.0))
 
-    assert seen == [ci_a.model, ci_a.model]
+    assert "ISLAND_COUNT" in caplog.text
 
 
 def test_refine_runs_to_cap_when_every_round_improves(
@@ -3020,14 +2761,14 @@ def test_refine_accepts_lower_public_when_raw_per_replay_second_improves(
         return [fast_score]
 
     monkeypatch.setattr(config, "REFINE_MAX_ROUNDS", 1)
-    monkeypatch.setattr(op, "propose_batch_async", fake_batch)
+    monkeypatch.setattr(op, "_propose_batch_oneshot", fake_batch)
     monkeypatch.setattr(op, "_score_batch", fake_score_batch)
 
     kept_batch, kept_scores, kept_reasoning, refine_rounds = asyncio.run(
         op._refine_batch(
             [slow],
             [slow_score],
-            providers.get("cheapest-kimi"),
+            providers.get("codex-agentic"),
             {},
             [],
             "slow reasoning",
@@ -3109,7 +2850,7 @@ def test_worker_loop_logs_objective_metrics_separately(
         return [next(scores) for _ in batch]
 
     monkeypatch.setattr(config, "REFINE_MAX_ROUNDS", 1)
-    monkeypatch.setattr(op, "propose_batch_async", fake_batch)
+    monkeypatch.setattr(op, "_propose_batch_oneshot", fake_batch)
     monkeypatch.setattr(op, "_score_batch", fake_score_batch)
     monkeypatch.setattr(op, "_GENERATION_RETRY_S", 0.0)
 
@@ -3119,7 +2860,7 @@ def test_worker_loop_logs_objective_metrics_separately(
         asyncio.run(
             op.worker_loop(
                 0,
-                [providers.get("cheapest-minimax")],
+                [providers.get("codex-agentic")],
                 board,
                 tmp_path / "out",
                 timeout_s=1.0,
@@ -3575,12 +3316,12 @@ def test_refine_round_failure_keeps_improved_best(
         return [_score_with_tokens(next(pubs)) for _ in batch]
 
     monkeypatch.setattr(config, "REFINE_MAX_ROUNDS", 4)
-    monkeypatch.setattr(op, "propose_batch_async", fake_batch)
+    monkeypatch.setattr(op, "_propose_batch_oneshot", fake_batch)
     monkeypatch.setattr(op, "_score_batch", fake_score_batch)
     monkeypatch.setattr(op, "_GENERATION_RETRY_S", 0.0)
 
     board = bb.Blackboard.load(tmp_path / "bb.jsonl")
-    prov = providers.get("cheapest-minimax")
+    prov = providers.get("codex-agentic")
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(op.worker_loop(0, [prov], board, tmp_path / "out", timeout_s=1.0))
     assert len(board._records) == 1  # one generation kept 5.0 (old: 2 appends)
@@ -3681,7 +3422,7 @@ def test_refine_prompt_contains_entire_batch(
         return [], [], ""
 
     monkeypatch.setattr(config, "REFINE_MAX_ROUNDS", 1)
-    monkeypatch.setattr(op, "propose_batch_async", capture_prompt)
+    monkeypatch.setattr(op, "_propose_batch_oneshot", capture_prompt)
     asyncio.run(
         op._refine_batch(
             [first, second],
@@ -3689,7 +3430,7 @@ def test_refine_prompt_contains_entire_batch(
                 score_for(first, 1.0, "feedback-first"),
                 score_for(second, 2.0, "feedback-second"),
             ],
-            providers.get("cheapest-kimi"),
+            providers.get("codex-agentic"),
             {},
             [],
             "reasoning",
@@ -3704,25 +3445,6 @@ def test_refine_prompt_contains_entire_batch(
     assert "feedback-first" in prompt
     assert "batch-second@h.invalid" in prompt
     assert "feedback-second" in prompt
-
-
-def test_optimize_team_raises_when_no_usable_lanes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """No proposer key set -> optimize_team fails loudly, not a silent no-op success."""
-    import asyncio
-
-    from jed_attack.campaign import blackboard as bb
-    from jed_attack.campaign import config
-    from jed_attack.campaign import optimize_prompts as op
-
-    for name in config.TEAM_PROPOSERS:
-        key_env = providers.get(name).key_env
-        if key_env:
-            monkeypatch.delenv(key_env, raising=False)
-    board = bb.Blackboard.load(tmp_path / "bb.jsonl")
-    with pytest.raises(SystemExit):
-        asyncio.run(op.optimize_team(board, tmp_path / "out", timeout_s=1.0))
 
 
 def test_submission_prompt_handles_cold_start_none_incumbent() -> None:
@@ -4636,14 +4358,14 @@ def test_worker_loop_prompts_from_objective_champion(
             scores.append(score)
         return scores
 
-    monkeypatch.setattr(op, "propose_batch_async", capture_prompt)
+    monkeypatch.setattr(op, "_propose_batch_oneshot", capture_prompt)
     monkeypatch.setattr(op, "_score_batch", fake_score_batch)
 
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(
             op.worker_loop(
                 0,
-                [providers.get("cheapest-minimax")],
+                [providers.get("codex-agentic")],
                 board,
                 tmp_path / "out",
                 timeout_s=1.0,
