@@ -139,22 +139,25 @@ def _replay_with_hops(hops_for: Callable[[str], int]) -> _Replay:
     return replay
 
 
-def test_firing_only_check_hops_drops_off_spec_toolcall_count(
+def test_firing_only_check_hops_caps_toolcall_count(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """check_hops drops a firing candidate whose tool-call count != its declared calls.
+    """check_hops caps tool calls at _MAX_TOOL_CALLS (2): <=2 kept, a ballooner dropped.
 
-    A single-post shape declares one call via its one SECRET_MARKER; a host that makes
-    the model emit extra tool calls (an 8-turn ballooner) is off-spec and dropped even
-    though it fires.
+    A lean 1-post shape is kept; a 2-call candidate (e.g. one whose in-message demo
+    tool-call makes marker-counting over-count the declared posts) is still kept; only
+    the 6-8-call recursion tail (>2) is dropped even though it fires.
     """
     monkeypatch.setattr(
-        verify, "replay_chain", _replay_with_hops(lambda m: 3 if "BALLOON" in m else 1)
+        verify,
+        "replay_chain",
+        _replay_with_hops(lambda m: 3 if "BALLOON" in m else (2 if "DEMO" in m else 1)),
     )
-    clean = ["SECRET_MARKER a"]  # 1 marker, 1 tool call -> on-spec
-    balloon = ["SECRET_MARKER BALLOON b"]  # 1 marker, 3 tool calls -> off-spec
-    kept = verify.firing_only([clean, balloon], "gpt_oss", check_hops=True)
-    assert kept == [clean]
+    clean = ["SECRET_MARKER a"]  # 1 tool call -> under the cap, kept
+    demo = ["SECRET_MARKER DEMO b"]  # 2 tool calls -> at the cap, kept
+    balloon = ["SECRET_MARKER BALLOON c"]  # 3 tool calls -> over the cap, dropped
+    kept = verify.firing_only([clean, demo, balloon], "gpt_oss", check_hops=True)
+    assert kept == [clean, demo]
 
 
 def test_firing_only_default_ignores_hops(monkeypatch: pytest.MonkeyPatch) -> None:
