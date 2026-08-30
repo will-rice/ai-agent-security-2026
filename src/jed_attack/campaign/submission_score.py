@@ -20,6 +20,7 @@ green replay seconds per model (:func:`replay_trace`'s timed ``env.interact``) a
 telemetry, but no decision reads it.
 """
 
+import random
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -615,10 +616,16 @@ def score_submission(
     # gateway-INVALID submissions. See memory jed-t4-replay-time-budget.
     try:
         for message in messages:
-            # Replay the RENDERED text (host index 0) -- the concrete URL from the
-            # message's url_scheme -- so the measured gen is exactly what ships.
+            # Replay at a RANDOM single-token host, not the fixed index 0. Host 0 is
+            # one lucky draw -- a shape can fire (or decode lean) there while dudding on
+            # others -- so grading there overfits and hides the dud tail the ~2000-host
+            # pool pays for. A random host makes the primary firing/per-hop split a fair
+            # sample of what ships: a shape that duds on a random host scores 0 (+inf
+            # cost) that eval, pushing the search toward host-robust shapes. The greedy
+            # replay stays deterministic; only host SELECTION is sampled.
+            host_index = random.randrange(len(fill.SINGLE_TOKEN_HOSTS))
             rendered = fill.render_message(
-                message.text, message.type.value, message.url_scheme, 0
+                message.text, message.type.value, message.url_scheme, host_index
             )
             msg_trace: dict[str, dict[str, dict[str, Any]]] = {
                 guardrail: {} for guardrail in guardrails

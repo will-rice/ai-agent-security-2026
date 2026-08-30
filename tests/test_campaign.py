@@ -2243,6 +2243,7 @@ def test_score_pools_scores_each_pool_on_its_own_model_only(
 
     monkeypatch.setattr(_cfg, "ROBUSTNESS_PROBE_INDICES", ())
     monkeypatch.setattr(_cfg, "LEAN_TOKEN_SAMPLE_INDICES", ())
+    monkeypatch.setattr(ss.random, "randrange", lambda _n: 0)  # deterministic host 0
     submission = Submission(
         gpt_oss=[_exfil("SECRET_MARKER {u}", 1, url_scheme="http://gpt{h}.co")],
         gemma_4=[_exfil("SECRET_MARKER {u}", 1, url_scheme="http://gem{h}.co")],
@@ -4630,6 +4631,7 @@ def test_score_submission_replays_models_concurrently_and_preserves_results(
     ]
     # score_submission replays (and records) the RENDERED text, so the barriers and
     # every message-keyed assertion below are keyed on the rendered candidate string.
+    monkeypatch.setattr(ss.random, "randrange", lambda _n: 0)  # deterministic host 0
     rendered = [
         fill.render_message(m.text, m.type.value, m.url_scheme, 0) for m in messages
     ]
