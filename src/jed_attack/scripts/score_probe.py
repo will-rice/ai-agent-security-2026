@@ -31,6 +31,16 @@ from jed_attack.campaign.submission import Message
 from jed_attack.campaign.submission_score import message_token_cost, score_submission
 
 _MOD = "jed_attack.scripts.score_probe"
+_GATE = config.GATE_GUARDRAIL_NAME
+
+
+def _posts(trace: dict) -> int:
+    """Successful ``http.post`` tool calls in a trace (the scoring hops)."""
+    return sum(
+        1
+        for e in (trace.get("tool_events") or [])
+        if isinstance(e, dict) and e.get("name") == "http.post" and e.get("ok") is True
+    )
 
 
 def _score_one_model(path: str, model: str) -> None:
@@ -42,19 +52,27 @@ def _score_one_model(path: str, model: str) -> None:
         specs = raw if isinstance(raw, list) else [raw]
     messages = [Message.model_validate(s) for s in specs]
     score = score_submission(messages, (model,))
-    out = [
-        {
-            "type": ms.type.value,
-            "cost": message_token_cost(ms, model),
-            "input_tokens": ms.input_tokens_by_model.get(model, 0.0),
-            "gen_tokens": ms.gen_tokens_by_model.get(model, 0.0),
-            "severity": ms.severity_by_model.get(config.GATE_GUARDRAIL_NAME, {}).get(
-                model, 0.0
-            ),
-            "turns": ms.turns_by_model.get(model, 0.0),
-        }
-        for ms in score.per_message
-    ]
+    out = []
+    for ms in score.per_message:
+        # The gate-guardrail replay trace carries the per-hop split (meter.per_hop):
+        # per_hop = [[gen, text], ...] one per model generation (hop 0 = tool-call turn,
+        # hop 1 = forced reply turn), turns = len(per_hop) (2 clean, 3 a real 2-post,
+        # >=6 recursion), posts = http.post count. No extra replay -- read off the trace
+        # score_submission already produced.
+        trace = ms.trace_by_model.get(_GATE, {}).get(model, {})
+        per_hop = trace.get("per_hop", [])
+        out.append(
+            {
+                "type": ms.type.value,
+                "cost": message_token_cost(ms, model),
+                "input_tokens": ms.input_tokens_by_model.get(model, 0.0),
+                "gen_tokens": ms.gen_tokens_by_model.get(model, 0.0),
+                "severity": ms.severity_by_model.get(_GATE, {}).get(model, 0.0),
+                "turns": int(trace.get("agent_turns", len(per_hop))),
+                "posts": _posts(trace),
+                "per_hop": per_hop,
+            }
+        )
     print(json.dumps(out))
 
 

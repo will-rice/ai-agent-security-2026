@@ -63,6 +63,9 @@ _SEVERITY_W = {1: 1, 2: 2, 3: 4, 4: 8, 5: 16}
 # Max chars of the bottleneck model's raw generation (its reasoning channel) surfaced to
 # the proposer as feedback, so it can SEE the deliberation it must suppress to cut cost.
 _REASONING_SAMPLE_CAP = 600
+# Per-hop raw-text preview length in the meter's per_hop split (enough to read the
+# channel header + start of the turn, small enough to stay prompt-sized).
+_PER_HOP_TEXT_CAP = 60
 
 # Resident in-process backends: load each GGUF exactly once and replay through it, so
 # the local score matches the T4 gateway's in-process llama-cpp-python engine
@@ -112,6 +115,10 @@ class _RawGenMeter:
         self.tokens = 0
         self.sample = ""
         self.calls = 0  # generate() calls == agent turns for this replay
+        # Per-hop generated-token split: one [tokens, text] per generate() call. hop 0
+        # is the tool-call turn, hop 1 the forced reply turn -- the split the aggregate
+        # ``tokens`` hides, so a caller can see the tool-call vs reply-turn cost.
+        self.per_hop: list[list[Any]] = []
 
     def token_ids(self, text: str) -> list[int]:
         """Token-id sequence for ``text`` (markers = 1 token); ``[]`` if unavailable.
@@ -146,7 +153,9 @@ class _RawGenMeter:
         response = self._generate(request)
         self.calls += 1  # one generate() per agent turn (the SDK's agent_turns)
         raw = response.raw_text
-        self.tokens += self._count_tokens(raw)
+        count = self._count_tokens(raw)
+        self.tokens += count
+        self.per_hop.append([count, raw[:_PER_HOP_TEXT_CAP]])
         # Keep the longest hop's raw decode as the reasoning sample: for a single-post
         # exfil that is hop 0 (the analysis channel + tool call), the deliberation the
         # proposer must learn to suppress. Bounded so the feedback stays prompt-sized.
@@ -158,6 +167,7 @@ class _RawGenMeter:
         self.tokens = 0
         self.sample = ""
         self.calls = 0
+        self.per_hop = []
 
 
 def _resident_backend(model_key: str) -> ResidentAgentFactory:
@@ -349,6 +359,7 @@ def replay_chain(
         trace["raw_gen_tokens"] = meter.tokens
         trace["raw_gen_sample"] = meter.sample
         trace["agent_turns"] = meter.calls
+        trace["per_hop"] = list(meter.per_hop)
         # Input prefill cost: the candidate's own message tokens, counted with the
         # SAME tokenizer the meter uses for generation (harmony/gemma markers = 1
         # token each), so the objective charges input tokens symmetrically with gen.
