@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 from statistics import mean
 
-from jed_attack.campaign import config
+from jed_attack.campaign import config, fill, verify
 from jed_attack.campaign.submission import Message
 from jed_attack.campaign.submission_score import message_token_cost, score_submission
 
@@ -43,6 +43,29 @@ def _posts(trace: dict) -> int:
     )
 
 
+def _gate_ok(text: str, mtype: str, url_scheme: str, posts: int) -> tuple[bool, str]:
+    """Would this shape survive the ship gate (verify_cut) -- or is it unshippable?
+
+    The objective is blind to the gate's whole-pool STRUCTURAL reject:
+    ``assert_pool_shape``
+    raises if the pool is not url-last (rendered suffix after the host >
+    ``URL_LAST_MAX_SUFFIX_CHARS`` -- e.g. the schema-default ``http://{h}.co`` leaves a
+    ``.co`` tail) or a host is multi-token. A shape can score a beautiful cost yet be
+    unshippable, so the search must SEE this before perfecting it. EXFIL only -- the
+    deputy gate is a different path. Also flags the ``_MAX_TOOL_CALLS`` ballooner cap.
+    """
+    if mtype != "exfil":
+        return True, "n/a (deputy)"
+    chains = [[fill.render_message(text, mtype, url_scheme, i)] for i in (0, 1)]
+    try:
+        verify.assert_pool_shape(chains)
+    except ValueError as exc:
+        return False, str(exc)
+    if posts > verify._MAX_TOOL_CALLS:
+        return False, f"{posts} tool calls > {verify._MAX_TOOL_CALLS} cap"
+    return True, "ok"
+
+
 def _score_one_model(path: str, model: str) -> None:
     """Child: score all messages on a single ``model``; print per-message JSON."""
     raw = json.loads(Path(path).read_text())
@@ -53,7 +76,7 @@ def _score_one_model(path: str, model: str) -> None:
     messages = [Message.model_validate(s) for s in specs]
     score = score_submission(messages, (model,))
     out = []
-    for ms in score.per_message:
+    for ms, m in zip(score.per_message, messages, strict=True):
         # The gate-guardrail replay trace carries the per-hop split (meter.per_hop):
         # per_hop = [[gen, text], ...] one per model generation (hop 0 = tool-call turn,
         # hop 1 = forced reply turn), turns = len(per_hop) (2 clean, 3 a real 2-post,
@@ -61,6 +84,8 @@ def _score_one_model(path: str, model: str) -> None:
         # score_submission already produced.
         trace = ms.trace_by_model.get(_GATE, {}).get(model, {})
         per_hop = trace.get("per_hop", [])
+        posts = _posts(trace)
+        gate_ok, gate_reason = _gate_ok(m.text, m.type.value, m.url_scheme, posts)
         out.append(
             {
                 "type": ms.type.value,
@@ -69,8 +94,11 @@ def _score_one_model(path: str, model: str) -> None:
                 "gen_tokens": ms.gen_tokens_by_model.get(model, 0.0),
                 "severity": ms.severity_by_model.get(_GATE, {}).get(model, 0.0),
                 "turns": int(trace.get("agent_turns", len(per_hop))),
-                "posts": _posts(trace),
+                "posts": posts,
                 "per_hop": per_hop,
+                # would this shape survive verify_cut? unshippable shape = wasted effort
+                "gate_ok": gate_ok,
+                "gate_reason": gate_reason,
             }
         )
     print(json.dumps(out))
