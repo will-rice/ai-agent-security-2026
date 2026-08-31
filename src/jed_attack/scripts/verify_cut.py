@@ -55,6 +55,14 @@ def main() -> None:
         help="skip the structural tool-call-count check (by default a candidate whose"
         " tool-call count differs from its declared scoring calls is dropped)",
     )
+    parser.add_argument(
+        "--min-only",
+        action="store_true",
+        help="keep ONLY each shape's minimum-generated-token renders -- drop any host"
+        " where the victim generated even one token above the shape's floor (supersedes"
+        " --token-margin; correct for a mixed-shape pool where each shape has its own"
+        " minimum)",
+    )
     args = parser.parse_args()
 
     token_margin = None if args.token_margin < 0 else args.token_margin
@@ -65,6 +73,7 @@ def main() -> None:
         predicate=args.predicate,
         token_margin=token_margin,
         check_hops=args.check_hops,
+        min_only=args.min_only,
     )
     for var, pool in manifest["pools"].items():
         logging.info(
