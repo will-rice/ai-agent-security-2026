@@ -298,6 +298,14 @@ if not 0.0 <= FILL_FIRE_FRACTION <= 1.0:
 LEAN_TOKEN_SAMPLE_INDICES = (
     100,
 )  # single-token hosts -> gen is host-independent, 1 sample is exact
+# How many RANDOM single-token hosts to replay when estimating a shape's across-host
+# fire rate (the fraction that fire). The fixed ROBUSTNESS_PROBE_INDICES check only 2-3
+# hosts on the assumption single-token hosts fire deterministically -- but a fragile
+# host-hack fires on those few while dudding on most others, so a real estimate needs a
+# random sample. This is a SHIP TIEBREAKER (prefer higher fire rate among equal-cost
+# shapes), never a filter -- we ship only the firing hosts, so a low rate just means a
+# shape yields fewer firing hosts. 0 disables the estimate (fire_rate = 1.0).
+FIRE_RATE_PROBE_HOSTS = int(os.getenv("JED_FIRE_RATE_PROBE_HOSTS", "8"))
 
 # OPRO scored-trajectory table (optimize_prompts._render_opro_table): max elite rows
 # shown in the proposer prompt, best-first. Bounds prompt length, not archive size.

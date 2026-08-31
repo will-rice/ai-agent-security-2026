@@ -117,7 +117,9 @@ def _per_model_replay_note(msg_score: "MessageScore") -> str:
             for i, hop in enumerate(per_hop)
             if hop
         )
-        block = f"{model} cost={cost:g}(in={inp:g} gen={gen:g})"
+        rate = msg_score.fire_rate_by_model.get(model)
+        fire = f" fire={rate:.0%}" if rate is not None else ""
+        block = f"{model} cost={cost:g}(in={inp:g} gen={gen:g}){fire}"
         if turns:
             block += f" conversation: {turns}"
         blocks.append(block)

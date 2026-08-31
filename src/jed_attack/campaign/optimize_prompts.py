@@ -312,6 +312,11 @@ def _shape_elites(
                 for model in config.MODELS
             }
             diagnosis = diagnoses[shape_index] if shape_index < len(diagnoses) else ""
+            # Mean across-host fire rate over the models scored (a ship tiebreaker in
+            # archive.ship_set: prefer higher-fire among equal-cost shapes, never a
+            # filter). Defaults to 1.0 for a score taken before the field existed.
+            fr = message_score.fire_rate_by_model
+            fire_rate = sum(fr.values()) / len(fr) if fr else 1.0
             elites.append(
                 archive.Elite(
                     text=message.text,
@@ -323,6 +328,7 @@ def _shape_elites(
                     bucket=input_char_bucket(len(message.text)),
                     url_scheme=message.url_scheme,
                     input_chars=len(message.text),
+                    fire_rate=fire_rate,
                 )
             )
             shape_index += 1

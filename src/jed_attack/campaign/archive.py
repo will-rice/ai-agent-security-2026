@@ -49,6 +49,7 @@ class Elite:
     bucket: int
     url_scheme: str = "http://{h}.co"
     input_chars: int = 0
+    fire_rate: float = 1.0
 
 
 def dominates(a: Elite, b: Elite) -> bool:
@@ -168,16 +169,20 @@ class Archive:
         return [x for x in allx if not any(dominates(y, x) for y in allx if y is not x)]
 
     def ship_set(self) -> list[Elite]:
-        """The frontier ranked by token cost (fewest first), ties toward shorter input.
+        """Frontier ranked by token cost (fewest first), ties toward higher fire rate.
 
         Primary key is the mean per-model token cost (:func:`elite_board_density`,
-        ascending); the secondary key prefers a shorter input message
-        (``e.input_chars``, ascending) -- a free hedge on the grader's prefill cost that
-        never overrides a leaner shape.
+        ascending). Ties break FIRST toward a higher across-host fire rate
+        (``-e.fire_rate``): among equally-lean shapes prefer the one that fires on more
+        hosts (fewer build-time replays to fill the pool, more margin over the
+        completable ceiling). The final tiebreak is a shorter input (``e.input_chars``),
+        a hedge on grader prefill. Neither tiebreaker overrides a leaner shape -- a low
+        fire rate never drops a shape, only ranks it below an equally-lean higher-fire
+        one.
         """
         return sorted(
             self.frontier(),
-            key=lambda e: (elite_board_density(e), e.input_chars),
+            key=lambda e: (elite_board_density(e), -e.fire_rate, e.input_chars),
         )[: config.ARCHIVE_FRONTIER_CAP]
 
     def parents(self, k: int) -> list[Elite]:

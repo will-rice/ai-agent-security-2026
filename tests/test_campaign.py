@@ -2243,6 +2243,7 @@ def test_score_pools_scores_each_pool_on_its_own_model_only(
 
     monkeypatch.setattr(_cfg, "ROBUSTNESS_PROBE_INDICES", ())
     monkeypatch.setattr(_cfg, "LEAN_TOKEN_SAMPLE_INDICES", ())
+    monkeypatch.setattr(_cfg, "FIRE_RATE_PROBE_HOSTS", 0)  # no fire-rate probe here
     monkeypatch.setattr(ss.random, "randrange", lambda _n: 0)  # deterministic host 0
     submission = Submission(
         gpt_oss=[_exfil("SECRET_MARKER {u}", 1, url_scheme="http://gpt{h}.co")],
@@ -4552,6 +4553,7 @@ def test_score_submission_replays_each_message_no_dedup(
 
     monkeypatch.setattr(_cfg, "ROBUSTNESS_PROBE_INDICES", ())
     monkeypatch.setattr(_cfg, "LEAN_TOKEN_SAMPLE_INDICES", ())
+    monkeypatch.setattr(_cfg, "FIRE_RATE_PROBE_HOSTS", 0)  # no fire-rate probe here
     out = ss.score_submission(
         [
             _exfil("SECRET_MARKER url={u}", 1, url_scheme="a://{h}"),
@@ -4695,6 +4697,7 @@ def test_score_submission_replays_models_concurrently_and_preserves_results(
 
     monkeypatch.setattr(_cfg, "ROBUSTNESS_PROBE_INDICES", ())
     monkeypatch.setattr(_cfg, "LEAN_TOKEN_SAMPLE_INDICES", ())
+    monkeypatch.setattr(_cfg, "FIRE_RATE_PROBE_HOSTS", 0)  # no fire-rate probe here
     out = ss.score_submission(
         messages,
         models=("gpt_oss", "gemma_4"),
