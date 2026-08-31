@@ -134,30 +134,80 @@ def test_firing_only_orders_leanest_first(monkeypatch: pytest.MonkeyPatch) -> No
     assert verify.firing_only([fat, lean, mid], "gpt_oss") == [lean, mid, fat]
 
 
-def test_firing_only_token_margin_drops_ballooners(
+def _replay_gen(gen_of: Callable[[str], float]) -> _Replay:
+    """A replay_chain stub that fires every message with a caller-chosen gen count.
+
+    Decouples generated tokens from message length so a test can give same-SHAPE renders
+    (identical text modulo the masked URL host) different gen costs -- the balloon case.
+    """
+
+    def replay(
+        messages: Sequence[str], model: str, guard: object
+    ) -> tuple[dict, list, float]:
+        preds = [{"predicate": "EXFILTRATION", "severity": 5} for _ in messages]
+        events = [_post_event(m) for m in messages]  # unique domain per message
+        trace = {
+            "raw_gen_tokens": float(sum(gen_of(m) for m in messages)),
+            "tool_events": events,
+        }
+        return trace, preds, 0.1
+
+    return replay
+
+
+def test_firing_only_drops_above_shape_minimum(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """With token_margin, a firing-but-token-heavy host (the balloon tail) is dropped.
+    """Only each shape's minimum-gen-token renders ship; a same-shape balloon is cut.
 
-    A host-dependent lean shape fires lean on most hosts but balloons on a few; the gate
-    ships only the lean-firing hosts so the cut is not diluted by the ballooners.
+    The renders share a shape (identical text modulo the URL host) but one host decodes
+    heavier -- a stochastic balloon, not a leaner candidate -- so it is dropped by the
+    default per-shape-minimum gate.
     """
-    monkeypatch.setattr(verify, "replay_chain", _fake_replay(lambda m: "GOOD" in m))
-    lean = [["GOOD a"], ["GOOD b"], ["GOOD c"], ["GOOD d"]]  # ~6 tokens each
-    balloon = ["GOOD " + "x" * 50]  # ~55 tokens -> above lean floor + margin
-    kept = verify.firing_only(lean + [balloon], "gpt_oss", token_margin=4.0)
+    # same shape "post url=URL" (host masked); host string sets the gen cost
+    lean = [["post url=s://aa"], ["post url=s://ab"], ["post url=s://ac"]]
+    balloon = ["post url=s://az"]
+    gen = {"post url=s://az": 50.0}  # balloon; the rest default to 10
+    monkeypatch.setattr(verify, "replay_chain", _replay_gen(lambda m: gen.get(m, 10.0)))
+    kept = verify.firing_only(lean + [balloon], "gpt_oss")
     assert balloon not in kept
     assert all(chain in kept for chain in lean)
 
 
-def test_firing_only_default_keeps_token_heavy_firing(
+def test_firing_only_keeps_a_distinct_heavier_shape(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Without token_margin (default), even a token-heavy firing candidate is kept."""
-    monkeypatch.setattr(verify, "replay_chain", _fake_replay(lambda m: "GOOD" in m))
-    balloon = ["GOOD " + "x" * 50]
-    kept = verify.firing_only([["GOOD a"], balloon], "gpt_oss")  # no token filter
-    assert balloon in kept
+    """Per-shape-min is PER shape: a distinct, inherently heavier shape keeps its own.
+
+    A pooled floor would clip the heavier shape; grouping by shape keeps each shape's
+    own minimum, so a mixed pool (leaner + fewshot fill) does not lose the fill.
+    """
+    lean = ["lean url=s://aa"]  # shape A, gen 8
+    heavy = ["a much wordier shape url=s://bb"]  # shape B, gen 30
+    gen = {lean[0]: 8.0, heavy[0]: 30.0}
+    monkeypatch.setattr(verify, "replay_chain", _replay_gen(lambda m: gen[m]))
+    kept = verify.firing_only([lean, heavy], "gpt_oss")
+    assert lean in kept and heavy in kept  # each shape kept at its own minimum
+
+
+def test_firing_only_drops_fragile_shape_below_fire_rate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A whole SHAPE is dropped when its renders fire below the fire-rate floor.
+
+    Five renders of one shape, only two fire (40% < 80%): the shape is fragile (its
+    misfires waste replay budget and may misfire differently on the grader), so it ships
+    nothing -- even the two firing renders are dropped.
+    """
+    hosts = ["aa", "ab", "ac", "ad", "ae"]
+    chains = [[f"post url=s://{h}"] for h in hosts]
+    monkeypatch.setattr(
+        verify, "replay_chain", _fake_replay(lambda m: m.endswith(("aa", "ab")))
+    )
+    assert verify.firing_only(chains, "gpt_oss") == []  # 40% < 0.8 floor -> whole shape
+    # a lower floor keeps the firing renders
+    kept = verify.firing_only(chains, "gpt_oss", min_fire_rate=0.3)
+    assert kept == [["post url=s://aa"], ["post url=s://ab"]]
 
 
 def _replay_with_hops(hops_for: Callable[[str], int]) -> _Replay:

@@ -41,14 +41,6 @@ def main() -> None:
         " cut -- pair with --min-severity 3)",
     )
     parser.add_argument(
-        "--token-margin",
-        type=float,
-        default=verify_module._TOKEN_MARGIN,
-        help="drop firing candidates above the pool's lean floor + this many tokens"
-        " (the balloon-host tail of a host-dependent lean shape); pass a negative value"
-        " to keep every firing host",
-    )
-    parser.add_argument(
         "--no-hops-check",
         action="store_false",
         dest="check_hops",
@@ -56,24 +48,22 @@ def main() -> None:
         " tool-call count differs from its declared scoring calls is dropped)",
     )
     parser.add_argument(
-        "--min-only",
-        action="store_true",
-        help="keep ONLY each shape's minimum-generated-token renders -- drop any host"
-        " where the victim generated even one token above the shape's floor (supersedes"
-        " --token-margin; correct for a mixed-shape pool where each shape has its own"
-        " minimum)",
+        "--min-fire-rate",
+        type=float,
+        default=verify_module._MIN_FIRE_RATE,
+        help="drop any SHAPE whose renders fire below this fraction (fragile, wastes"
+        " budget), keeping only each surviving shape's minimum-gen-token renders; pass"
+        " 0.0 to keep every firing render",
     )
     args = parser.parse_args()
 
-    token_margin = None if args.token_margin < 0 else args.token_margin
     manifest = verify_and_filter_cut(
         Path(args.cut),
         args.min_severity,
         full_fire=args.full_fire,
         predicate=args.predicate,
-        token_margin=token_margin,
         check_hops=args.check_hops,
-        min_only=args.min_only,
+        min_fire_rate=args.min_fire_rate,
     )
     for var, pool in manifest["pools"].items():
         logging.info(
