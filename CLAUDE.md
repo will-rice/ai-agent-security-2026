@@ -71,6 +71,17 @@ a reduced effective budget. The champion probe (self-sizes to fit) returned 879 
 est mis-sizes; the probe's self-sizing (returns exactly what fits) beats a fixed est. Ceiling = the
 budget's clean-fit count (~879 -> ~79). Open (per-model pending): public LB MIN(gpt,gemma) or MEAN?
 
+## SHIP 2000/POOL EVERY TIME -- the completable count SCALES with leanness (2026-08-31)
+CORRECTION to every "~1010 completable ceiling" note below: that was the CHAMPION's slow
+replay rate (~25 tok/fire) wrongly generalized to a fixed ceiling. The completable count is
+NOT fixed -- leaner candidates replay FASTER, so MORE of them complete before the deadline.
+Score = 0.09 * (candidates COMPLETED) per column, meaned. The public LB top = 147 => ~1633
+completed per column (147/0.09), FAR above 1010. The SDK caps shipped at MAX_REPLAY_FINDINGS
+= 2000/pool, so the target is ALWAYS 2000 firing candidates per pool: under-shipping starves
+the grader and caps the score. firing_only orders leanest-first, so the leanest 2000 are the
+ones that replay. submit.py MIN_SHIP_CANDIDATES is now 2000. Do NOT size a pool to a
+"completable count" -- fill the 2000 budget with the leanest fires you can harvest.
+
 ## SUBMISSION DATA REFUTES THE ~880 CEILING (2026-08-15) -- MORE RETURNED = HIGHER SCORE
 COMPLETED public scores by returned count (real Kaggle evals, all VALID/COMPLETE):
   per-model (~700 sized) 66.945 | 879 -> 72.150 | 1000(est8.82) -> 76.095 | 1300(est6.78) -> 83.805

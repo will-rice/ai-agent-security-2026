@@ -23,17 +23,19 @@ import build_kernel
 NVIDIA_KAGGLE_SCRIPTS = Path("/home/will/.agents/skills/nvidia-kaggle-skill/scripts")
 ENV_FILE = build_kernel.REPO_ROOT / ".env"  # supplies KAGGLE_API_TOKEN
 SUBMISSION_FILE = "submission.csv"  # the output the competition rerun scores
-MESSAGE = "Leaner min-only cut: gpt=1720 leanest tool-call shape, gemma=1936 (686 optimizer-leaner + fewshot fill), every candidate gated to its shape's minimum generated tokens + a unique novelty cell (per-shape-min gate drops all above-floor balloon renders)."
+MESSAGE = "Leaner 2000/pool cut: gpt ~22-tok commentary-forge + gemma ~24-tok unquoted-toolcall, tiled across all single-token hosts to ship the full 2000-replay budget of lean fires (targeting the ~1633 completions the LB top implies)."
 POLL_INTERVAL_S = 30
 POLL_TIMEOUT_S = 6 * 60 * 60  # 6h covers the push run plus the rerun eval
-# Never ship an under-filled pool. A pool below the budget-completable count leaves grader
-# time idle before its deadline: champion_gated shipped ~994 firing and scored 89.5, vs the
-# full 2000-candidate champion's 104.4. The real floor is the completable count -- the grader
-# only replays ~985-1010 candidates before the deadline (memory completion-ceiling-aug15), so
-# any pool comfortably above that (e.g. the 1826-host url-after-end 108 champion) never runs
-# the grader dry. Floor set at 1200 = the completable ceiling plus margin, NOT the leaner-pool
-# host count; a pool above it is fine even if it does not reach 1900 single-token hosts.
-MIN_SHIP_CANDIDATES = 1200
+# ALWAYS ship the full pool -- the SDK replays up to MAX_REPLAY_FINDINGS = 2000 per model,
+# so 2000 firing candidates per pool is the target EVERY submission. The completable count
+# is NOT a fixed ~1010 (that was the champion's slow replay rate wrongly generalized): it
+# SCALES with leanness -- leaner candidates replay faster, so more of them complete before
+# the deadline. The public LB top (~147) implies ~1633 completed per column (147 / 0.09),
+# far above 1010, so under-shipping caps the score by starving the grader of candidates to
+# replay. Floor = 2000: never ship a pool that cannot fill the 2000-replay budget. Ordering
+# is leanest-first (firing_only), so if the gate yields >2000 the leanest 2000 are the ones
+# that replay.
+MIN_SHIP_CANDIDATES = 2000
 # ------------------------------------------------------
 
 
@@ -70,9 +72,10 @@ def main() -> None:
         sys.exit(f"FIRING GATE: refusing to submit -- {reason}")
     print(f"firing gate: {reason} ({build_kernel.ATTACK_PY})")
 
-    # SIZE GATE: never ship a pool below the budget-completable count -- it leaves grader
-    # time idle and scores less than a bigger pool (996 gpt / champion_gated 89.5 both
-    # under-filled). Refuse before the push; the fix is more hosts / higher fire-rate.
+    # SIZE GATE: ship the FULL 2000-replay budget every time. A pool below 2000 starves
+    # the grader of candidates and caps the score (the completable count scales with
+    # leanness -- the LB top completes ~1633/column, far above the old ~1010 belief).
+    # Refuse before the push; the fix is more hosts / more lean shapes to fill 2000.
     from jed_attack.campaign.verify import _extract_pool
 
     _src = attack_path.read_text(encoding="utf-8")
