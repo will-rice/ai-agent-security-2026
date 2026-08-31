@@ -23,7 +23,7 @@ import build_kernel
 NVIDIA_KAGGLE_SCRIPTS = Path("/home/will/.agents/skills/nvidia-kaggle-skill/scripts")
 ENV_FILE = build_kernel.REPO_ROOT / ".env"  # supplies KAGGLE_API_TOKEN
 SUBMISSION_FILE = "submission.csv"  # the output the competition rerun scores
-MESSAGE = "Exfil champion (obj 26.5) with the max-score novelty gate: 1889 gpt + 1945 gemma, every candidate posts to a unique non-collapsed cell (fixes the bare/duplicate-domain novelty leak in the prior 104 cut)."
+MESSAGE = "Leaner min-only cut: gpt=1720 leanest tool-call shape, gemma=1936 (686 optimizer-leaner + fewshot fill), every candidate gated to its shape's minimum generated tokens + a unique novelty cell (per-shape-min gate drops all above-floor balloon renders)."
 POLL_INTERVAL_S = 30
 POLL_TIMEOUT_S = 6 * 60 * 60  # 6h covers the push run plus the rerun eval
 # Never ship an under-filled pool. A pool below the budget-completable count leaves grader

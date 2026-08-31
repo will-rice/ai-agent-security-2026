@@ -23,11 +23,11 @@ from pathlib import Path
 # --- Fixed submission config (constants, not flags, so they can't be misset) ---
 KAGGLE_USER = "willrice"
 COMPETITION = "ai-agent-security-multi-step-tool-attacks"
-TITLE = "JED exfil maxnov 265"  # unique slug per submission so the push never collides with a still-evaluating kernel (see _slugify)
+TITLE = "JED exfil leaner minonly"  # unique slug per submission so the push never collides with a still-evaluating kernel (see _slugify)
 MACHINE_SHAPE = "NvidiaTeslaT4"  # this competition rejects P100 (400 FAILED_PRECONDITION)
 ENABLE_GPU = True
 ENABLE_INTERNET = False  # rerun env is offline; attack imports only aicomp_sdk + stdlib
-ATTACK_PY = "run/submission_cuts/exfil_champion_maxnov/attack.py"  # current optimizer champion (obj 26.5, ~2000 exfil candidates, frozen 2026-08-30)
+ATTACK_PY = "run/submission_cuts/leaner686_fewshot_gpt2000/attack.py"  # min-only leaner cut: 1720 gpt-leanest + 1936 gemma (686 leaner + fewshot fill), every candidate its shape's min-gen render
 OUT_ROOT = "run/submission_kernel"  # kernel folders are written under here, one per slug
 # -------------------------------------------------------------------------------
 
