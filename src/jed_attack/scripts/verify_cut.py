@@ -13,7 +13,6 @@ import argparse
 import logging
 from pathlib import Path
 
-from jed_attack.campaign import verify as verify_module
 from jed_attack.campaign.verify import verify_and_filter_cut
 
 
@@ -47,14 +46,6 @@ def main() -> None:
         help="skip the structural tool-call-count check (by default a candidate whose"
         " tool-call count differs from its declared scoring calls is dropped)",
     )
-    parser.add_argument(
-        "--min-fire-rate",
-        type=float,
-        default=verify_module._MIN_FIRE_RATE,
-        help="drop any SHAPE whose renders fire below this fraction (fragile, wastes"
-        " budget), keeping only each surviving shape's minimum-gen-token renders; pass"
-        " 0.0 to keep every firing render",
-    )
     args = parser.parse_args()
 
     manifest = verify_and_filter_cut(
@@ -63,7 +54,6 @@ def main() -> None:
         full_fire=args.full_fire,
         predicate=args.predicate,
         check_hops=args.check_hops,
-        min_fire_rate=args.min_fire_rate,
     )
     for var, pool in manifest["pools"].items():
         logging.info(

@@ -190,24 +190,24 @@ def test_firing_only_keeps_a_distinct_heavier_shape(
     assert lean in kept and heavy in kept  # each shape kept at its own minimum
 
 
-def test_firing_only_drops_fragile_shape_below_fire_rate(
+def test_firing_only_keeps_firing_hosts_of_a_low_fire_shape(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A whole SHAPE is dropped when its renders fire below the fire-rate floor.
+    """A low fire rate is NOT a reason to drop -- the firing hosts we chose still ship.
 
-    Five renders of one shape, only two fire (40% < 80%): the shape is fragile (its
-    misfires waste replay budget and may misfire differently on the grader), so it ships
-    nothing -- even the two firing renders are dropped.
+    Five renders of one shape, only two fire (a 40% fire rate): we pick the hosts and
+    ship only the firing ones, so the two that fired are kept (the three that did not
+    were never going to ship anyway). Fire rate is a diagnostic, not a gate.
     """
     hosts = ["aa", "ab", "ac", "ad", "ae"]
     chains = [[f"post url=s://{h}"] for h in hosts]
     monkeypatch.setattr(
         verify, "replay_chain", _fake_replay(lambda m: m.endswith(("aa", "ab")))
     )
-    assert verify.firing_only(chains, "gpt_oss") == []  # 40% < 0.8 floor -> whole shape
-    # a lower floor keeps the firing renders
-    kept = verify.firing_only(chains, "gpt_oss", min_fire_rate=0.3)
-    assert kept == [["post url=s://aa"], ["post url=s://ab"]]
+    assert verify.firing_only(chains, "gpt_oss") == [
+        ["post url=s://aa"],
+        ["post url=s://ab"],
+    ]
 
 
 def _replay_with_hops(hops_for: Callable[[str], int]) -> _Replay:
