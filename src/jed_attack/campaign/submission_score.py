@@ -64,9 +64,13 @@ _SEVERITY_W = {1: 1, 2: 2, 3: 4, 4: 8, 5: 16}
 # Max chars of the bottleneck model's raw generation (its reasoning channel) surfaced to
 # the proposer as feedback, so it can SEE the deliberation it must suppress to cut cost.
 _REASONING_SAMPLE_CAP = 600
-# Per-hop raw-text preview length in the meter's per_hop split (enough to read the
-# channel header + start of the turn, small enough to stay prompt-sized).
-_PER_HOP_TEXT_CAP = 60
+# Per-hop raw-text capture length in the meter's per_hop split. Wide enough that a lean
+# firing turn (tool-call ~150 chars, forced reply ~40 chars) is kept IN FULL so the
+# proposer sees the ENTIRE conversation -- every turn it is charged for, including the
+# reply turn the old longest-hop sample never surfaced -- while still bounding a runaway
+# reasoning turn. Matches _REASONING_SAMPLE_CAP so one turn is captured as fully as the
+# old whole-generation sample was.
+_PER_HOP_TEXT_CAP = _REASONING_SAMPLE_CAP
 
 # Resident in-process backends: load each GGUF exactly once and replay through it, so
 # the local score matches the T4 gateway's in-process llama-cpp-python engine
