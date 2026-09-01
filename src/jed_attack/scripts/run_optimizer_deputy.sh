@@ -11,7 +11,9 @@
 # Idempotent for DEPUTY ONLY: tears down just the 'deputy' tmux session (whose SIGHUP
 # kills its own python) so it can coexist with the exfil optimizer on the OTHER GPU.
 # Does NOT pkill-by-pattern (that would also kill the exfil optimizer, indistinguishable
-# by command line). Runs on GPU0 (3090); the exfil optimizer holds GPU1 (Ada).
+# by command line). MODELS SPLIT ACROSS GPUs: gpt-oss-20B + gemma-26B together (~27GB)
+# do NOT fit the 3090's 24GB, so gemma loads alone on GPU0 (~15GB) and gpt goes on GPU1
+# (Ada 48GB) alongside the exfil optimizer's two models (~27GB) -> ~39GB, fits.
 set -euo pipefail
 
 SESSION=deputy
@@ -26,7 +28,7 @@ tmux new-session -d -s "$SESSION" -c "$REPO" \
     export JED_CAMPAIGN_ROOT=\"$REPO/run_deputy\" \
       JED_MISSION_PATH=\"$MISSION\" JED_WANDB=1 \
       JED_PROPOSER_REPLICAS=2 JED_ISLANDS=2 \
-      JED_GPU_GPT=0 JED_GPU_GEMMA=0 \
+      JED_GPU_GPT=1 JED_GPU_GEMMA=0 \
       CUDA_DEVICE_ORDER=PCI_BUS_ID \
       LD_LIBRARY_PATH=\"/usr/local/cuda-12.8/lib64:\${LD_LIBRARY_PATH:-}\"; \
     while true; do \
