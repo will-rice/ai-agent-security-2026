@@ -251,3 +251,4 @@ scratch_notebooks/
 scratchpad/
 *.bak
 *.bak-*
+run_deputy/
