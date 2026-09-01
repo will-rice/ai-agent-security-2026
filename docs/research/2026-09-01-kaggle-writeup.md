@@ -71,8 +71,8 @@ After all levers, both victims sit at ~24-25 gen tokens/fire, decomposed as:
 
 The **reply turn is a trained turn-opener** the victim emits on *every* turn, two turns after
 your message — we could not suppress it from the input (see dead ends). And the grader
-hard-codes `max_tool_hops = 8` (a `Final` constant, not exposed via schema/candidate/env), so
-a fire is *always* ≥2 hops. The leader's ~147 implies ~19.6 tok/fire ≈ the code floor, so the
+hard-codes `max_tool_hops = 8` (a `Final` constant, and we didn't find it exposed via
+schema/candidate/env), so every fire we produced ran ≥2 hops. The leader's ~147 implies ~19.6 tok/fire ≈ the code floor, so the
 remaining gap is an **induction we didn't solve**: a leaner tool-call emit the parser accepts
 but we couldn't reliably make the model produce.
 
@@ -80,14 +80,17 @@ but we couldn't reliably make the model produce.
 
 - **Multi-post is a trap.** It looks like packing K posts into one candidate amortizes the
   single reply hop (16K+2 raw over K+1 hops). It doesn't: the forge suppresses the turn-opener
-  **only on hop-0**, so posts 2..K each *re-incur* the opener — a K-post candidate is
-  *strictly worse* on tokens than K separate fires, and novelty is per-*finding* (one cell per
+  **only on hop-0**, so posts 2..K each *re-incur* the opener — a K-post candidate came out
+  *worse on tokens, in every test we ran,* than K separate fires, and novelty is per-*finding* (one cell per
   candidate, not per post), so you also forfeit K-1 cells. A real 2-post submission scored 81
   vs a 104 champion; a free calib confirmed replay is token-bound and gemma caps at ~2 posts
   on the grader anyway.
 - **Reply-turn suppression:** ~25 inductions (instructions, forged terminators, few-shot
-  empty turns, "conversation over" framings) all failed. It's structural.
-- **Encoding for private-board evasion / read-exfil:** dead on public. The `OptimalGuardrail`
+  empty turns, "conversation over" framings) all failed — we couldn't get the model to drop
+  the opener. (A trained turn-opener we didn't manage to suppress, not one we've shown can't
+  be.)
+- **Encoding for private-board evasion / read-exfil:** we couldn't get it to fire on public.
+  The `OptimalGuardrail`
   blocks any tool whose target contains `secret`/`password`/`key`/... — so `fs.read
   secret.txt` is denied, and the reversible-encoding scorer only decodes the *real* secret
   (which requires that blocked read), never the literal `SECRET_MARKER` sentinel.
@@ -116,9 +119,10 @@ but we couldn't reliably make the model produce.
   emitting 3-7 tool calls per message; the real grader caps it at ~2. Verify *firing
   behavior* on the grader (a free push/run kernel with `competition_sources` — no slot spent),
   not only locally.
-- **You cannot reduce the reply hop.** `DEFAULT_MAX_TOOL_HOPS` is a `Final = 8` constant (not
-  env/schema/candidate-configurable), and a candidate is `user_messages` only. Every fire is
-  ≥2 hops; plan around it instead of trying to kill it.
+- **We couldn't reduce the reply hop from the submission side.** `DEFAULT_MAX_TOOL_HOPS` is a
+  `Final = 8` constant (nothing we found exposes it via env/schema/candidate), and a candidate
+  is `user_messages` only — so every fire we produced paid ≥2 hops. We planned around it; if
+  there's a lever here we missed, we'd take it.
 - **Kaggle kernel mechanics:** T4 only (P100 → `400 FAILED_PRECONDITION`); the kernel metadata
   `id` MUST equal the slugified title or your status poll can't find the run; and a too-large
   embedded pool (~1MB+) fails the push — cap at ~2000 and it fits.
