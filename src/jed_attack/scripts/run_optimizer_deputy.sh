@@ -8,32 +8,25 @@
 # predicate-agnostic (minimizes cost per FIRING candidate), so it credits the sev-4
 # CONFUSED_DEPUTY fire and hunts the leanest deputy shape for the private-board hedge.
 #
-# Idempotent: tears down ANY running optimizer (exfil or deputy) + both tmux sessions
-# first, then starts fresh. GPU1 (Ada), both victims, like the exfil optimizer.
+# Idempotent for DEPUTY ONLY: tears down just the 'deputy' tmux session (whose SIGHUP
+# kills its own python) so it can coexist with the exfil optimizer on the OTHER GPU.
+# Does NOT pkill-by-pattern (that would also kill the exfil optimizer, indistinguishable
+# by command line). Runs on GPU0 (3090); the exfil optimizer holds GPU1 (Ada).
 set -euo pipefail
 
 SESSION=deputy
 REPO="$(cd "$(dirname "$0")" && git rev-parse --show-toplevel)"
 MISSION="$REPO/src/jed_attack/campaign/missions/deputy.md"
 
-STOP_TIMEOUT_S="${JED_OPTIMIZER_STOP_TIMEOUT_S:-330}"
-OPTIMIZER_PYTHON_PATTERN='^(.*/)?python([0-9]+([.][0-9]+)?)? -m jed_attack[.]campaign[.]optimize_prompts($| )'
-pkill -TERM -f "$OPTIMIZER_PYTHON_PATTERN" 2>/dev/null || true
-for _ in $(seq 1 "$STOP_TIMEOUT_S"); do
-  pgrep -f "$OPTIMIZER_PYTHON_PATTERN" >/dev/null || break
-  sleep 1
-done
-pkill -KILL -f "$OPTIMIZER_PYTHON_PATTERN" 2>/dev/null || true
-tmux kill-session -t optimizer 2>/dev/null || true
 tmux kill-session -t "$SESSION" 2>/dev/null || true
-sleep 1
+sleep 2
 
 tmux new-session -d -s "$SESSION" -c "$REPO" \
   "exec bash -lc 'mkdir -p run_deputy/logs; \
     export JED_CAMPAIGN_ROOT=\"$REPO/run_deputy\" \
       JED_MISSION_PATH=\"$MISSION\" JED_WANDB=1 \
       JED_PROPOSER_REPLICAS=2 JED_ISLANDS=2 \
-      JED_GPU_GPT=1 JED_GPU_GEMMA=1 \
+      JED_GPU_GPT=0 JED_GPU_GEMMA=0 \
       CUDA_DEVICE_ORDER=PCI_BUS_ID \
       LD_LIBRARY_PATH=\"/usr/local/cuda-12.8/lib64:\${LD_LIBRARY_PATH:-}\"; \
     while true; do \
