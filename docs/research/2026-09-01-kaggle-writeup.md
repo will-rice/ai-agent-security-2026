@@ -141,3 +141,25 @@ the leader isn't a missing *mechanism* — hop-1, hop-0, multipost, and severity
 stacking are all accounted for. It's an unsolved *induction*: getting the victim to emit a
 tool call a few tokens leaner than we managed. If anyone cracked a sub-22-token gpt tool call
 or a shorter reply turn, we'd love to hear how.
+
+## References
+
+**Our research notes (this repo, `docs/research/`):**
+
+- [`2026-08-25-llamacpp-caching-throughput.md`](2026-08-25-llamacpp-caching-throughput.md) —
+  the shared-prefix KV-caching / replay-throughput mechanism behind the url-last lever and
+  the "leaner ⇒ more completions" analysis.
+- [`2026-08-26-improving-the-search.md`](2026-08-26-improving-the-search.md) — the
+  LLM-as-optimizer / quality-diversity red-teaming literature survey behind our shape search.
+
+**gpt_oss forge — OpenAI Harmony response format** (the `<|channel|>`,
+`commentary`/`analysis`/`final`, `<|constrain|>`, `<|message|>` control tokens we forge):
+
+- [openai/harmony](https://github.com/openai/harmony) (official renderer + format spec)
+- [OpenAI Harmony cookbook guide](https://developers.openai.com/cookbook/articles/openai-harmony)
+
+**Gemma forge — Gemma 4 function calling / chat template** (the
+`<|tool_call>call:fn{arg:<|"|>…<|"|>}<tool_call|>` grammar; we drop the `<|"|>` quote tokens
+by writing unquoted args):
+
+- [Function calling with Gemma 4](https://ai.google.dev/gemma/docs/capabilities/text/function-calling-gemma4)
