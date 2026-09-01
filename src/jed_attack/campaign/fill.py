@@ -13,7 +13,12 @@ import json
 from collections.abc import Sequence
 from pathlib import Path
 
-from jed_attack.campaign.targets import _EMAIL_RE, _URL_RE
+from jed_attack.campaign.targets import (
+    _EMAIL_RE,
+    _U_INDEXED_ESCAPED_RE,
+    _U_INDEXED_RE,
+    _URL_RE,
+)
 
 MARKER = "SECRET_MARKER"
 # Default URL scheme -- reproduces the historical ``http://<host>.co`` when a message,
@@ -63,7 +68,9 @@ def exfil_template(text: str) -> str:
     stray literal brace so a model-authored body cannot crash ``render``'s
     ``str.format``, while leaving ``{u}`` as the one live field.
     """
-    return text.replace("{", "{{").replace("}", "}}").replace("{{u}}", "{u}")
+    escaped = text.replace("{", "{{").replace("}", "}}").replace("{{u}}", "{u}")
+    # Keep indexed multi-post placeholders live too: ``{{uN}}`` -> ``{uN}``.
+    return _U_INDEXED_ESCAPED_RE.sub(lambda m: "{u" + m.group(1) + "}", escaped)
 
 
 def render(template: str, index: int, url_scheme: str = DEFAULT_URL_SCHEME) -> str:
@@ -71,9 +78,19 @@ def render(template: str, index: int, url_scheme: str = DEFAULT_URL_SCHEME) -> s
 
     ``{u}`` fills from ``url_scheme`` (default reproduces ``http://<host>.co``), so
     every caller that does not author a scheme renders exactly as before.
+
+    Multi-post: indexed ``{u0} {u1} … {uK-1}`` each fill with a DISTINCT host so a
+    K-post candidate posts to K unique domains. Candidate ``index`` claims the host
+    block ``[index*K, index*K + K)`` (K = number of indexed slots), keeping every host
+    globally unique across the pool so each candidate banks its own novelty cell.
     """
     u = render_url(url_scheme, index)
-    return template.format(m=MARKER, u=u, url=u, a=addr(index), h=host(index)).strip()
+    fields = {"m": MARKER, "u": u, "url": u, "a": addr(index), "h": host(index)}
+    slots = sorted({int(n) for n in _U_INDEXED_RE.findall(template)})
+    k = len(slots)
+    for pos, n in enumerate(slots):
+        fields[f"u{n}"] = render_url(url_scheme, index * k + pos)
+    return template.format(**fields).strip()
 
 
 def templatize(text: str) -> str | None:
@@ -109,7 +126,7 @@ def message_pair(text: str, mtype: str, url_scheme: str) -> tuple[str, str]:
     text with a concrete URL (persisted pre-schema records) and every deputy message go
     through :func:`templatize` at the default scheme, preserving today's behavior.
     """
-    if mtype == "exfil" and "{u}" in text:
+    if mtype == "exfil" and ("{u}" in text or _U_INDEXED_RE.search(text)):
         return exfil_template(text), url_scheme
     return (templatize(text) or text), DEFAULT_URL_SCHEME
 

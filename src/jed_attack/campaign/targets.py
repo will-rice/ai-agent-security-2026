@@ -22,3 +22,7 @@ _URL_RE = re.compile(
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.invalid", re.IGNORECASE)
 # Union of both -- every driven tool-call target; ``target_count`` counts these.
 TARGET_RE = re.compile(f"{_URL_RE.pattern}|{_EMAIL_RE.pattern}", re.IGNORECASE)
+# Indexed multi-post URL placeholder ``{u0} {u1} … {uK-1}`` -- one http.post per slot,
+# each filled with a distinct host. Its escaped form survives ``str.format`` protection.
+_U_INDEXED_RE = re.compile(r"\{u(\d+)\}")
+_U_INDEXED_ESCAPED_RE = re.compile(r"\{\{u(\d+)\}\}")
