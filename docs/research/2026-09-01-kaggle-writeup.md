@@ -92,6 +92,37 @@ but we couldn't reliably make the model produce.
   secret.txt` is denied, and the reversible-encoding scorer only decodes the *real* secret
   (which requires that blocked read), never the literal `SECRET_MARKER` sentinel.
 
+## Gotchas (the stuff that cost us days)
+
+- **Local replay time ≠ grader time.** Our local GGUF (llama.cpp) over-estimated replay
+  ~1.8× vs the grader's model server. *Never* size your returned candidate count from local
+  calibration — you'll over-fill (INVALID risk, pre-Aug-5) or under-fill. Only real
+  submissions give true absolute rates; only *relative* shape ordering transfers locally.
+- **The cost variable is RAW generated tokens, not the trace's assistant text.** The gateway
+  strips gpt_oss's `analysis` channel before the trace, so a shape that looks leaner by
+  `assistant_messages` length can be identical in true replay cost. Meter the raw decoded
+  token count, or you'll chase a mirage.
+- **Scoring is stochastic (~±2, ~9%).** An identical cut scored 44 vs 48 on repeat. Spend
+  variance resubmits and keep the max — don't read a single score as signal.
+- **Ship zero duds.** A blind pool carries ~8-17% non-firing candidates that burn replay
+  budget for nothing. Verify fire-both at *build* time and drop them. And beware: per-host
+  fire-rate is stochastic — a 6-host sample can read 100% while the full 2000-pool is ~83%.
+- **Novelty collapses silently.** The cell keys on `_bucket_url(url)`, which returns
+  `"unknown"` for *any* url without `://`. A bare `//host` (or `gcc`) makes **every**
+  candidate share one cell → +2 for the whole pool, not per candidate. Always emit `://host`.
+- **Oversizing is safe now.** Since the Aug-5 update, a replay timeout is graceful — it scores
+  what completed rather than returning 0. So you can return more than you think fits.
+- **Local *behavior* ≠ grader behavior, not just timing.** Our local oracle reported gemma
+  emitting 3-7 tool calls per message; the real grader caps it at ~2. Verify *firing
+  behavior* on the grader (a free push/run kernel with `competition_sources` — no slot spent),
+  not only locally.
+- **You cannot reduce the reply hop.** `DEFAULT_MAX_TOOL_HOPS` is a `Final = 8` constant (not
+  env/schema/candidate-configurable), and a candidate is `user_messages` only. Every fire is
+  ≥2 hops; plan around it instead of trying to kill it.
+- **Kaggle kernel mechanics:** T4 only (P100 → `400 FAILED_PRECONDITION`); the kernel metadata
+  `id` MUST equal the slugified title or your status poll can't find the run; and a too-large
+  embedded pool (~1MB+) fails the push — cap at ~2000 and it fits.
+
 ## The private-board hedge
 
 The medal is the **private** board (`persistent_provenance`), which likely nullifies the
