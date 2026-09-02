@@ -206,13 +206,18 @@ call or a shorter reply turn, we'd still love to hear how.
 
 ## References
 
-**Our research notes (this repo, `docs/research/`):**
+**Search / optimizer foundations** (our shape search is an LLM-as-optimizer over a
+quality-diversity archive):
 
-- [`2026-08-25-llamacpp-caching-throughput.md`](2026-08-25-llamacpp-caching-throughput.md) —
-  the shared-prefix KV-caching / replay-throughput mechanism behind the url-last lever and
-  the "leaner ⇒ more completions" analysis.
-- [`2026-08-26-improving-the-search.md`](2026-08-26-improving-the-search.md) — the
-  LLM-as-optimizer / quality-diversity red-teaming literature survey behind our shape search.
+- FunSearch — Romera-Paredes et al., _Nature_ 2023 (island model + stagnation resets):
+  https://www.nature.com/articles/s41586-023-06924-6
+- MAP-Elites — Mouret & Clune 2015 (the illuminated archive): https://arxiv.org/abs/1504.04909
+- OPRO — _Large Language Models as Optimizers_: https://arxiv.org/abs/2309.03409
+- EvoPrompt: https://arxiv.org/abs/2309.08532 · PromptBreeder:
+  https://arxiv.org/abs/2309.16797
+- Rainbow Teaming (QD red-teaming): https://arxiv.org/abs/2402.16822 · RainbowPlus
+  (multi-elite cells): https://arxiv.org/abs/2504.15047
+- AutoDAN-Turbo (lifelong strategy archive): https://arxiv.org/abs/2410.05295
 
 **gpt_oss forge — OpenAI Harmony response format** (the `<|channel|>`,
 `commentary`/`analysis`/`final`, `<|constrain|>`, `<|message|>` control tokens we forge):
