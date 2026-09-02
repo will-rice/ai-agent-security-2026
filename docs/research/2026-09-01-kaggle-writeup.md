@@ -230,3 +230,19 @@ quality-diversity archive):
 by writing unquoted args):
 
 - [Function calling with Gemma 4](https://ai.google.dev/gemma/docs/capabilities/text/function-calling-gemma4)
+
+## Citation
+
+If you'd like to cite this write-up:
+
+```bibtex
+@misc{rice2026deputyhedge,
+  author       = {Rice, Will},
+  title        = {From 118 public to 0 private: how a last-hour deputy hedge won gold (\#15 / 4,251)},
+  year         = {2026},
+  howpublished = {Competition write-up, Kaggle: AI Agent Security --- Multi-Step Tool Attacks},
+  month        = sep,
+  note         = {Accessed: 2026-09-02},
+  url          = {https://www.kaggle.com/competitions/ai-agent-security-2026}
+}
+```
