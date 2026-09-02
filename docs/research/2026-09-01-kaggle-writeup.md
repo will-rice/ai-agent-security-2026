@@ -230,3 +230,24 @@ quality-diversity archive):
 by writing unquoted args):
 
 - [Function calling with Gemma 4](https://ai.google.dev/gemma/docs/capabilities/text/function-calling-gemma4)
+
+## Citation
+
+If you reference this write-up, please cite it as:
+
+```bibtex
+@misc{rice2026deputyhedge,
+  author       = {Rice, Will},
+  title        = {From 118 Public to 0 Private: How a Last-Hour Deputy Hedge
+                  Won Gold (\#15 / 4{,}251)},
+  year         = {2026},
+  howpublished = {Competition write-up, Kaggle: AI Agent Security ---
+                  Multi-Step Tool Attacks},
+  url          = {https://www.kaggle.com/competitions/ai-agent-security-multi-step-tool-attacks/writeups},
+  note         = {Accessed: 2026-09-02}
+}
+```
+
+Plain-text: Will Rice. "From 118 public to 0 private: how a last-hour deputy hedge won gold
+(#15 / 4,251)." Competition write-up, *AI Agent Security — Multi-Step Tool Attacks*, Kaggle,
+2026. https://www.kaggle.com/competitions/ai-agent-security-multi-step-tool-attacks
