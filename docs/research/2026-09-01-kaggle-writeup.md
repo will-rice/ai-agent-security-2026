@@ -1,4 +1,4 @@
-# From 79 to 118: a token-floor exfil primitive + a private-board hedge
+# From 118 public to 0 private: how a last-hour deputy hedge won gold (#15 / 4,251)
 
 Thanks to the hosts for a genuinely novel competition. Here's our approach — what worked,
 the levers that matter, the dead ends we verified so you don't have to, and the one thing
@@ -11,7 +11,9 @@ candidate, repeated until the replay budget runs out**. Everything reduces to *m
 victim fire while generating the fewest tokens*, then ship 2000 host-variants of that one
 lean shape. We took a single-post `http.post` EXFILTRATION primitive from ~79 to **118.25**
 by driving both victims to their generation floor, then added a `CONFUSED_DEPUTY` submission
-as insurance against the private guardrail nullifying exfil.
+as insurance against the private guardrail nullifying exfil. That insurance turned out to be
+the whole medal: on the held-out private board **every exfil submission scored 0**, and the
+deputy hedge carried us to **#15 / 4,251 — gold**. The public leaderboard was a decoy.
 
 ## The scoring model
 
@@ -95,6 +97,41 @@ but we couldn't reliably make the model produce.
   secret.txt` is denied, and the reversible-encoding scorer only decodes the *real* secret
   (which requires that blocked read), never the literal `SECRET_MARKER` sentinel.
 
+## System design
+
+We treated this as a **search → verify → ship** pipeline, not hand-tuning:
+
+- **Optimizer (LLM-as-optimizer / quality-diversity).** An agentic proposer — a coding model
+  with read-only repo access — reads the SDK source and proposes batches of full submissions;
+  each is scored in-process on resident gpt_oss + gemma GGUFs and kept in a MAP-Elites-style
+  archive keyed by shape. The objective is `input_tokens + gen_tokens` per *firing* candidate
+  (cache-aware), meaned over both victims — it directly minimizes replay cost. The full
+  per-turn victim conversation + per-hop token counts feed back to the proposer so it can see
+  exactly which tokens to shave next round.
+- **Faithful local scorer.** We vendored the exact grader SDK (byte-identical, fingerprinted
+  on Kaggle via a free diagnostic kernel) and replay candidates through a real `SandboxEnv`
+  the way the gateway does: fresh env per candidate, KV cache reused across the shared prefix,
+  per-hop *raw* token metering. That last part matters — the gateway strips gpt_oss's analysis
+  channel from the trace, so optimizing the trace's text length optimizes a mirage; we meter
+  the actual decoded tokens.
+- **Free grader calibration.** Local GGUF timing ≠ the grader's model server, so for anything
+  timing- or behavior-sensitive we pushed *free* calibration kernels (push/run with
+  `competition_sources` attached — no submission slot spent) to measure real per-K replay
+  latency and firing behavior on the actual T4 gateway. This is how we killed multipost with a
+  measurement instead of a wasted slot.
+- **Build → verify → ship.** Cut builders enumerate single-token hosts and stamp 2000 variants
+  of a shape; a `verify_cut` pass replays every candidate on both victims and writes an
+  all-fire manifest, dropping duds so no dead weight burns replay budget; the submit skill
+  embeds the verified pool behind a per-model router.
+- **Per-model router (the shipped `attack.py`).** `run()` can't tell which victim it's facing
+  (the config has no model name), so one start-of-run forge/plain latency probe classifies
+  gpt_oss vs gemma, then ships that victim's optimal pool at full 2000 count — no per-candidate
+  probing (which we found ~doubled effective cost), no self-sizing (graceful timeout scores
+  what completes, so oversizing is safe).
+- **Two lanes.** A public-exfil optimizer and a separate deputy-hedge optimizer (own mission,
+  own cold-start board) ran independently, so the hedge shape was tuned in parallel without
+  being out-competed by the sev-16 exfil champion.
+
 ## Gotchas (the stuff that cost us days)
 
 - **Local replay time ≠ grader time.** Our local GGUF (llama.cpp) over-estimated replay
@@ -138,13 +175,34 @@ set `user_allows_share` and disable the predicate). A delegating verb ("Notify"/
 does it. Because the final rank is your *best* selected submission on the private board, a
 `1 exfil + 1 deputy` final-2 is near-free insurance against either private regime.
 
-## Results & the open question
+## Result: the public board was a decoy; the hedge was the medal
 
-Public: **79 → 118.25**, above the public-kernel field (~86), below the top (147). The gap to
-the leader isn't a missing *mechanism* — hop-1, hop-0, multipost, and severity/novelty
-stacking are all accounted for. It's an unsolved *induction*: getting the victim to emit a
-tool call a few tokens leaner than we managed. If anyone cracked a sub-22-token gpt tool call
-or a shorter reply turn, we'd love to hear how.
+**Final: #15 of 4,251 teams — a gold medal.** Not one point of it came from the exfil work.
+
+When the private board (`persistent_provenance`) revealed, it **nullified exfil entirely**:
+every one of our `http.post` + `SECRET_MARKER` submissions — the 118-point public shapes we
+spent the whole competition sharpening — scored **0.000** private. The public #1 (147) fell to
+**37.69 / #6** as their exfil collapsed the same way. The public leaderboard rewards a
+predicate the private guardrail simply denies, so it was a development signal, not the
+objective.
+
+Our **entire private score came from the deputy hedge** (30.9 public / **29.52 private**) —
+the `CONFUSED_DEPUTY` submission we built in the final hours precisely because the public and
+private guardrails are disjoint and a rival ("PHOENIX") was publicly betting exfil would be
+nullified. Because the final rank is your *best* selected submission on the private board, a
+`1 exfil + 1 deputy` final-2 made the hedge free insurance — and it paid the whole medal.
+Without it we'd have scored 0 on the board that mattered.
+
+**The lesson:** on a two-board setup with disjoint guardrails, diversify predicates against
+the board you can't see; don't over-fit the one you can.
+
+## The public game (for the record)
+
+Publicly we went **79 → 118.25**, above the public-kernel field (~86). The gap to the public
+top wasn't a missing *mechanism* — hop-1, hop-0, multipost, and severity/novelty stacking are
+all accounted for — it's an *induction* we didn't solve: emitting a tool call a few tokens
+leaner than we managed. Moot for the medal, but if anyone cracked a sub-22-token gpt tool
+call or a shorter reply turn, we'd still love to hear how.
 
 ## References
 
