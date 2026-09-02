@@ -233,7 +233,8 @@ by writing unquoted args):
 
 ## Citation
 
-If you reference this write-up, please cite it as:
+If you reference this write-up, please cite it as (BibTeX, following Kaggle's `@misc`
+convention — `publisher = {Kaggle}`, URL wrapped in `\url{}`):
 
 ```bibtex
 @misc{rice2026deputyhedge,
@@ -241,13 +242,16 @@ If you reference this write-up, please cite it as:
   title        = {From 118 Public to 0 Private: How a Last-Hour Deputy Hedge
                   Won Gold (\#15 / 4{,}251)},
   year         = {2026},
-  howpublished = {Competition write-up, Kaggle: AI Agent Security ---
-                  Multi-Step Tool Attacks},
-  url          = {https://www.kaggle.com/competitions/ai-agent-security-multi-step-tool-attacks/writeups},
-  note         = {Accessed: 2026-09-02}
+  publisher    = {Kaggle},
+  howpublished = {\url{https://www.kaggle.com/competitions/ai-agent-security-multi-step-tool-attacks/writeups}},
+  note         = {Competition write-up, AI Agent Security --- Multi-Step Tool Attacks}
 }
 ```
 
 Plain-text: Will Rice. "From 118 public to 0 private: how a last-hour deputy hedge won gold
 (#15 / 4,251)." Competition write-up, *AI Agent Security — Multi-Step Tool Attacks*, Kaggle,
 2026. https://www.kaggle.com/competitions/ai-agent-security-multi-step-tool-attacks
+
+To cite the **competition** itself rather than this write-up, use the BibTeX that Kaggle
+auto-generates under "Cite this competition" on the competition's Overview page — it lists the
+organizers as authors and is the citation the hosts expect for the benchmark.
