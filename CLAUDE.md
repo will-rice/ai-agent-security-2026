@@ -4,7 +4,7 @@ Load-bearing facts learned by direct source-reading + on-Kaggle verification. Se
 `AGENTS.md` (mission/setup) and `docs/research/sdk_excerpts/` (vendored grader excerpts).
 
 ## SESSION-END STATE (2026-09-01, deadline day) — read this first to pick back up
-- **Best public = 118.250** (leaner_2000 variance, sub 55924230). Ladder is monotonic in
+- **FINAL: GOLD, #15 / 4251 teams.** The private board (persistent_provenance) NULLIFIED exfil (all our exfil subs = 0.000 private); the ENTIRE medal came from the deputy hedge (30.9 public / 29.52 private). Public leader 147 -> 37.69/#6. Public best 118.25 was a decoy. Ladder (public) monotonic in leanness: 98 -> 104 -> 116 -> 118.
   LEANNESS: lever_frontier 98 -> url-last 104 -> gemma_fewshot 116 -> leaner_2000 118.
   Public field tops ~86 (we're above it); LB leader 147. Champion cut =
   `run/submission_cuts/leaner_2000/attack.py` (gpt commentary-forge 22 tok tool + 3 reply =
